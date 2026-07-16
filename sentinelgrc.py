@@ -31,7 +31,7 @@ def evaluate_control(control: dict[str, Any], posture: dict[str, Any]) -> dict[s
         expected = control["expected"]
     else:
         expected = f"<= {control['max_value']}"
-        passed = isinstance(observed, (int, float)) and observed <= control["max_value"]
+        passed = isinstance(observed, (int, float)) and not isinstance(observed, bool) and observed <= control["max_value"]
 
     severity = control["severity"]
     criticality = posture.get("criticality", "medium").lower()
@@ -74,7 +74,36 @@ def build_evidence(
     return record
 
 
+def verify_ledger(ledger_path: str) -> tuple[bool, str]:
+    path = Path(ledger_path)
+    if not path.exists():
+        return True, "Ledger is empty."
+    previous_hash = GENESIS_HASH
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for line_number, line in enumerate(lines, 1):
+            record = json.loads(line)
+            if not isinstance(record, dict):
+                return False, f"Ledger record {line_number} is not an object."
+            supplied_hash = record.pop("record_hash", None)
+            calculated_hash = hashlib.sha256(
+                canonical_json(record).encode("utf-8")
+            ).hexdigest()
+            if (
+                record.get("previous_hash") != previous_hash
+                or supplied_hash != calculated_hash
+            ):
+                return False, f"Ledger integrity failed at record {line_number}."
+            previous_hash = supplied_hash
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        return False, "Ledger could not be parsed safely."
+    return True, "Ledger integrity verified."
+
+
 def read_last_hash(ledger_path: str) -> str:
+    valid, message = verify_ledger(ledger_path)
+    if not valid:
+        raise ValueError(f"Refusing to append to invalid ledger: {message}")
     path = Path(ledger_path)
     if not path.exists() or not path.read_text(encoding="utf-8").strip():
         return GENESIS_HASH
@@ -85,22 +114,6 @@ def read_last_hash(ledger_path: str) -> str:
 def append_evidence(ledger_path: str, evidence: dict[str, Any]) -> None:
     with Path(ledger_path).open("a", encoding="utf-8") as file:
         file.write(canonical_json(evidence) + "\n")
-
-
-def verify_ledger(ledger_path: str) -> tuple[bool, str]:
-    previous_hash = GENESIS_HASH
-    for line_number, line in enumerate(
-        Path(ledger_path).read_text(encoding="utf-8").splitlines(), 1
-    ):
-        record = json.loads(line)
-        supplied_hash = record.pop("record_hash", None)
-        calculated_hash = hashlib.sha256(
-            canonical_json(record).encode("utf-8")
-        ).hexdigest()
-        if record.get("previous_hash") != previous_hash or supplied_hash != calculated_hash:
-            return False, f"Ledger integrity failed at record {line_number}."
-        previous_hash = supplied_hash
-    return True, "Ledger integrity verified."
 
 
 def evaluate(args: argparse.Namespace) -> int:
