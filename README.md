@@ -75,6 +75,16 @@ python pipeline.py run --posture sample_posture.json --controls controls.json --
 
 The pipeline stores a run fingerprint in SQLite. Reprocessing the same posture, controls, assets, and access review returns `duplicate` and does not append another ledger record.
 
+## Phase 7.2: automatic inbox worker
+
+`ingestion_api.py` writes accepted posture evidence to `evidence-inbox`. Run the worker as a separate process to automatically execute the full governance pipeline:
+
+```powershell
+python pipeline_worker.py serve --inbox evidence-inbox --controls controls.json --assets assets.json --access-review sample_ad_access_review.json --ledger runtime/evidence-ledger.jsonl --state-db runtime/sentinelgrc-state.db --remediation-dir runtime/remediation --tickets-dir runtime/tickets --reports-dir runtime/reports --interval 30
+```
+
+The worker is deliberately decoupled from the HTTP API. This keeps ingestion responsive, supports retries, and allows multiple worker instances when the state store is migrated to a shared transactional database. The current worker is a polling lab implementation; production deployment should use a durable queue, service supervisor, TLS/mTLS, and centralized logging.
+
 ## Security boundaries
 
 The service remains deliberately conservative:
