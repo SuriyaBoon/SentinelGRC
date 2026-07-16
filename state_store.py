@@ -29,6 +29,14 @@ class SQLiteStateStore:
                     evidence_id TEXT NOT NULL,
                     accepted_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS pipeline_runs (
+                    input_hash TEXT PRIMARY KEY,
+                    ledger_record_hash TEXT NOT NULL,
+                    remediation_path TEXT NOT NULL,
+                    tickets_path TEXT NOT NULL,
+                    report_path TEXT NOT NULL,
+                    processed_at REAL NOT NULL
+                );
                 """
             )
             connection.commit()
@@ -66,6 +74,36 @@ class SQLiteStateStore:
             connection.execute(
                 "INSERT OR IGNORE INTO accepted_payloads(payload_hash, evidence_id, accepted_at) VALUES (?, ?, ?)",
                 (payload_hash, evidence_id, current),
+            )
+            connection.commit()
+
+    def get_pipeline_run(self, input_hash: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM pipeline_runs WHERE input_hash = ?",
+                (input_hash,),
+            ).fetchone()
+        return None if row is None else dict(row)
+
+    def remember_pipeline_run(
+        self,
+        input_hash: str,
+        ledger_record_hash: str,
+        remediation_path: str,
+        tickets_path: str,
+        report_path: str,
+        now: float | None = None,
+    ) -> None:
+        current = time.time() if now is None else now
+        with closing(self._connect()) as connection:
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO pipeline_runs(
+                    input_hash, ledger_record_hash, remediation_path,
+                    tickets_path, report_path, processed_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (input_hash, ledger_record_hash, remediation_path, tickets_path, report_path, current),
             )
             connection.commit()
 
