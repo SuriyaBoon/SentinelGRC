@@ -1,8 +1,4 @@
-"""Authenticated posture ingestion API for SentinelGRC.
-
-The default server binds to loopback. Put a TLS reverse proxy and an
-authenticated secret store in front of it before exposing it to a network.
-"""
+"""Authenticated posture ingestion API for SentinelGRC."""
 
 from __future__ import annotations
 
@@ -12,9 +8,9 @@ import hmac
 import json
 import os
 import re
-import secrets
 import threading
 import time
+from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -33,10 +29,15 @@ REQUIRED_FIELDS = {
     "defender_realtime_enabled",
     "days_since_last_update",
 }
+ALLOWED_FIELDS = REQUIRED_FIELDS | {
+    "os",
+    "os_version",
+    "domain",
+    "checks",
+}
 
 
 def canonical_body(body: bytes) -> bytes:
-    # HMAC signs the exact bytes received. Do not parse and re-serialize first.
     return body
 
 
@@ -51,12 +52,23 @@ def validate_posture(payload: Any) -> None:
     missing = REQUIRED_FIELDS.difference(payload)
     if missing:
         raise ValueError(f"Missing required fields: {sorted(missing)}")
+    unknown = set(payload).difference(ALLOWED_FIELDS)
+    if unknown:
+        raise ValueError(f"Unknown fields: {sorted(unknown)}")
     if payload["schema_version"] != "1.0":
         raise ValueError("Unsupported posture schema version.")
-    if not isinstance(payload["asset_id"], str) or not payload["asset_id"]:
-        raise ValueError("asset_id must be a non-empty string.")
-    if not isinstance(payload["hostname"], str) or not payload["hostname"]:
-        raise ValueError("hostname must be a non-empty string.")
+    if not isinstance(payload["asset_id"], str) or not 1 <= len(payload["asset_id"]) <= 128:
+        raise ValueError("asset_id length is invalid.")
+    if not isinstance(payload["hostname"], str) or not 1 <= len(payload["hostname"]) <= 255:
+        raise ValueError("hostname length is invalid.")
+    if any(ord(char) < 32 for char in payload["asset_id"] + payload["hostname"]):
+        raise ValueError("asset_id and hostname cannot contain control characters.")
+    try:
+        collected_at = datetime.fromisoformat(payload["collected_at"].replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ValueError("collected_at must be an ISO-8601 timestamp.") from error
+    if collected_at.tzinfo is None:
+        raise ValueError("collected_at must include a timezone.")
     for field in (
         "bitlocker_system_drive",
         "firewall_all_profiles_enabled",
@@ -67,6 +79,10 @@ def validate_posture(payload: Any) -> None:
     age = payload["days_since_last_update"]
     if age is not None and (not isinstance(age, int) or isinstance(age, bool) or age < 0):
         raise ValueError("days_since_last_update must be a non-negative integer or null.")
+    if "domain" in payload and payload["domain"] is not None and not isinstance(payload["domain"], bool):
+        raise ValueError("domain must be boolean or null.")
+    if "checks" in payload and not isinstance(payload["checks"], list):
+        raise ValueError("checks must be an array.")
 
 
 class NonceStore:
@@ -109,14 +125,12 @@ def authenticate_request(
         request_time = int(timestamp)
     except ValueError as error:
         raise IngestionError("Invalid timestamp.", HTTPStatus.UNAUTHORIZED) from error
-
     if abs(current - request_time) > MAX_CLOCK_SKEW_SECONDS:
         raise IngestionError("Timestamp outside replay window.", HTTPStatus.UNAUTHORIZED)
     if not NONCE_PATTERN.fullmatch(nonce):
         raise IngestionError("Invalid nonce.", HTTPStatus.UNAUTHORIZED)
     if not authorization.startswith("HMAC "):
         raise IngestionError("Missing HMAC authorization.", HTTPStatus.UNAUTHORIZED)
-
     supplied = authorization[5:].strip()
     expected = make_signature(secret, timestamp, nonce, body)
     if not hmac.compare_digest(supplied, expected):
@@ -132,14 +146,19 @@ class PostureHandler(BaseHTTPRequestHandler):
         if self.path != "/v1/posture":
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
             return
-
         try:
+            content_type = self.headers.get("Content-Type", "")
+            if not content_type.lower().startswith("application/json"):
+                raise IngestionError("Content-Type must be application/json.")
             length_header = self.headers.get("Content-Length")
             if length_header is None:
                 raise IngestionError("Content-Length is required.")
             length = int(length_header)
             if length < 1 or length > MAX_BODY_BYTES:
-                raise IngestionError("Payload size is not allowed.", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+                raise IngestionError(
+                    "Payload size is not allowed.",
+                    HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                )
             body = self.rfile.read(length)
             if len(body) != length:
                 raise IngestionError("Incomplete request body.")
@@ -172,7 +191,6 @@ class PostureHandler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
 
     def log_message(self, format: str, *args: Any) -> None:
-        # Never log request bodies, authorization headers, or posture fields.
         return
 
     def _send_json(self, status: HTTPStatus, payload: dict[str, str]) -> None:
