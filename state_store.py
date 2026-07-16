@@ -88,7 +88,7 @@ class SQLiteStateStore:
         current = time.time() if now is None else now
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute("SELECT status, run_lease_until FROM pipeline_runs WHERE input_hash = ?", (input_hash,)).fetchone()
+            row = connection.execute("SELECT status, COALESCE(run_lease_until, 0) AS run_lease_until FROM pipeline_runs WHERE input_hash = ?", (input_hash,)).fetchone()
             if row is None:
                 connection.execute(
                     "INSERT INTO pipeline_runs(input_hash, ledger_record_hash, remediation_path, tickets_path, report_path, processed_at, status, run_lease_until) VALUES (?, '', '', '', '', ?, 'running', ?)",
@@ -96,7 +96,7 @@ class SQLiteStateStore:
                 )
                 connection.commit()
                 return True
-            if row[0] == "failed" or (row[0] == "running" and (row["run_lease_until"] is None or row["run_lease_until"] <= current)):
+            if row[0] == "failed" or (row[0] == "running" and (row[1] <= current)):
                 connection.execute("UPDATE pipeline_runs SET status = 'running', last_error = NULL, processed_at = ?, run_lease_until = ? WHERE input_hash = ?", (current, current + lease_seconds, input_hash))
                 connection.commit()
                 return True
@@ -118,7 +118,7 @@ class SQLiteStateStore:
     def fail_pipeline_run(self, input_hash: str, error: str, now: float | None = None) -> None:
         current = time.time() if now is None else now
         with closing(self._connect()) as connection:
-            connection.execute("UPDATE pipeline_runs SET status = 'failed', last_error = ?, processed_at = ?, run_lease_until = NULL WHERE input_hash = ?", (error[:2000], current, input_hash))
+            connection.execute("UPDATE pipeline_runs SET status = 'failed', last_error = ?, processed_at = ?, run_lease_until = 0 WHERE input_hash = ?", (error[:2000], current, input_hash))
             connection.commit()
     def get_pipeline_run(self, input_hash: str) -> dict[str, Any] | None:
         with closing(self._connect()) as connection:
