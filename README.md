@@ -23,7 +23,26 @@ Windows posture collector -> posture JSON -> SentinelGRC evaluator
                                            `-> governance summary
 ```
 
-## Run the demo
+## Phase 2: Asset-aware remediation governance
+
+Phase 2 adds a small asset registry with business owner, technical owner, service, criticality, data classification, and environment. Findings are enriched with this metadata so a failed control on a production finance asset can be prioritised differently from a low-criticality training device.
+
+It also adds exception governance. A risk exception requires:
+
+- named approver
+- written business reason
+- future expiry date
+- explicit `accepted-risk` status
+
+Run the Phase 2 assessment:
+
+```bash
+python governance.py assess --controls controls.json --posture sample_posture.json --assets assets.json --output remediation-queue.json
+```
+
+The command exits non-zero while open findings remain. That makes it suitable for a CI quality gate.
+
+## Run the Phase 1 demo
 
 ```bash
 python sentinelgrc.py evaluate --controls controls.json --posture sample_posture.json --ledger evidence-ledger.jsonl
@@ -33,10 +52,10 @@ python sentinelgrc.py verify-ledger --ledger evidence-ledger.jsonl
 The evaluator uses only the Python standard library.
 
 ```bash
-python -m unittest -v test_sentinelgrc.py
+python -m unittest -v test_sentinelgrc.py test_governance.py
 ```
 
-The sample intentionally contains two failed controls, so the evaluate command returns a non-zero exit status after printing the remediation queue.
+The sample intentionally contains failed controls, so the assessment prints a remediation queue and returns a non-zero exit status.
 
 ## Standards mapping
 
@@ -49,7 +68,6 @@ The starter catalogue illustrates how implementation evidence can be mapped to:
 ## Planned modules
 
 - Windows endpoint agent (evolution of `home-lab-v4`)
-- Asset and criticality inventory (from `home-lab-v5`)
 - AD lifecycle and access-review automation (from `home-lab-v2`)
 - SIEM alert correlation (from LogWatcher and SOC-Homelab)
 - Ticket, exception and SLA workflow (from Helpdesk-Simulator)
