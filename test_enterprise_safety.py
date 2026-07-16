@@ -24,6 +24,12 @@ class EnterpriseSafetyTests(unittest.TestCase):
             for thread in threads: thread.join()
             self.assertEqual(sorted(results), [False, True])
 
+    def test_stale_pipeline_run_can_be_reclaimed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStateStore(str(Path(directory) / "state.db"))
+            self.assertTrue(store.claim_pipeline_run("stale", now=1000, lease_seconds=10))
+            self.assertFalse(store.claim_pipeline_run("stale", now=1005, lease_seconds=10))
+            self.assertTrue(store.claim_pipeline_run("stale", now=1011, lease_seconds=10))
     def test_failed_output_recovers_without_duplicate_ledger_record(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
