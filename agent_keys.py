@@ -44,6 +44,7 @@ class AgentKeyRegistry:
                 "INSERT INTO agent_keys(key_id, agent_id, status, created_at) VALUES (?, ?, 'active', ?)",
                 (key_id, agent_id, utc_now()),
             )
+            connection.commit()
         return key_id, secret
 
     def revoke(self, key_id: str) -> None:
@@ -52,6 +53,7 @@ class AgentKeyRegistry:
                 "UPDATE agent_keys SET status = 'revoked', revoked_at = ? WHERE key_id = ?",
                 (utc_now(), key_id),
             )
+            connection.commit()
 
     def is_active(self, key_id: str) -> bool:
         with closing(sqlite3.connect(self.path)) as connection:
