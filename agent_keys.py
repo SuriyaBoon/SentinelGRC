@@ -10,9 +10,13 @@ import argparse
 import json
 import secrets
 import sqlite3
+import re
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+KEY_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 
 def utc_now() -> str:
@@ -38,6 +42,8 @@ class AgentKeyRegistry:
 
     def register(self, agent_id: str, key_id: str | None = None) -> tuple[str, str]:
         key_id = key_id or f"{agent_id}-{secrets.token_hex(6)}"
+        if not agent_id.strip() or not KEY_ID_PATTERN.fullmatch(key_id):
+            raise ValueError("agent_id and key_id must use non-empty safe identifiers.")
         secret = secrets.token_urlsafe(32)
         with closing(sqlite3.connect(self.path)) as connection:
             connection.execute(
