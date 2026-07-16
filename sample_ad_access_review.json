@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0",
+  "reviewed_at": "2026-07-16T12:00:00Z",
+  "stale_days": 90,
+  "privileged_groups": ["Domain Admins", "Enterprise Admins", "Administrators"],
+  "mutation_performed": false,
+  "users": [
+    {
+      "sam_account_name": "jsmith",
+      "enabled": true,
+      "department": "IT",
+      "last_logon": "2026-07-15T09:00:00Z",
+      "password_last_set": "2026-06-01T09:00:00Z",
+      "privileged": false,
+      "stale": false
+    },
+    {
+      "sam_account_name": "legacy-admin",
+      "enabled": true,
+      "department": "IT",
+      "last_logon": "2025-12-01T09:00:00Z",
+      "password_last_set": "2025-10-01T09:00:00Z",
+      "privileged": true,
+      "stale": true
+    },
+    {
+      "sam_account_name": "disabled-user",
+      "enabled": false,
+      "department": "Sales",
+      "last_logon": null,
+      "password_last_set": null,
+      "privileged": false,
+      "stale": true
+    }
+  ]
+}
