@@ -106,7 +106,7 @@ def main() -> int:
         results = process_inbox_once(
             args.inbox, controls, assets, args.ledger, args.state_db,
             args.remediation_dir, args.tickets_dir, args.reports_dir,
-            access_review, args.max_attempts, args.retry_delay,
+            access_review, args.max_attempts, args.retry_delay, args.audit_log,
         )
         print(json.dumps(results, indent=2))
         return 0 if all(item["status"] != "error" for item in results) else 1
