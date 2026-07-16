@@ -10,6 +10,7 @@ import argparse
 import json
 import secrets
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,7 +23,7 @@ class AgentKeyRegistry:
     def __init__(self, path: str = "sentinelgrc-state.db"):
         self.path = str(Path(path))
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.path) as connection:
+        with closing(sqlite3.connect(self.path)) as connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS agent_keys (
@@ -38,7 +39,7 @@ class AgentKeyRegistry:
     def register(self, agent_id: str, key_id: str | None = None) -> tuple[str, str]:
         key_id = key_id or f"{agent_id}-{secrets.token_hex(6)}"
         secret = secrets.token_urlsafe(32)
-        with sqlite3.connect(self.path) as connection:
+        with closing(sqlite3.connect(self.path)) as connection:
             connection.execute(
                 "INSERT INTO agent_keys(key_id, agent_id, status, created_at) VALUES (?, ?, 'active', ?)",
                 (key_id, agent_id, utc_now()),
@@ -46,14 +47,14 @@ class AgentKeyRegistry:
         return key_id, secret
 
     def revoke(self, key_id: str) -> None:
-        with sqlite3.connect(self.path) as connection:
+        with closing(sqlite3.connect(self.path)) as connection:
             connection.execute(
                 "UPDATE agent_keys SET status = 'revoked', revoked_at = ? WHERE key_id = ?",
                 (utc_now(), key_id),
             )
 
     def is_active(self, key_id: str) -> bool:
-        with sqlite3.connect(self.path) as connection:
+        with closing(sqlite3.connect(self.path)) as connection:
             row = connection.execute(
                 "SELECT status FROM agent_keys WHERE key_id = ?", (key_id,)
             ).fetchone()
