@@ -28,30 +28,45 @@ python governance.py assess --controls controls.json --posture sample_posture.js
 
 ## Phase 3: Secure endpoint evidence collection
 
-`agent/Export-SecurityPosture.ps1` is a read-only Windows endpoint collector based on `home-lab-v4`. It:
-
-- collects only security posture facts;
-- makes no network calls;
-- does not collect credentials, private keys, user files, or file contents;
-- does not auto-remediate;
-- writes only the fields defined by `schemas/posture.schema.json`;
-- fails closed when a required check cannot be collected.
-
-Run locally on an elevated Windows PowerShell session:
+`agent/Export-SecurityPosture.ps1` is a read-only Windows endpoint collector based on `home-lab-v4`. It collects only security posture facts, makes no network calls, does not collect credentials or user files, does not auto-remediate, and fails closed when a required check cannot be collected.
 
 ```powershell
 .\agent\Export-SecurityPosture.ps1 -OutputPath .\posture.json
 ```
 
-The security boundary and future requirements for authenticated ingestion are documented in [docs/security-model.md](docs/security-model.md).
+## Phase 4: Authenticated posture ingestion
+
+`ingestion_api.py` accepts posture JSON only when the request contains:
+
+- HMAC-SHA256 over the exact request body;
+- a timestamp within a five-minute replay window;
+- a unique nonce;
+- a valid posture schema and payload size under 64 KiB.
+
+The API binds to loopback by default. It refuses non-loopback binding unless explicitly overridden, and it must be placed behind TLS before network exposure.
+
+Start locally:
+
+```powershell
+$env:SENTINELGRC_INGESTION_SECRET = "use-a-secret-manager-in-real-deployments"
+python ingestion_api.py serve
+```
+
+Submit signed evidence:
+
+```powershell
+python posture_client.py .\posture.json
+```
+
+Never commit the secret. See [docs/security-model.md](docs/security-model.md) for the production trust-boundary requirements.
 
 ## Run tests
 
 ```bash
-python -m unittest -v test_sentinelgrc.py test_governance.py
+python -m unittest -v test_sentinelgrc.py test_governance.py test_ingestion_api.py
 ```
 
-GitHub Actions also validates the Python tests and parses the PowerShell agent on every push and pull request.
+GitHub Actions validates the Python tests and parses the PowerShell agent on every push and pull request.
 
 ## Standards mapping
 
@@ -63,7 +78,6 @@ The catalogue illustrates how implementation evidence can be mapped to:
 
 ## Planned modules
 
-- authenticated posture ingestion API
 - AD lifecycle and access-review automation (from `home-lab-v2`)
 - SIEM alert correlation (from LogWatcher and SOC-Homelab)
 - ticket, exception and SLA workflow (from Helpdesk-Simulator)
