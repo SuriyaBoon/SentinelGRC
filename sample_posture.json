@@ -1,4 +1,5 @@
 {
+  "schema_version": "1.0",
   "asset_id": "WS-001",
   "hostname": "finance-laptop-01",
   "owner": "Finance",
