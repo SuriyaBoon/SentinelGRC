@@ -66,6 +66,8 @@ def approve_exception(
 
     for finding in queue["findings"]:
         if finding["finding_id"] == finding_id:
+            if finding.get("status") != "open":
+                raise ValueError("Only open findings can receive an exception.")
             finding["status"] = "accepted-risk"
             finding["exception"] = {
                 "approver": approver,
@@ -75,6 +77,17 @@ def approve_exception(
             return queue
     raise ValueError(f"Finding {finding_id} was not found.")
 
+
+def expire_exceptions(queue: dict[str, Any], today: date | None = None) -> dict[str, Any]:
+    current = today or date.today()
+    for finding in queue.get("findings", []):
+        exception = finding.get("exception") or {}
+        expires_on = exception.get("expires_on")
+        if finding.get("status") == "accepted-risk" and expires_on:
+            if date.fromisoformat(expires_on) <= current:
+                finding["status"] = "open"
+                finding["exception_status"] = "expired"
+    return queue
 
 def assess(args: argparse.Namespace) -> int:
     queue = build_remediation_queue(
