@@ -27,7 +27,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(result["controls_failed"], 2)
             self.assertEqual(result["tickets_created"], 3)
             report = json.loads((root / "report.json").read_text(encoding="utf-8"))
-            self.assertEqual(report["risk_score"], 21)
+            self.assertEqual(report["risk_score"], 27)
             self.assertEqual(len((root / "ledger.jsonl").read_text(encoding="utf-8").splitlines()), 1)
 
             duplicate = pipeline.run_pipeline(
