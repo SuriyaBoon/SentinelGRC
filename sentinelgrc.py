@@ -5,9 +5,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from file_lock import locked_file
 
 SEVERITY_WEIGHT = {"low": 1, "medium": 3, "high": 6, "critical": 10}
 CRITICALITY_MULTIPLIER = {"low": 1, "medium": 2, "high": 3, "critical": 4}
@@ -57,6 +60,7 @@ def build_evidence(
     posture: dict[str, Any],
     results: list[dict[str, Any]],
     previous_hash: str,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     record = {
         "schema_version": "1.0",
@@ -68,6 +72,8 @@ def build_evidence(
         "results": results,
         "previous_hash": previous_hash,
     }
+    if extra:
+        record.update(extra)
     record["record_hash"] = hashlib.sha256(
         canonical_json(record).encode("utf-8")
     ).hexdigest()
@@ -115,6 +121,28 @@ def append_evidence(ledger_path: str, evidence: dict[str, Any]) -> None:
     with Path(ledger_path).open("a", encoding="utf-8") as file:
         file.write(canonical_json(evidence) + "\n")
 
+def append_evidence_atomic(
+    ledger_path: str,
+    posture: dict[str, Any],
+    results: list[dict[str, Any]],
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    path = Path(ledger_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with locked_file(str(path) + ".lock"):
+        valid, message = verify_ledger(ledger_path)
+        if not valid:
+            raise ValueError(f"Refusing to append to invalid ledger: {message}")
+        if not path.exists() or not path.read_text(encoding="utf-8").strip():
+            previous_hash = GENESIS_HASH
+        else:
+            previous_hash = json.loads(path.read_text(encoding="utf-8").splitlines()[-1])["record_hash"]
+        evidence = build_evidence(posture, results, previous_hash, extra)
+        with path.open("a", encoding="utf-8") as file:
+            file.write(canonical_json(evidence) + "\n")
+            file.flush()
+            os.fsync(file.fileno())
+        return evidence
 
 def evaluate(args: argparse.Namespace) -> int:
     controls = load_json(args.controls)
