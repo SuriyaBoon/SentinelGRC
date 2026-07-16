@@ -11,6 +11,7 @@ from typing import Any
 
 import governance
 import workflow
+from audit_log import AuditLog
 from sentinelgrc import append_evidence, build_evidence, canonical_json, evaluate_control, load_json, read_last_hash
 from state_store import SQLiteStateStore
 
@@ -36,6 +37,7 @@ def run_pipeline(
     state_db: str,
     access_review: dict[str, Any] | None = None,
     created_at: datetime | None = None,
+    audit_path: str | None = None,
 ) -> dict[str, Any]:
     if not isinstance(posture, dict) or not posture.get("asset_id") or not posture.get("hostname"):
         raise ValueError("Posture must contain asset_id and hostname.")
@@ -92,6 +94,17 @@ def run_pipeline(
     }
     _write_json(report_path, report)
     store.remember_pipeline_run(input_hash, record["record_hash"], remediation_path, tickets_path, report_path)
+    if audit_path:
+        AuditLog(audit_path).append(
+            "pipeline.completed",
+            "sentinelgrc-worker",
+            report["run_id"],
+            {
+                "asset_id": asset["asset_id"],
+                "evidence_hash": record["record_hash"],
+                "tickets_created": report["tickets_created"],
+            },
+        )
     return {
         "status": "accepted",
         "run_id": report["run_id"],
@@ -117,6 +130,7 @@ def run_from_files(args: argparse.Namespace) -> int:
         args.report,
         args.state_db,
         access_review,
+        audit_path=args.audit_log,
     )
     print(json.dumps(result, indent=2))
     return 0
@@ -135,6 +149,7 @@ def main() -> int:
     run.add_argument("--tickets", default="tickets.json")
     run.add_argument("--report", default="executive-report.json")
     run.add_argument("--state-db", default="sentinelgrc-state.db")
+    run.add_argument("--audit-log", default="runtime/audit-log.jsonl")
     args = parser.parse_args()
     return run_from_files(args)
 
