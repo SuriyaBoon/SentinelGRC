@@ -85,6 +85,14 @@ python pipeline_worker.py serve --inbox evidence-inbox --controls controls.json 
 
 The worker is deliberately decoupled from the HTTP API. Jobs are persisted in SQLite with a lease, retry counter, and dead-letter state. A failed job is retried up to `--max-attempts` and then remains visible as `dead` for operator review. This keeps ingestion responsive, supports retries, and allows multiple worker instances when the state store is migrated to a shared transactional database. The current worker is a polling lab implementation; production deployment should use a durable queue, service supervisor, TLS/mTLS, and centralized logging.
 
+Expire accepted-risk exceptions as a scheduled governance job:
+
+```bash
+python governance.py expire --queue runtime/remediation/WS-001.json --output runtime/remediation/WS-001.json
+```
+
+Run this command from a scheduler after reviewing the output. Expired exceptions return to `open` and must generate a new remediation decision.
+
 ## Enterprise baseline
 
 - `audit_log.py` provides a separate append-only, hash-chained operational audit trail for pipeline completion events.
