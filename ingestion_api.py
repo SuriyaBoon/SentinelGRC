@@ -193,6 +193,7 @@ class IngestionServer(ThreadingHTTPServer):
         self.key_registry = key_registry
         self.key_secrets = key_secrets
         self.output_dir = output_dir
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         self.state_store = SQLiteStateStore(state_db)
         self.nonce_store = NonceStore(db_path=state_db)
 
