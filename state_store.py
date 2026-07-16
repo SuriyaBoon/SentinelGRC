@@ -39,6 +39,11 @@ class SQLiteStateStore:
                 );
                 """
             )
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(pipeline_runs)").fetchall()}
+            if "status" not in columns:
+                connection.execute("ALTER TABLE pipeline_runs ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'")
+            if "last_error" not in columns:
+                connection.execute("ALTER TABLE pipeline_runs ADD COLUMN last_error TEXT")
             connection.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -77,6 +82,42 @@ class SQLiteStateStore:
             )
             connection.commit()
 
+    def claim_pipeline_run(self, input_hash: str, now: float | None = None) -> bool:
+        current = time.time() if now is None else now
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT status FROM pipeline_runs WHERE input_hash = ?", (input_hash,)).fetchone()
+            if row is None:
+                connection.execute(
+                    "INSERT INTO pipeline_runs(input_hash, ledger_record_hash, remediation_path, tickets_path, report_path, processed_at, status) VALUES (?, '', '', '', '', ?, 'running')",
+                    (input_hash, current),
+                )
+                connection.commit()
+                return True
+            if row[0] == "failed":
+                connection.execute("UPDATE pipeline_runs SET status = 'running', last_error = NULL, processed_at = ? WHERE input_hash = ?", (current, input_hash))
+                connection.commit()
+                return True
+            connection.commit()
+            return False
+
+    def complete_pipeline_run(
+        self, input_hash: str, ledger_record_hash: str, remediation_path: str,
+        tickets_path: str, report_path: str, now: float | None = None,
+    ) -> None:
+        current = time.time() if now is None else now
+        with closing(self._connect()) as connection:
+            connection.execute(
+                "UPDATE pipeline_runs SET status = 'completed', ledger_record_hash = ?, remediation_path = ?, tickets_path = ?, report_path = ?, processed_at = ?, last_error = NULL WHERE input_hash = ?",
+                (ledger_record_hash, remediation_path, tickets_path, report_path, current, input_hash),
+            )
+            connection.commit()
+
+    def fail_pipeline_run(self, input_hash: str, error: str, now: float | None = None) -> None:
+        current = time.time() if now is None else now
+        with closing(self._connect()) as connection:
+            connection.execute("UPDATE pipeline_runs SET status = 'failed', last_error = ?, processed_at = ? WHERE input_hash = ?", (error[:2000], current, input_hash))
+            connection.commit()
     def get_pipeline_run(self, input_hash: str) -> dict[str, Any] | None:
         with closing(self._connect()) as connection:
             row = connection.execute(
