@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from file_lock import locked_file
 
 GENESIS_HASH = "0" * 64
 
@@ -20,32 +23,7 @@ class AuditLog:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
-    def _last_hash(self) -> str:
-        if not self.path.exists() or not self.path.read_text(encoding="utf-8").strip():
-            return GENESIS_HASH
-        valid, message = self.verify()
-        if not valid:
-            raise ValueError(f"Refusing to append to invalid audit log: {message}")
-        record = json.loads(self.path.read_text(encoding="utf-8").splitlines()[-1])
-        return record["event_hash"]
-
-    def append(self, event_type: str, actor: str, target: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
-        record = {
-            "schema_version": "1.0",
-            "event_id": hashlib.sha256(f"{datetime.now(timezone.utc).timestamp()}:{event_type}:{target}".encode()).hexdigest()[:24],
-            "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "event_type": event_type,
-            "actor": actor,
-            "target": target,
-            "details": details or {},
-            "previous_hash": self._last_hash(),
-        }
-        record["event_hash"] = hashlib.sha256(canonical_json(record).encode("utf-8")).hexdigest()
-        with self.path.open("a", encoding="utf-8") as file:
-            file.write(canonical_json(record) + "\n")
-        return record
-
-    def verify(self) -> tuple[bool, str]:
+    def _verify_unlocked(self) -> tuple[bool, str]:
         if not self.path.exists():
             return True, "Audit log is empty."
         previous = GENESIS_HASH
@@ -62,3 +40,34 @@ class AuditLog:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError):
             return False, "Audit log could not be parsed safely."
         return True, "Audit log integrity verified."
+
+    def _last_hash_unlocked(self) -> str:
+        if not self.path.exists() or not self.path.read_text(encoding="utf-8").strip():
+            return GENESIS_HASH
+        valid, message = self._verify_unlocked()
+        if not valid:
+            raise ValueError(f"Refusing to append to invalid audit log: {message}")
+        return json.loads(self.path.read_text(encoding="utf-8").splitlines()[-1])["event_hash"]
+
+    def append(self, event_type: str, actor: str, target: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
+        with locked_file(str(self.path) + ".lock"):
+            record = {
+                "schema_version": "1.0",
+                "event_id": hashlib.sha256(f"{datetime.now(timezone.utc).timestamp()}:{event_type}:{target}".encode()).hexdigest()[:24],
+                "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "event_type": event_type,
+                "actor": actor,
+                "target": target,
+                "details": details or {},
+                "previous_hash": self._last_hash_unlocked(),
+            }
+            record["event_hash"] = hashlib.sha256(canonical_json(record).encode("utf-8")).hexdigest()
+            with self.path.open("a", encoding="utf-8") as file:
+                file.write(canonical_json(record) + "\n")
+                file.flush()
+                os.fsync(file.fileno())
+            return record
+
+    def verify(self) -> tuple[bool, str]:
+        with locked_file(str(self.path) + ".lock"):
+            return self._verify_unlocked()
