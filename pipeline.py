@@ -38,6 +38,7 @@ def run_pipeline(
     access_review: dict[str, Any] | None = None,
     created_at: datetime | None = None,
     audit_path: str | None = None,
+    run_lease_seconds: int = 900,
 ) -> dict[str, Any]:
     if not isinstance(posture, dict) or not posture.get("asset_id") or not posture.get("hostname"):
         raise ValueError("Posture must contain asset_id and hostname.")
@@ -48,7 +49,7 @@ def run_pipeline(
     input_hash = _input_hash(inputs)
     run_id = "PL-" + input_hash[:12].upper()
     store = SQLiteStateStore(state_db)
-    if not store.claim_pipeline_run(input_hash):
+    if not store.claim_pipeline_run(input_hash, lease_seconds=run_lease_seconds):
         existing = store.get_pipeline_run(input_hash)
         return {
             "status": "duplicate",
