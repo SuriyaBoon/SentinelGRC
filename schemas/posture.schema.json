@@ -25,6 +25,8 @@
     "firewall_all_profiles_enabled": { "type": "boolean" },
     "defender_realtime_enabled": { "type": "boolean" },
     "days_since_last_update": { "type": ["integer", "null"], "minimum": 0 },
+    "owner": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "criticality": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
     "checks": {
       "type": "array",
       "items": {
