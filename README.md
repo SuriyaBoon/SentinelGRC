@@ -16,31 +16,40 @@ This is a portfolio lab aligned to governance concepts. It does not claim ISO ce
 
 The platform covers endpoint control evaluation, asset-aware risk, read-only Windows posture collection, HMAC-authenticated ingestion, AD access review, and SLA-based remediation tickets.
 
-## Phase 6: persistent state and key lifecycle
+## Phase 6: persistent state and per-agent key lifecycle
 
-state_store.py adds SQLite-backed state for:
+state_store.py adds SQLite-backed state for replay nonces and accepted payload hashes. The ingestion API returns the same evidence ID when the same payload is submitted again. Runtime databases and evidence are ignored by Git.
 
-- replay nonces that survive process restarts;
-- accepted payload hashes for idempotent evidence ingestion;
-- WAL mode and transactional writes.
+agent_keys.py stores only key metadata and lifecycle status. Secret material is returned once at registration and must be placed in a secret manager or protected environment configuration.
 
-The ingestion API now accepts --state-db and returns the same evidence ID when the same payload is submitted again. The state database is runtime data and must not be committed to Git.
-
-agent_keys.py manages key metadata and generates a secret once during registration. Secret material is deliberately not stored in SQLite; place it in a secret manager or protected environment configuration. Keys can be revoked by key ID.
+Register a key:
 
 ```bash
-python agent_keys.py --db sentinelgrc-state.db register --agent-id WS-001
-python agent_keys.py --db sentinelgrc-state.db revoke --key-id <key-id>
+python agent_keys.py --db sentinelgrc-state.db register --agent-id WS-001 --key-id ws-001-v1
 ```
 
-Run the ingestion service with persistent state:
+Start ingestion with a JSON map of active key IDs to secrets:
 
 ```powershell
-$env:SENTINELGRC_INGESTION_SECRET = "load-from-a-secret-manager"
+$env:SENTINELGRC_AGENT_KEYS_JSON = '{"ws-001-v1":"load-this-from-a-secret-manager"}'
 python ingestion_api.py serve --state-db .\runtime\sentinelgrc-state.db
 ```
 
-For a multi-instance deployment, replace SQLite nonce state with a shared transactional store such as PostgreSQL or Redis and put the service behind TLS/mTLS.
+Send from the matching agent:
+
+```powershell
+$env:SENTINELGRC_AGENT_KEY_ID = "ws-001-v1"
+$env:SENTINELGRC_AGENT_SECRET = "load-this-from-a-secret-manager"
+python posture_client.py .\posture.json
+```
+
+Revoke a key immediately:
+
+```bash
+python agent_keys.py --db sentinelgrc-state.db revoke --key-id ws-001-v1
+```
+
+The API rejects unknown or revoked key IDs. For multi-instance deployment, replace SQLite with a shared transactional store and put the service behind TLS/mTLS.
 
 ## Security boundaries
 
@@ -51,12 +60,15 @@ The service remains deliberately conservative:
 - no credentials or user files in posture evidence;
 - loopback bind by default;
 - strict payload size and schema validation;
+- persistent replay protection;
+- idempotent evidence ingestion;
+- per-agent key ID and revocation;
 - CI tests for authentication, replay, ledger integrity, idempotency, and SLA generation.
 
 ## Run tests
 
 ```bash
-python -m unittest -v test_sentinelgrc.py test_governance.py test_ingestion_api.py test_workflow.py test_state_store.py
+python -m unittest -v test_sentinelgrc.py test_governance.py test_ingestion_api.py test_workflow.py test_state_store.py test_agent_keys.py
 ```
 
 GitHub Actions validates the Python tests and parses both PowerShell agents on every push and pull request.
@@ -71,7 +83,6 @@ The catalogue illustrates how implementation evidence can be mapped to:
 
 ## Planned modules
 
-- runtime agent key ID integration with the HMAC API
 - SIEM alert correlation from LogWatcher and SOC-Homelab
 - backup/DR assurance from Backup-dr-lab
 - change approval and evidence closure
