@@ -20,19 +20,25 @@ jobs:
           python-version: "3.12"
 
       - name: Run unit tests
-        run: python -m unittest -v test_sentinelgrc.py test_governance.py test_ingestion_api.py
+        run: python -m unittest -v test_sentinelgrc.py test_governance.py test_ingestion_api.py test_workflow.py
 
-      - name: Parse PowerShell agent
+      - name: Parse PowerShell agents
         shell: pwsh
         run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
+          $paths = @(
             "$PWD/agent/Export-SecurityPosture.ps1",
-            [ref]$tokens,
-            [ref]$errors
-          ) | Out-Null
-          if ($errors.Count -gt 0) {
-            $errors | Format-List
-            exit 1
+            "$PWD/agent/Export-ADAccessReview.ps1"
+          )
+          foreach ($path in $paths) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $path,
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | Format-List
+              exit 1
+            }
           }
