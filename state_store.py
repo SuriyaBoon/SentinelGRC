@@ -88,7 +88,7 @@ class SQLiteStateStore:
         current = time.time() if now is None else now
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute("SELECT status FROM pipeline_runs WHERE input_hash = ?", (input_hash,)).fetchone()
+            row = connection.execute("SELECT status, run_lease_until FROM pipeline_runs WHERE input_hash = ?", (input_hash,)).fetchone()
             if row is None:
                 connection.execute(
                     "INSERT INTO pipeline_runs(input_hash, ledger_record_hash, remediation_path, tickets_path, report_path, processed_at, status, run_lease_until) VALUES (?, '', '', '', '', ?, 'running', ?)",
@@ -110,7 +110,7 @@ class SQLiteStateStore:
         current = time.time() if now is None else now
         with closing(self._connect()) as connection:
             connection.execute(
-                "UPDATE pipeline_runs SET status = 'completed', ledger_record_hash = ?, remediation_path = ?, tickets_path = ?, report_path = ?, processed_at = ?, last_error = NULL, run_lease_until = NULL WHERE input_hash = ?",
+                "UPDATE pipeline_runs SET status = 'completed', ledger_record_hash = ?, remediation_path = ?, tickets_path = ?, report_path = ?, processed_at = ?, last_error = NULL, run_lease_until = 0 WHERE input_hash = ?",
                 (ledger_record_hash, remediation_path, tickets_path, report_path, current, input_hash),
             )
             connection.commit()
