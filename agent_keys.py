@@ -58,6 +58,12 @@ class AgentKeyRegistry:
             ).fetchone()
         return row is not None and row[0] == "active"
 
+    def resolve_secret(self, key_id: str, secret_map: dict[str, str]) -> bytes | None:
+        if not self.is_active(key_id):
+            return None
+        secret = secret_map.get(key_id)
+        return None if not isinstance(secret, str) or not secret else secret.encode("utf-8")
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Manage SentinelGRC agent key metadata.")
