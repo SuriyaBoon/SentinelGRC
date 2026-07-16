@@ -85,6 +85,13 @@ python pipeline_worker.py serve --inbox evidence-inbox --controls controls.json 
 
 The worker is deliberately decoupled from the HTTP API. Jobs are persisted in SQLite with a lease, retry counter, and dead-letter state. A failed job is retried up to `--max-attempts` and then remains visible as `dead` for operator review. This keeps ingestion responsive, supports retries, and allows multiple worker instances when the state store is migrated to a shared transactional database. The current worker is a polling lab implementation; production deployment should use a durable queue, service supervisor, TLS/mTLS, and centralized logging.
 
+## Enterprise baseline
+
+- `audit_log.py` provides a separate append-only, hash-chained operational audit trail for pipeline completion events.
+- `job_queue.py` provides durable queue state, leases, retries, and dead-letter visibility.
+- `pipeline.py` remains the deterministic governance engine; evidence integrity and operational audit are separate controls.
+- `docs/enterprise-deployment.md` defines the production boundary, required TLS/mTLS, identity, storage, retention, logging, and recovery controls.
+
 ## Security boundaries
 
 The service remains deliberately conservative:
