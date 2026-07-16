@@ -44,6 +44,8 @@ class SQLiteStateStore:
                 connection.execute("ALTER TABLE pipeline_runs ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'")
             if "last_error" not in columns:
                 connection.execute("ALTER TABLE pipeline_runs ADD COLUMN last_error TEXT")
+            if "run_lease_until" not in columns:
+                connection.execute("ALTER TABLE pipeline_runs ADD COLUMN run_lease_until REAL NOT NULL DEFAULT 0")
             connection.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -82,20 +84,20 @@ class SQLiteStateStore:
             )
             connection.commit()
 
-    def claim_pipeline_run(self, input_hash: str, now: float | None = None) -> bool:
+    def claim_pipeline_run(self, input_hash: str, now: float | None = None, lease_seconds: int = 900) -> bool:
         current = time.time() if now is None else now
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute("SELECT status FROM pipeline_runs WHERE input_hash = ?", (input_hash,)).fetchone()
             if row is None:
                 connection.execute(
-                    "INSERT INTO pipeline_runs(input_hash, ledger_record_hash, remediation_path, tickets_path, report_path, processed_at, status) VALUES (?, '', '', '', '', ?, 'running')",
-                    (input_hash, current),
+                    "INSERT INTO pipeline_runs(input_hash, ledger_record_hash, remediation_path, tickets_path, report_path, processed_at, status, run_lease_until) VALUES (?, '', '', '', '', ?, 'running', ?)",
+                    (input_hash, current, current + lease_seconds),
                 )
                 connection.commit()
                 return True
-            if row[0] == "failed":
-                connection.execute("UPDATE pipeline_runs SET status = 'running', last_error = NULL, processed_at = ? WHERE input_hash = ?", (current, input_hash))
+            if row[0] == "failed" or (row[0] == "running" and (row["run_lease_until"] is None or row["run_lease_until"] <= current)):
+                connection.execute("UPDATE pipeline_runs SET status = 'running', last_error = NULL, processed_at = ?, run_lease_until = ? WHERE input_hash = ?", (current, current + lease_seconds, input_hash))
                 connection.commit()
                 return True
             connection.commit()
@@ -108,7 +110,7 @@ class SQLiteStateStore:
         current = time.time() if now is None else now
         with closing(self._connect()) as connection:
             connection.execute(
-                "UPDATE pipeline_runs SET status = 'completed', ledger_record_hash = ?, remediation_path = ?, tickets_path = ?, report_path = ?, processed_at = ?, last_error = NULL WHERE input_hash = ?",
+                "UPDATE pipeline_runs SET status = 'completed', ledger_record_hash = ?, remediation_path = ?, tickets_path = ?, report_path = ?, processed_at = ?, last_error = NULL, run_lease_until = NULL WHERE input_hash = ?",
                 (ledger_record_hash, remediation_path, tickets_path, report_path, current, input_hash),
             )
             connection.commit()
@@ -116,7 +118,7 @@ class SQLiteStateStore:
     def fail_pipeline_run(self, input_hash: str, error: str, now: float | None = None) -> None:
         current = time.time() if now is None else now
         with closing(self._connect()) as connection:
-            connection.execute("UPDATE pipeline_runs SET status = 'failed', last_error = ?, processed_at = ? WHERE input_hash = ?", (error[:2000], current, input_hash))
+            connection.execute("UPDATE pipeline_runs SET status = 'failed', last_error = ?, processed_at = ?, run_lease_until = NULL WHERE input_hash = ?", (error[:2000], current, input_hash))
             connection.commit()
     def get_pipeline_run(self, input_hash: str) -> dict[str, Any] | None:
         with closing(self._connect()) as connection:
