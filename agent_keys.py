@@ -21,6 +21,7 @@ def utc_now() -> str:
 class AgentKeyRegistry:
     def __init__(self, path: str = "sentinelgrc-state.db"):
         self.path = str(Path(path))
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.path) as connection:
             connection.execute(
                 """
