@@ -20,7 +20,7 @@ jobs:
           python-version: "3.12"
 
       - name: Run unit tests
-        run: python -m unittest -v test_sentinelgrc.py test_governance.py test_ingestion_api.py test_workflow.py test_state_store.py test_agent_keys.py test_pipeline.py
+        run: python -m unittest -v test_sentinelgrc.py test_governance.py test_ingestion_api.py test_workflow.py test_state_store.py test_agent_keys.py test_pipeline.py test_pipeline_worker.py
 
       - name: Parse PowerShell agents
         shell: pwsh
