@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.env
+*.db
+*.db-shm
+*.db-wal
+evidence-inbox/
+evidence-ledger.jsonl
+remediation-queue.json
+tickets.json
+posture.json
+ad-access-review.json
