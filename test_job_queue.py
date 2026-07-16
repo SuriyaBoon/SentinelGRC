@@ -13,6 +13,7 @@ class JobQueueTests(unittest.TestCase):
             self.assertFalse(queue.enqueue("bad.json", now=1001))
             job = queue.claim("worker-a", lease_seconds=30, now=1000)
             self.assertEqual(job["attempts"], 1)
+            self.assertTrue(queue.renew(job["job_id"], "worker-a", lease_seconds=300, now=1001))
             self.assertEqual(queue.fail(job["job_id"], "bad payload", max_attempts=2, retry_delay=10, now=1000), "pending")
             retry = queue.claim("worker-b", now=1011)
             self.assertEqual(retry["attempts"], 2)
