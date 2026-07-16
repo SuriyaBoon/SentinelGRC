@@ -29,7 +29,7 @@ class PipelineWorkerTests(unittest.TestCase):
                 str(root / "tickets"), str(root / "reports"), review
             )
             self.assertEqual(first[0]["status"], "accepted")
-            self.assertEqual(second[0]["status"], "duplicate")
+            self.assertEqual(second, [])
             self.assertTrue((root / "reports" / "evidence-001.json").exists())
             self.assertEqual(len((root / "ledger.jsonl").read_text(encoding="utf-8").splitlines()), 1)
 
