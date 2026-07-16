@@ -60,6 +60,14 @@ class GovernanceTests(unittest.TestCase):
                 date.today().isoformat(),
             )
 
+    def test_expired_exception_reopens_finding(self):
+        queue = governance.build_remediation_queue(self.controls, self.posture, self.assets)
+        finding_id = queue["findings"][0]["finding_id"]
+        governance.approve_exception(queue, finding_id, "manager", "temporary control", (date.today() + timedelta(days=1)).isoformat())
+        queue["findings"][0]["exception"]["expires_on"] = date.today().isoformat()
+        governance.expire_exceptions(queue)
+        self.assertEqual(queue["findings"][0]["status"], "open")
+        self.assertEqual(queue["findings"][0]["exception_status"], "expired")
 
 if __name__ == "__main__":
     unittest.main()
