@@ -66,6 +66,15 @@ class SQLiteJobQueue:
             result["attempts"] = int(row["attempts"]) + 1
             return result
 
+    def renew(self, job_id: int, worker_id: str, lease_seconds: int = 300, now: float | None = None) -> bool:
+        current = time.time() if now is None else now
+        with closing(sqlite3.connect(self.path)) as connection:
+            cursor = connection.execute(
+                "UPDATE pipeline_jobs SET locked_until = ? WHERE job_id = ? AND status = 'running' AND worker_id = ?",
+                (current + lease_seconds, job_id, worker_id),
+            )
+            connection.commit()
+        return cursor.rowcount == 1
     def complete(self, job_id: int) -> None:
         with closing(sqlite3.connect(self.path)) as connection:
             connection.execute(
