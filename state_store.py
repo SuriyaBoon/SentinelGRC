@@ -13,6 +13,7 @@ from typing import Any
 class SQLiteStateStore:
     def __init__(self, path: str = "sentinelgrc-state.db"):
         self.path = str(Path(path))
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         with self._connect() as connection:
             connection.executescript(
