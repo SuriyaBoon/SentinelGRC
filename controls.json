@@ -1,0 +1,42 @@
+[
+  {
+    "id": "END-001",
+    "name": "System volume encryption",
+    "required_field": "bitlocker_system_drive",
+    "expected": true,
+    "owner": "Endpoint Security",
+    "severity": "high",
+    "iso27002": "8.24",
+    "nist_csf": "PR.DS"
+  },
+  {
+    "id": "END-002",
+    "name": "Windows Firewall enabled",
+    "required_field": "firewall_all_profiles_enabled",
+    "expected": true,
+    "owner": "Endpoint Security",
+    "severity": "high",
+    "iso27002": "8.20",
+    "nist_csf": "PR.PS"
+  },
+  {
+    "id": "END-003",
+    "name": "Endpoint anti-malware real-time protection",
+    "required_field": "defender_realtime_enabled",
+    "expected": true,
+    "owner": "Security Operations",
+    "severity": "high",
+    "iso27002": "8.7",
+    "nist_csf": "PR.PS"
+  },
+  {
+    "id": "END-004",
+    "name": "Security updates within policy window",
+    "required_field": "days_since_last_update",
+    "max_value": 30,
+    "owner": "Endpoint Operations",
+    "severity": "medium",
+    "iso27002": "8.8",
+    "nist_csf": "PR.PS"
+  }
+]
