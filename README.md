@@ -16,50 +16,46 @@ This is a portfolio lab aligned to governance concepts. It does not claim ISO ce
 
 The first increment builds on the ideas in `home-lab-v4` (Windows Security Posture Auditor). It accepts structured endpoint posture data, maps it to a control catalogue, scores findings by asset criticality, and writes a hash-chained evidence ledger.
 
-```text
-Windows posture collector -> posture JSON -> SentinelGRC evaluator
-                                           |-> evidence ledger
-                                           |-> remediation queue
-                                           `-> governance summary
-```
-
 ## Phase 2: Asset-aware remediation governance
 
-Phase 2 adds a small asset registry with business owner, technical owner, service, criticality, data classification, and environment. Findings are enriched with this metadata so a failed control on a production finance asset can be prioritised differently from a low-criticality training device.
+Phase 2 adds an asset registry with business owner, technical owner, service, criticality, data classification, and environment. Findings are enriched with this metadata so a failed control on a production finance asset can be prioritised differently from a low-criticality training device.
 
-It also adds exception governance. A risk exception requires:
-
-- named approver
-- written business reason
-- future expiry date
-- explicit `accepted-risk` status
-
-Run the Phase 2 assessment:
+It also adds exception governance. A risk exception requires a named approver, written reason, future expiry date, and explicit `accepted-risk` status.
 
 ```bash
 python governance.py assess --controls controls.json --posture sample_posture.json --assets assets.json --output remediation-queue.json
 ```
 
-The command exits non-zero while open findings remain. That makes it suitable for a CI quality gate.
+## Phase 3: Secure endpoint evidence collection
 
-## Run the Phase 1 demo
+`agent/Export-SecurityPosture.ps1` is a read-only Windows endpoint collector based on `home-lab-v4`. It:
 
-```bash
-python sentinelgrc.py evaluate --controls controls.json --posture sample_posture.json --ledger evidence-ledger.jsonl
-python sentinelgrc.py verify-ledger --ledger evidence-ledger.jsonl
+- collects only security posture facts;
+- makes no network calls;
+- does not collect credentials, private keys, user files, or file contents;
+- does not auto-remediate;
+- writes only the fields defined by `schemas/posture.schema.json`;
+- fails closed when a required check cannot be collected.
+
+Run locally on an elevated Windows PowerShell session:
+
+```powershell
+.\agent\Export-SecurityPosture.ps1 -OutputPath .\posture.json
 ```
 
-The evaluator uses only the Python standard library.
+The security boundary and future requirements for authenticated ingestion are documented in [docs/security-model.md](docs/security-model.md).
+
+## Run tests
 
 ```bash
 python -m unittest -v test_sentinelgrc.py test_governance.py
 ```
 
-The sample intentionally contains failed controls, so the assessment prints a remediation queue and returns a non-zero exit status.
+GitHub Actions also validates the Python tests and parses the PowerShell agent on every push and pull request.
 
 ## Standards mapping
 
-The starter catalogue illustrates how implementation evidence can be mapped to:
+The catalogue illustrates how implementation evidence can be mapped to:
 
 - ISO/IEC 27001:2022 and ISO/IEC 27002:2022
 - NIST CSF 2.0: Govern, Identify, Protect, Detect, Respond, Recover
@@ -67,8 +63,8 @@ The starter catalogue illustrates how implementation evidence can be mapped to:
 
 ## Planned modules
 
-- Windows endpoint agent (evolution of `home-lab-v4`)
+- authenticated posture ingestion API
 - AD lifecycle and access-review automation (from `home-lab-v2`)
 - SIEM alert correlation (from LogWatcher and SOC-Homelab)
-- Ticket, exception and SLA workflow (from Helpdesk-Simulator)
-- Backup/DR assurance (from Backup-dr-lab)
+- ticket, exception and SLA workflow (from Helpdesk-Simulator)
+- backup/DR assurance (from Backup-dr-lab)
