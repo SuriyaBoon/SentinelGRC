@@ -27,6 +27,7 @@ def process_inbox_once(
     max_attempts: int = 3,
     retry_delay: int = 60,
     audit_path: str | None = None,
+    lease_seconds: int = 300,
 ) -> list[dict[str, Any]]:
     inbox_path = Path(inbox)
     inbox_path.mkdir(parents=True, exist_ok=True)
@@ -37,7 +38,7 @@ def process_inbox_once(
     results: list[dict[str, Any]] = []
     worker_id = "worker-" + secrets.token_hex(6)
     while True:
-        job = queue.claim(worker_id)
+        job = queue.claim(worker_id, lease_seconds=lease_seconds)
         if job is None:
             break
         posture_path = Path(job["payload_path"])
@@ -67,7 +68,7 @@ def serve(args: argparse.Namespace) -> int:
         results = process_inbox_once(
             args.inbox, controls, assets, args.ledger, args.state_db,
             args.remediation_dir, args.tickets_dir, args.reports_dir,
-            access_review, args.max_attempts, args.retry_delay, args.audit_log,
+            access_review, args.max_attempts, args.retry_delay, args.audit_log, args.lease_seconds,
         )
         for result in results:
             print(json.dumps(result, separators=(",", ":")))
@@ -87,6 +88,7 @@ def add_worker_arguments(worker: argparse.ArgumentParser, command: str) -> None:
     worker.add_argument("--max-attempts", type=int, default=3)
     worker.add_argument("--retry-delay", type=int, default=60)
     worker.add_argument("--audit-log", default="runtime/audit-log.jsonl")
+    worker.add_argument("--lease-seconds", type=int, default=300)
     if command == "serve":
         worker.add_argument("--interval", type=int, default=30)
 
