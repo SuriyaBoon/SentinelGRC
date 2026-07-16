@@ -152,7 +152,7 @@ class PostureHandler(BaseHTTPRequestHandler):
             if secret is None:
                 raise IngestionError("Unknown or revoked key.", HTTPStatus.UNAUTHORIZED)
             authenticate_request(
-                secret, "HMAC " + signature, timestamp, nonce, body, self.server.nonce_store
+                secret, f"HMAC {key_id}:{signature}", timestamp, nonce, body, self.server.nonce_store
             )
             payload = json.loads(body.decode("utf-8"))
             validate_posture(payload)
