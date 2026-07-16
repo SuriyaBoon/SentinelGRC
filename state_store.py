@@ -31,6 +31,7 @@ class SQLiteStateStore:
                 );
                 """
             )
+            connection.commit()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=5)
@@ -39,7 +40,7 @@ class SQLiteStateStore:
 
     def reserve_nonce(self, nonce: str, ttl_seconds: int, now: float | None = None) -> bool:
         current = time.time() if now is None else now
-        with self._lock, self._connect() as connection:
+        with self._lock, closing(self._connect()) as connection:
             connection.execute("DELETE FROM replay_nonces WHERE expires_at <= ?", (current,))
             try:
                 connection.execute(
