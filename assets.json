@@ -1,0 +1,22 @@
+[
+  {
+    "asset_id": "WS-001",
+    "hostname": "finance-laptop-01",
+    "business_owner": "Finance",
+    "technical_owner": "Endpoint Operations",
+    "business_service": "Financial reporting",
+    "criticality": "high",
+    "data_classification": "confidential",
+    "environment": "production"
+  },
+  {
+    "asset_id": "WS-002",
+    "hostname": "training-laptop-02",
+    "business_owner": "HR",
+    "technical_owner": "Endpoint Operations",
+    "business_service": "Training portal",
+    "criticality": "low",
+    "data_classification": "internal",
+    "environment": "non-production"
+  }
+]
