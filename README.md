@@ -51,6 +51,30 @@ python agent_keys.py --db sentinelgrc-state.db revoke --key-id ws-001-v1
 
 The API rejects unknown or revoked key IDs. For multi-instance deployment, replace SQLite with a shared transactional store and put the service behind TLS/mTLS.
 
+## Phase 7: end-to-end orchestration
+
+`pipeline.py` connects the controls, governance, evidence, and remediation modules into one repeatable run:
+
+```text
+posture + AD review
+        ↓
+control evaluation + asset-aware risk
+        ↓
+hash-chained evidence ledger
+        ↓
+remediation queue + SLA tickets
+        ↓
+executive report
+```
+
+Run the complete pipeline:
+
+```bash
+python pipeline.py run --posture sample_posture.json --controls controls.json --assets assets.json --access-review sample_ad_access_review.json --ledger runtime/evidence-ledger.jsonl --remediation runtime/remediation-queue.json --tickets runtime/tickets.json --report runtime/executive-report.json --state-db runtime/sentinelgrc-state.db
+```
+
+The pipeline stores a run fingerprint in SQLite. Reprocessing the same posture, controls, assets, and access review returns `duplicate` and does not append another ledger record.
+
 ## Security boundaries
 
 The service remains deliberately conservative:
