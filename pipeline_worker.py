@@ -26,6 +26,7 @@ def process_inbox_once(
     access_review: dict[str, Any] | None = None,
     max_attempts: int = 3,
     retry_delay: int = 60,
+    audit_path: str | None = None,
 ) -> list[dict[str, Any]]:
     inbox_path = Path(inbox)
     inbox_path.mkdir(parents=True, exist_ok=True)
@@ -48,7 +49,7 @@ def process_inbox_once(
                 str(Path(remediation_dir) / f"{stem}.json"),
                 str(Path(tickets_dir) / f"{stem}.json"),
                 str(Path(reports_dir) / f"{stem}.json"),
-                state_db, access_review,
+                state_db, access_review, audit_path=audit_path,
             )
             queue.complete(int(job["job_id"]))
             results.append({"file": str(posture_path), **result})
@@ -66,7 +67,7 @@ def serve(args: argparse.Namespace) -> int:
         results = process_inbox_once(
             args.inbox, controls, assets, args.ledger, args.state_db,
             args.remediation_dir, args.tickets_dir, args.reports_dir,
-            access_review, args.max_attempts, args.retry_delay,
+            access_review, args.max_attempts, args.retry_delay, args.audit_log,
         )
         for result in results:
             print(json.dumps(result, separators=(",", ":")))
@@ -85,6 +86,7 @@ def add_worker_arguments(worker: argparse.ArgumentParser, command: str) -> None:
     worker.add_argument("--reports-dir", default="runtime/reports")
     worker.add_argument("--max-attempts", type=int, default=3)
     worker.add_argument("--retry-delay", type=int, default=60)
+    worker.add_argument("--audit-log", default="runtime/audit-log.jsonl")
     if command == "serve":
         worker.add_argument("--interval", type=int, default=30)
 
