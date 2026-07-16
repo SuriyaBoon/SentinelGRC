@@ -10,3 +10,5 @@ remediation-queue.json
 tickets.json
 posture.json
 ad-access-review.json
+runtime/
+*.lock
