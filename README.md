@@ -12,63 +12,51 @@ SentinelGRC turns endpoint security checks into an auditable governance loop:
 
 This is a portfolio lab aligned to governance concepts. It does not claim ISO certification or replace an organisation's ISMS.
 
-## Phase 1: Governance evidence engine
+## Phase 1–5
 
-The first increment builds on the ideas in `home-lab-v4` (Windows Security Posture Auditor). It accepts structured endpoint posture data, maps it to a control catalogue, scores findings by asset criticality, and writes a hash-chained evidence ledger.
+The platform covers endpoint control evaluation, asset-aware risk, read-only Windows posture collection, HMAC-authenticated ingestion, AD access review, and SLA-based remediation tickets.
 
-## Phase 2: Asset-aware remediation governance
+## Phase 6: persistent state and key lifecycle
 
-Phase 2 adds an asset registry with business owner, technical owner, service, criticality, data classification, and environment. Findings are enriched with this metadata so a failed control on a production finance asset can be prioritised differently from a low-criticality training device.
+state_store.py adds SQLite-backed state for:
 
-It also adds exception governance. A risk exception requires a named approver, written reason, future expiry date, and explicit `accepted-risk` status.
+- replay nonces that survive process restarts;
+- accepted payload hashes for idempotent evidence ingestion;
+- WAL mode and transactional writes.
 
-```bash
-python governance.py assess --controls controls.json --posture sample_posture.json --assets assets.json --output remediation-queue.json
-```
+The ingestion API now accepts --state-db and returns the same evidence ID when the same payload is submitted again. The state database is runtime data and must not be committed to Git.
 
-## Phase 3: Secure endpoint evidence collection
-
-`agent/Export-SecurityPosture.ps1` is a read-only Windows endpoint collector based on `home-lab-v4`. It collects only security posture facts, makes no network calls, does not collect credentials or user files, does not auto-remediate, and fails closed when a required check cannot be collected.
-
-```powershell
-.\agent\Export-SecurityPosture.ps1 -OutputPath .\posture.json
-```
-
-## Phase 4: Authenticated posture ingestion
-
-`ingestion_api.py` accepts posture JSON only when the request contains HMAC-SHA256 over the exact request body, a timestamp within a five-minute replay window, a unique nonce, a valid schema, and a payload under 64 KiB.
-
-The API binds to loopback by default and refuses non-loopback binding unless explicitly overridden. Put it behind TLS before network exposure.
-
-```powershell
-$env:SENTINELGRC_INGESTION_SECRET = "use-a-secret-manager-in-real-deployments"
-python ingestion_api.py serve
-python posture_client.py .\posture.json
-```
-
-## Phase 5: Identity governance and SLA workflow
-
-`agent/Export-ADAccessReview.ps1` reads AD users and selected privileged groups without modifying them. It reports stale accounts, enabled state, and privileged membership. It never disables an account or changes group membership.
-
-`workflow.py` converts open control findings and stale identity findings into reviewable tickets:
+agent_keys.py manages key metadata and generates a secret once during registration. Secret material is deliberately not stored in SQLite; place it in a secret manager or protected environment configuration. Keys can be revoked by key ID.
 
 ```bash
-python workflow.py --remediation remediation-queue.json --access-review ad-access-review.json --output tickets.json
+python agent_keys.py --db sentinelgrc-state.db register --agent-id WS-001
+python agent_keys.py --db sentinelgrc-state.db revoke --key-id <key-id>
 ```
 
-Priority targets are explicit:
+Run the ingestion service with persistent state:
 
-- critical: 15-minute response / 4-hour resolution
-- high: 30-minute response / 8-hour resolution
-- medium: 4-hour response / 24-hour resolution
-- low: 8-hour response / 72-hour resolution
+```powershell
+$env:SENTINELGRC_INGESTION_SECRET = "load-from-a-secret-manager"
+python ingestion_api.py serve --state-db .\runtime\sentinelgrc-state.db
+```
 
-All tickets include an owner, asset/service context, evidence reference, due times, and `auto_remediation: false`.
+For a multi-instance deployment, replace SQLite nonce state with a shared transactional store such as PostgreSQL or Redis and put the service behind TLS/mTLS.
+
+## Security boundaries
+
+The service remains deliberately conservative:
+
+- no automatic AD changes;
+- no automatic endpoint remediation;
+- no credentials or user files in posture evidence;
+- loopback bind by default;
+- strict payload size and schema validation;
+- CI tests for authentication, replay, ledger integrity, idempotency, and SLA generation.
 
 ## Run tests
 
 ```bash
-python -m unittest -v test_sentinelgrc.py test_governance.py test_ingestion_api.py test_workflow.py
+python -m unittest -v test_sentinelgrc.py test_governance.py test_ingestion_api.py test_workflow.py test_state_store.py
 ```
 
 GitHub Actions validates the Python tests and parses both PowerShell agents on every push and pull request.
@@ -83,6 +71,7 @@ The catalogue illustrates how implementation evidence can be mapped to:
 
 ## Planned modules
 
-- SIEM alert correlation (from LogWatcher and SOC-Homelab)
-- backup/DR assurance (from Backup-dr-lab)
+- runtime agent key ID integration with the HMAC API
+- SIEM alert correlation from LogWatcher and SOC-Homelab
+- backup/DR assurance from Backup-dr-lab
 - change approval and evidence closure
