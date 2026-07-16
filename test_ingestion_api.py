@@ -6,6 +6,7 @@ from ingestion_api import (
     NonceStore,
     authenticate_request,
     make_signature,
+    parse_authorization,
     validate_posture,
 )
 
@@ -28,28 +29,35 @@ class IngestionSecurityTests(unittest.TestCase):
         ).encode()
         self.timestamp = "1000"
         self.nonce = "nonce-1234567890"
+        self.key_id = "ws-001-v1"
 
-    def test_valid_signature_is_accepted_once(self):
-        auth = "HMAC " + make_signature(
+    def auth(self):
+        return "HMAC " + self.key_id + ":" + make_signature(
             self.secret, self.timestamp, self.nonce, self.body
         )
+
+    def test_valid_keyed_signature_is_accepted_once(self):
         store = NonceStore()
         authenticate_request(
-            self.secret, auth, self.timestamp, self.nonce, self.body, store, now=1000
+            self.secret, self.auth(), self.timestamp, self.nonce, self.body, store, now=1000
         )
         with self.assertRaises(IngestionError):
             authenticate_request(
-                self.secret, auth, self.timestamp, self.nonce, self.body, store, now=1000
+                self.secret, self.auth(), self.timestamp, self.nonce, self.body, store, now=1000
             )
 
+    def test_authorization_parser_requires_key_id(self):
+        self.assertEqual(parse_authorization(self.auth())[0], self.key_id)
+        with self.assertRaises(ValueError):
+            parse_authorization("HMAC " + ("a" * 64))
+
     def test_modified_body_fails_signature(self):
-        auth = "HMAC " + make_signature(
-            self.secret, self.timestamp, self.nonce, self.body
-        )
         with self.assertRaises(IngestionError):
             authenticate_request(
                 self.secret,
-                auth,
+                "HMAC " + self.key_id + ":" + make_signature(
+                    self.secret, self.timestamp, self.nonce, self.body
+                ),
                 self.timestamp,
                 "nonce-0987654321",
                 self.body + b" ",
@@ -58,18 +66,9 @@ class IngestionSecurityTests(unittest.TestCase):
             )
 
     def test_old_timestamp_fails(self):
-        auth = "HMAC " + make_signature(
-            self.secret, self.timestamp, self.nonce, self.body
-        )
         with self.assertRaises(IngestionError):
             authenticate_request(
-                self.secret,
-                auth,
-                self.timestamp,
-                self.nonce,
-                self.body,
-                NonceStore(),
-                now=2000,
+                self.secret, self.auth(), self.timestamp, self.nonce, self.body, NonceStore(), now=2000
             )
 
     def test_required_fields_are_validated(self):
