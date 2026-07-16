@@ -27,7 +27,7 @@ REQUIRED_FIELDS = {
     "bitlocker_system_drive", "firewall_all_profiles_enabled",
     "defender_realtime_enabled", "days_since_last_update",
 }
-ALLOWED_FIELDS = REQUIRED_FIELDS | {"os", "os_version", "domain", "checks"}
+ALLOWED_FIELDS = REQUIRED_FIELDS | {"os", "os_version", "domain", "checks", "owner", "criticality"}
 
 
 def make_signature(secret: bytes, timestamp: str, nonce: str, body: bytes) -> str:
