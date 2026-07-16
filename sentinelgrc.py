@@ -162,8 +162,7 @@ def evaluate(args: argparse.Namespace) -> int:
     controls = load_json(args.controls)
     posture = load_json(args.posture)
     results = [evaluate_control(control, posture) for control in controls]
-    evidence = build_evidence(posture, results, read_last_hash(args.ledger))
-    append_evidence(args.ledger, evidence)
+    evidence = append_evidence_atomic(args.ledger, posture, results)
     failed = [result for result in results if not result["passed"]]
     summary = {
         "asset": posture["hostname"],
