@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SentinelGRC Endpoint Posture",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "collected_at",
+    "asset_id",
+    "hostname",
+    "bitlocker_system_drive",
+    "firewall_all_profiles_enabled",
+    "defender_realtime_enabled",
+    "days_since_last_update"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "collected_at": { "type": "string", "format": "date-time" },
+    "asset_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "hostname": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "os": { "type": ["string", "null"] },
+    "os_version": { "type": ["string", "null"] },
+    "domain": { "type": ["boolean", "null"] },
+    "bitlocker_system_drive": { "type": "boolean" },
+    "firewall_all_profiles_enabled": { "type": "boolean" },
+    "defender_realtime_enabled": { "type": "boolean" },
+    "days_since_last_update": { "type": ["integer", "null"], "minimum": 0 },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "passed", "value", "error"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "passed": { "type": "boolean" },
+          "value": {},
+          "error": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}
