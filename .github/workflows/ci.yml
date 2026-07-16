@@ -42,3 +42,12 @@ jobs:
               exit 1
             }
           }
+
+      - name: Check repository hygiene
+        shell: pwsh
+        run: |
+          $forbidden = git ls-files | Where-Object { $_ -match '(^|/)(runtime|evidence-inbox)/|\.env($|\.)|\.db($|[-.])|\.db-(shm|wal)$|\.lock$' }
+          if ($forbidden) {
+            $forbidden | ForEach-Object { Write-Error "Forbidden runtime artifact tracked: $_" }
+            exit 1
+          }
