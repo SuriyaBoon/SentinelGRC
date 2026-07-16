@@ -12,7 +12,7 @@ from typing import Any
 import governance
 import workflow
 from audit_log import AuditLog
-from sentinelgrc import append_evidence, build_evidence, canonical_json, evaluate_control, load_json, read_last_hash
+from sentinelgrc import append_evidence_atomic, build_evidence, canonical_json, evaluate_control, find_ledger_record, load_json
 from state_store import SQLiteStateStore
 
 
@@ -46,91 +46,87 @@ def run_pipeline(
     review = access_review or {"schema_version": "1.0", "users": []}
     inputs = {"posture": posture, "controls": controls, "assets": assets, "access_review": review}
     input_hash = _input_hash(inputs)
+    run_id = "PL-" + input_hash[:12].upper()
     store = SQLiteStateStore(state_db)
-    existing = store.get_pipeline_run(input_hash)
-    if existing is not None:
+    if not store.claim_pipeline_run(input_hash):
+        existing = store.get_pipeline_run(input_hash)
         return {
             "status": "duplicate",
-            "run_id": "PL-" + input_hash[:12].upper(),
+            "run_id": run_id,
             "input_hash": input_hash,
-            "ledger_record_hash": existing["ledger_record_hash"],
-            "remediation_path": existing["remediation_path"],
-            "tickets_path": existing["tickets_path"],
-            "report_path": existing["report_path"],
+            "ledger_record_hash": existing["ledger_record_hash"] if existing else None,
+            "remediation_path": existing["remediation_path"] if existing else remediation_path,
+            "tickets_path": existing["tickets_path"] if existing else tickets_path,
+            "report_path": existing["report_path"] if existing else report_path,
         }
 
-    asset = governance.index_assets(assets).get(posture.get("asset_id"))
-    if asset is None:
-        raise ValueError(f"Asset {posture.get('asset_id')} is not registered.")
-    evaluated_posture = {**posture, "criticality": asset["criticality"]}
-    results = [evaluate_control(control, evaluated_posture) for control in controls]
-    remediation = governance.build_remediation_queue(controls, posture, assets)
+    try:
+        asset = governance.index_assets(assets).get(posture.get("asset_id"))
+        if asset is None:
+            raise ValueError(f"Asset {posture.get('asset_id')} is not registered.")
+        evaluated_posture = {**posture, "criticality": asset["criticality"]}
+        results = [evaluate_control(control, evaluated_posture) for control in controls]
+        remediation = governance.build_remediation_queue(controls, posture, assets)
 
-    record = build_evidence(posture, results, read_last_hash(ledger_path))
-    append_evidence(ledger_path, record)
+        record = find_ledger_record(ledger_path, input_hash)
+        if record is None:
+            record = append_evidence_atomic(
+                ledger_path, posture, results,
+                {"input_hash": input_hash, "pipeline_run_id": run_id},
+            )
 
-    created = created_at or datetime.now(timezone.utc)
-    tickets = workflow.generate_tickets(remediation, review, created)
-    _write_json(remediation_path, remediation)
-    _write_json(tickets_path, tickets)
-    failed = [result for result in results if not result["passed"]]
-    report = {
-        "schema_version": "1.0",
-        "run_id": "PL-" + input_hash[:12].upper(),
-        "generated_at": created.isoformat().replace("+00:00", "Z"),
-        "asset": {
-            "asset_id": asset["asset_id"],
-            "hostname": asset["hostname"],
-            "business_service": asset["business_service"],
-            "criticality": asset["criticality"],
-        },
-        "controls_evaluated": len(results),
-        "controls_failed": len(failed),
-        "risk_score": sum(result["risk_score"] for result in failed),
-        "open_findings": sum(item["status"] == "open" for item in remediation["findings"]),
-        "tickets_created": len(tickets["tickets"]),
-        "evidence_hash": record["record_hash"],
-        "access_review_included": bool(access_review),
-    }
-    _write_json(report_path, report)
-    store.remember_pipeline_run(input_hash, record["record_hash"], remediation_path, tickets_path, report_path)
-    if audit_path:
-        AuditLog(audit_path).append(
-            "pipeline.completed",
-            "sentinelgrc-worker",
-            report["run_id"],
-            {
+        created = created_at or datetime.now(timezone.utc)
+        tickets = workflow.generate_tickets(remediation, review, created)
+        _write_json(remediation_path, remediation)
+        _write_json(tickets_path, tickets)
+        failed = [result for result in results if not result["passed"]]
+        report = {
+            "schema_version": "1.0",
+            "run_id": run_id,
+            "generated_at": created.isoformat().replace("+00:00", "Z"),
+            "asset": {
                 "asset_id": asset["asset_id"],
-                "evidence_hash": record["record_hash"],
-                "tickets_created": report["tickets_created"],
+                "hostname": asset["hostname"],
+                "business_service": asset["business_service"],
+                "criticality": asset["criticality"],
             },
-        )
-    return {
-        "status": "accepted",
-        "run_id": report["run_id"],
-        "input_hash": input_hash,
-        "ledger_record_hash": record["record_hash"],
-        "remediation_path": remediation_path,
-        "tickets_path": tickets_path,
-        "report_path": report_path,
-        "controls_failed": report["controls_failed"],
-        "tickets_created": report["tickets_created"],
-    }
+            "controls_evaluated": len(results),
+            "controls_failed": len(failed),
+            "risk_score": sum(result["risk_score"] for result in failed),
+            "open_findings": sum(item["status"] == "open" for item in remediation["findings"]),
+            "tickets_created": len(tickets["tickets"]),
+            "evidence_hash": record["record_hash"],
+            "access_review_included": bool(access_review),
+        }
+        _write_json(report_path, report)
+        store.complete_pipeline_run(input_hash, record["record_hash"], remediation_path, tickets_path, report_path)
+        if audit_path:
+            AuditLog(audit_path).append(
+                "pipeline.completed", "sentinelgrc-worker", run_id,
+                {"asset_id": asset["asset_id"], "evidence_hash": record["record_hash"], "tickets_created": report["tickets_created"]},
+            )
+        return {
+            "status": "accepted",
+            "run_id": run_id,
+            "input_hash": input_hash,
+            "ledger_record_hash": record["record_hash"],
+            "remediation_path": remediation_path,
+            "tickets_path": tickets_path,
+            "report_path": report_path,
+            "controls_failed": report["controls_failed"],
+            "tickets_created": report["tickets_created"],
+        }
+    except Exception as error:
+        store.fail_pipeline_run(input_hash, str(error))
+        raise
 
 
 def run_from_files(args: argparse.Namespace) -> int:
     access_review = load_json(args.access_review) if args.access_review else None
     result = run_pipeline(
-        load_json(args.posture),
-        load_json(args.controls),
-        load_json(args.assets),
-        args.ledger,
-        args.remediation,
-        args.tickets,
-        args.report,
-        args.state_db,
-        access_review,
-        audit_path=args.audit_log,
+        load_json(args.posture), load_json(args.controls), load_json(args.assets),
+        args.ledger, args.remediation, args.tickets, args.report, args.state_db,
+        access_review, audit_path=args.audit_log,
     )
     print(json.dumps(result, indent=2))
     return 0
