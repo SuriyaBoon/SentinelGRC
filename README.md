@@ -117,7 +117,7 @@ The service remains deliberately conservative:
 ## Run tests
 
 ```bash
-python -m unittest -v test_sentinelgrc.py test_governance.py test_ingestion_api.py test_workflow.py test_state_store.py test_agent_keys.py
+python -m unittest discover -v -p "test_*.py"
 ```
 
 GitHub Actions validates the Python tests and parses both PowerShell agents on every push and pull request.
