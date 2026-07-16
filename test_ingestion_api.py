@@ -63,13 +63,29 @@ class IngestionSecurityTests(unittest.TestCase):
         )
         with self.assertRaises(IngestionError):
             authenticate_request(
-                self.secret, auth, self.timestamp, self.nonce, self.body, NonceStore(), now=2000
+                self.secret,
+                auth,
+                self.timestamp,
+                self.nonce,
+                self.body,
+                NonceStore(),
+                now=2000,
             )
 
     def test_required_fields_are_validated(self):
         validate_posture(json.loads(self.body))
         invalid = json.loads(self.body)
         del invalid["hostname"]
+        with self.assertRaises(ValueError):
+            validate_posture(invalid)
+
+    def test_unknown_fields_and_naive_timestamp_are_rejected(self):
+        invalid = json.loads(self.body)
+        invalid["unexpected"] = "reject-me"
+        with self.assertRaises(ValueError):
+            validate_posture(invalid)
+        invalid = json.loads(self.body)
+        invalid["collected_at"] = "2026-07-16T10:00:00"
         with self.assertRaises(ValueError):
             validate_posture(invalid)
 
