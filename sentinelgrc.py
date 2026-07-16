@@ -121,6 +121,20 @@ def append_evidence(ledger_path: str, evidence: dict[str, Any]) -> None:
     with Path(ledger_path).open("a", encoding="utf-8") as file:
         file.write(canonical_json(evidence) + "\n")
 
+def find_ledger_record(ledger_path: str, input_hash: str) -> dict[str, Any] | None:
+    path = Path(ledger_path)
+    with locked_file(str(path) + ".lock"):
+        if not path.exists():
+            return None
+        valid, message = verify_ledger(ledger_path)
+        if not valid:
+            raise ValueError(f"Cannot inspect invalid ledger: {message}")
+        for line in path.read_text(encoding="utf-8").splitlines():
+            record = json.loads(line)
+            if record.get("input_hash") == input_hash:
+                return record
+    return None
+
 def append_evidence_atomic(
     ledger_path: str,
     posture: dict[str, Any],
