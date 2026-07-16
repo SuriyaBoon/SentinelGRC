@@ -1,0 +1,11 @@
+{
+  "asset_id": "WS-001",
+  "hostname": "finance-laptop-01",
+  "owner": "Finance",
+  "criticality": "high",
+  "collected_at": "2026-07-13T09:00:00Z",
+  "bitlocker_system_drive": false,
+  "firewall_all_profiles_enabled": true,
+  "defender_realtime_enabled": true,
+  "days_since_last_update": 42
+}
