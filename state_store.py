@@ -48,6 +48,7 @@ class SQLiteStateStore:
                 )
             except sqlite3.IntegrityError:
                 return False
+            connection.commit()
             return True
 
     def get_evidence_id(self, payload_hash: str) -> str | None:
@@ -65,6 +66,7 @@ class SQLiteStateStore:
                 "INSERT OR IGNORE INTO accepted_payloads(payload_hash, evidence_id, accepted_at) VALUES (?, ?, ?)",
                 (payload_hash, evidence_id, current),
             )
+            connection.commit()
 
     def export_metadata(self) -> dict[str, Any]:
         with closing(self._connect()) as connection:
