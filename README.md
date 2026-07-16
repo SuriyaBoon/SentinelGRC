@@ -36,37 +36,42 @@ python governance.py assess --controls controls.json --posture sample_posture.js
 
 ## Phase 4: Authenticated posture ingestion
 
-`ingestion_api.py` accepts posture JSON only when the request contains:
+`ingestion_api.py` accepts posture JSON only when the request contains HMAC-SHA256 over the exact request body, a timestamp within a five-minute replay window, a unique nonce, a valid schema, and a payload under 64 KiB.
 
-- HMAC-SHA256 over the exact request body;
-- a timestamp within a five-minute replay window;
-- a unique nonce;
-- a valid posture schema and payload size under 64 KiB.
-
-The API binds to loopback by default. It refuses non-loopback binding unless explicitly overridden, and it must be placed behind TLS before network exposure.
-
-Start locally:
+The API binds to loopback by default and refuses non-loopback binding unless explicitly overridden. Put it behind TLS before network exposure.
 
 ```powershell
 $env:SENTINELGRC_INGESTION_SECRET = "use-a-secret-manager-in-real-deployments"
 python ingestion_api.py serve
-```
-
-Submit signed evidence:
-
-```powershell
 python posture_client.py .\posture.json
 ```
 
-Never commit the secret. See [docs/security-model.md](docs/security-model.md) for the production trust-boundary requirements.
+## Phase 5: Identity governance and SLA workflow
+
+`agent/Export-ADAccessReview.ps1` reads AD users and selected privileged groups without modifying them. It reports stale accounts, enabled state, and privileged membership. It never disables an account or changes group membership.
+
+`workflow.py` converts open control findings and stale identity findings into reviewable tickets:
+
+```bash
+python workflow.py --remediation remediation-queue.json --access-review ad-access-review.json --output tickets.json
+```
+
+Priority targets are explicit:
+
+- critical: 15-minute response / 4-hour resolution
+- high: 30-minute response / 8-hour resolution
+- medium: 4-hour response / 24-hour resolution
+- low: 8-hour response / 72-hour resolution
+
+All tickets include an owner, asset/service context, evidence reference, due times, and `auto_remediation: false`.
 
 ## Run tests
 
 ```bash
-python -m unittest -v test_sentinelgrc.py test_governance.py test_ingestion_api.py
+python -m unittest -v test_sentinelgrc.py test_governance.py test_ingestion_api.py test_workflow.py
 ```
 
-GitHub Actions validates the Python tests and parses the PowerShell agent on every push and pull request.
+GitHub Actions validates the Python tests and parses both PowerShell agents on every push and pull request.
 
 ## Standards mapping
 
@@ -78,7 +83,6 @@ The catalogue illustrates how implementation evidence can be mapped to:
 
 ## Planned modules
 
-- AD lifecycle and access-review automation (from `home-lab-v2`)
 - SIEM alert correlation (from LogWatcher and SOC-Homelab)
-- ticket, exception and SLA workflow (from Helpdesk-Simulator)
 - backup/DR assurance (from Backup-dr-lab)
+- change approval and evidence closure
