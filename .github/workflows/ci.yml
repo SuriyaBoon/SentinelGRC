@@ -25,10 +25,11 @@ jobs:
       - name: Parse PowerShell agent
         shell: pwsh
         run: |
+          $tokens = $null
           $errors = $null
           [System.Management.Automation.Language.Parser]::ParseFile(
             "$PWD/agent/Export-SecurityPosture.ps1",
-            [ref]$null,
+            [ref]$tokens,
             [ref]$errors
           ) | Out-Null
           if ($errors.Count -gt 0) {
