@@ -108,10 +108,18 @@ def main() -> int:
     assess_parser.add_argument("--posture", required=True)
     assess_parser.add_argument("--assets", required=True)
     assess_parser.add_argument("--output", required=True)
+    expire_parser = subparsers.add_parser("expire")
+    expire_parser.add_argument("--queue", required=True)
+    expire_parser.add_argument("--output", required=True)
     args = parser.parse_args()
     if args.command == "assess":
         return assess(args)
-    return 1
+    queue = load_json(args.queue)
+    updated = expire_exceptions(queue)
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.output).write_text(json.dumps(updated, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(updated, indent=2))
+    return 0
 
 
 if __name__ == "__main__":
