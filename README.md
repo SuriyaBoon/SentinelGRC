@@ -182,6 +182,15 @@ The gateway returns only `accepted` or `duplicate` and keeps payload handling se
 
 Request bodies cannot provide `approved_by`, `reviewed_by`, `closed_by` or `audit_actor`. Production should replace the lab API-key boundary with OIDC/SSO, MFA and short-lived tokens.
 
+
+## Production API and OIDC boundary
+
+- `governance_http.py` exposes health and `/v1/governance/<action>` application routes.
+- `oidc_contract.py` validates issuer, audience, expiry and mapped Sentinel roles after the identity middleware verifies the token signature.
+- `governance_api.py` remains the single lifecycle dispatcher.
+
+The adapter is deliberately transport-neutral. Production deployment must place it behind an ASGI/WSGI server, TLS/WAF, rate limiting, structured logs, OIDC middleware, MFA and a shared database/queue.
+
 ## Security boundaries
 
 The service remains deliberately conservative:
