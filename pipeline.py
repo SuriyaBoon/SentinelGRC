@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,12 @@ def run_pipeline(
     run_lease_seconds: int = 900,
     governance_db: str | None = None,
 ) -> dict[str, Any]:
+    storage_mode = os.getenv("SENTINEL_STORAGE", "legacy").lower()
+    if storage_mode not in {"legacy", "governance"}:
+        raise ValueError("SENTINEL_STORAGE must be legacy or governance")
+    governance_db = governance_db or os.getenv("SENTINEL_GOVERNANCE_DB")
+    if storage_mode == "governance" and not governance_db:
+        governance_db = "runtime/governance.db"
     if not isinstance(posture, dict) or not posture.get("asset_id") or not posture.get("hostname"):
         raise ValueError("Posture must contain asset_id and hostname.")
     if not isinstance(controls, list) or not isinstance(assets, list):
