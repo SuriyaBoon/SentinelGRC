@@ -64,6 +64,25 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM findings").fetchone()[0], 2)
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM risk_records").fetchone()[0], 0)
 
+    def test_governance_storage_mode_makes_sqlite_the_primary_write_path(self):
+        import os
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with unittest.mock.patch.dict(os.environ, {
+                "SENTINEL_STORAGE": "governance",
+                "SENTINEL_GOVERNANCE_DB": str(root / "governance.db"),
+            }, clear=False):
+                result = pipeline.run_pipeline(
+                    json.loads(Path("sample_posture.json").read_text(encoding="utf-8")),
+                    json.loads(Path("controls.json").read_text(encoding="utf-8")),
+                    json.loads(Path("assets.json").read_text(encoding="utf-8")),
+                    str(root / "ledger.jsonl"), str(root / "remediation.json"),
+                    str(root / "tickets.json"), str(root / "report.json"),
+                    str(root / "state.db"),
+                )
+            self.assertEqual(result["status"], "accepted")
+            self.assertTrue((root / "governance.db").exists())
+
     def test_unregistered_asset_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(ValueError):
