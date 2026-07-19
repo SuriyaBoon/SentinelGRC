@@ -16,6 +16,20 @@ class SecurityEventConnectorTests(unittest.TestCase):
         self.assertEqual(first["severity"], "critical")
         self.assertEqual(first["control_id"], "SEC-AUTH-001")
 
+    def test_logwatcher_alert_becomes_one_business_finding(self):
+        from security_event_connector import normalize_logwatcher_alert
+        alert = {
+            "kind": "brute_force", "severity": "high",
+            "message": "5 failed logons from 203.0.113.45",
+            "timestamp": "2026-07-03T02:15:00",
+            "source_ip": "203.0.113.45", "target_user": "administrator",
+            "computer": "WIN-DC01", "event_id": 4625,
+        }
+        finding = normalize_logwatcher_alert(alert)
+        self.assertEqual(finding["control_id"], "SEC-AUTH-001")
+        self.assertEqual(finding["source"], "logwatcher_alert")
+        self.assertTrue(finding["finding_id"].startswith("SEC-ALERT-"))
+
     def test_irrelevant_or_closed_event_is_ignored(self):
         self.assertIsNone(normalize_security_event({"event_code": 4624}))
         self.assertIsNone(normalize_security_event({
