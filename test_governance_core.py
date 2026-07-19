@@ -37,7 +37,7 @@ class GovernanceCoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.core.close("F-002", self.approver)
         self.core.assess_risk("F-002", ActorContext("owner-2", "risk_owner"), "medium", "high")
-        self.core.propose_treatment("F-002", ActorContext("owner-2", "risk_owner"), "accept", "temporary exception", "team-id")
+        self.core.propose_treatment("F-002", ActorContext("owner-2", "risk_owner"), "mitigate", "temporary exception", "team-id")
         with self.assertRaises(PermissionError):
             self.core.approve_treatment("F-002", ActorContext("owner-2", "approver"), "approved")
         self.core.approve_treatment("F-002", self.approver, "approved")
