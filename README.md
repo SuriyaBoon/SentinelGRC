@@ -163,6 +163,18 @@ All packs require a stable observation identity, control, asset, title, severity
 
 The report contains finding IDs and aggregate metrics only. Evidence content and secret material are not copied into executive output.
 
+
+## Connector boundary
+
+`connectors.py` defines the integration boundary for SIEM, AD/Entra, cloud, ITSM, vendor and other source systems. Connector events require:
+
+- source and stable event ID;
+- HMAC signature verification before reservation;
+- JSON object payload and size limit;
+- persistent event reservation for replay/idempotence.
+
+The gateway returns only `accepted` or `duplicate` and keeps payload handling separate from the governance lifecycle. Production connectors should use a managed secret/key service, TLS, rate limiting, structured observability and a shared transactional event store.
+
 ## Security boundaries
 
 The service remains deliberately conservative:
