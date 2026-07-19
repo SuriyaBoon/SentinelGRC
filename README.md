@@ -175,6 +175,13 @@ The report contains finding IDs and aggregate metrics only. Evidence content and
 
 The gateway returns only `accepted` or `duplicate` and keeps payload handling separate from the governance lifecycle. Production connectors should use a managed secret/key service, TLS, rate limiting, structured observability and a shared transactional event store.
 
+
+## Human identity and Governance API
+
+`human_identity.py` provides the Phase 1 human identity boundary. It stores users, roles and API-key digests; the secret is returned only at issuance. `governance_api.py` resolves the authenticated `ActorContext` server-side and dispatches lifecycle actions.
+
+Request bodies cannot provide `approved_by`, `reviewed_by`, `closed_by` or `audit_actor`. Production should replace the lab API-key boundary with OIDC/SSO, MFA and short-lived tokens.
+
 ## Security boundaries
 
 The service remains deliberately conservative:
