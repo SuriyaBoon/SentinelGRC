@@ -93,6 +93,40 @@ python governance.py expire --queue runtime/remediation/WS-001.json --output run
 
 Run this command from a scheduler after reviewing the output. Expired exceptions return to `open` and must generate a new remediation decision.
 
+
+## Phase 8: authenticated governance lifecycle
+
+`governance_core.py` provides the Phase 1 enterprise governance backbone. It keeps findings, evidence submissions, and governance events in a relational SQLite store while the existing pipeline remains the security-domain evaluator.
+
+The lifecycle is intentionally role-gated:
+
+```text
+finding
+  -> risk assessed
+  -> treatment proposed
+  -> authorized approval
+  -> remediation action
+  -> evidence submitted
+  -> independent verification
+  -> verified / accepted
+  -> closed
+```
+
+Actors are passed as trusted `ActorContext` values from the application authentication layer. The module does not accept approval, verification, or closure identities from a finding payload. It enforces separation of duties: the risk owner cannot approve the same finding, and an implementer/evidence submitter cannot be the verifier. Each lifecycle event includes actor, role, authentication method, and a per-finding hash-chain link.
+
+Example:
+
+```python
+from governance_core import ActorContext, GovernanceCore
+
+core = GovernanceCore("runtime/governance.db")
+owner = ActorContext("risk-owner-1", "risk_owner")
+approver = ActorContext("approver-1", "approver")
+verifier = ActorContext("verifier-1", "analyst")
+```
+
+This is a governance-core lab, not a production identity provider. Production still requires OIDC/SSO, MFA, short-lived tokens, PostgreSQL, a secret manager, immutable audit export, backups/restore tests, monitoring, and security assessment. The framework language is “aligned with” and “supports audit readiness”; it does not claim ISO certification.
+
 ## Enterprise baseline
 
 - `audit_log.py` provides a separate append-only, hash-chained operational audit trail for pipeline completion events.
