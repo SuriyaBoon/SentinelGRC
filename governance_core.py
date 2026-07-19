@@ -393,6 +393,16 @@ class GovernanceCore:
             summary["by_severity"][row["severity"]] = summary["by_severity"].get(row["severity"], 0) + count
         return summary
 
+    def list_findings(self, status: str | None = None) -> list[dict[str, Any]]:
+        with closing(self._connect()) as db:
+            if status:
+                rows = db.execute(
+                    "SELECT * FROM findings WHERE status = ? ORDER BY updated_at DESC", (status,)
+                ).fetchall()
+            else:
+                rows = db.execute("SELECT * FROM findings ORDER BY updated_at DESC").fetchall()
+        return [dict(row) for row in rows]
+
     def get_finding(self, finding_id: str) -> dict[str, Any]:
         with closing(self._connect()) as db:
             row = db.execute("SELECT * FROM findings WHERE finding_id = ?", (finding_id,)).fetchone()
