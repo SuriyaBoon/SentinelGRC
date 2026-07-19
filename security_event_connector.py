@@ -7,6 +7,22 @@ from typing import Any
 
 
 def normalize_security_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    if "EventID" in event:
+        event = {
+            "event_code": event.get("EventID"),
+            "event_id": event.get("EventRecordID") or "|".join([
+                str(event.get("TimeCreated", "")),
+                str(event.get("Computer", "")),
+                str(event.get("TargetUserName", "")),
+                str(event.get("IpAddress", "")),
+            ]),
+            "asset_id": event.get("Computer"),
+            "timestamp": event.get("TimeCreated"),
+            "account": event.get("TargetUserName"),
+            "source_ip": event.get("IpAddress"),
+            "privileged": str(event.get("TargetUserName", "")).lower() in {"administrator", "admin"},
+            "status": event.get("status", "open"),
+        }
     if event.get("event_code") != 4625 or event.get("status", "open") in {"closed", "resolved"}:
         return None
     required = ("event_id", "asset_id", "timestamp", "account")
