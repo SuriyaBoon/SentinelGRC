@@ -8,7 +8,7 @@ from production_contract import Settings, readiness
 
 
 class ProductionContractTests(unittest.TestCase):
-    def test_lab_defaults_are usable_without_production_dependencies(self):
+    def test_lab_defaults_are_usable_without_production_dependencies(self):
         with tempfile.TemporaryDirectory() as temp:
             settings = Settings(evidence_dir=temp)
             result = readiness(settings)
