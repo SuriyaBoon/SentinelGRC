@@ -139,7 +139,8 @@ class GovernanceCore:
 
     def _mutate(self, finding_id: str, actor: ActorContext, event_type: str,
                 new_status: str, details: dict[str, Any] | None = None,
-                updates: dict[str, Any] | None = None) -> dict[str, Any]:
+                updates: dict[str, Any] | None = None,
+                allowed_statuses: set[str] | None = None) -> dict[str, Any]:
         now = self._now()
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
@@ -147,6 +148,9 @@ class GovernanceCore:
             if row is None:
                 db.rollback()
                 raise KeyError(f"finding {finding_id} was not found")
+            if allowed_statuses is not None and row["status"] not in allowed_statuses:
+                db.rollback()
+                raise ValueError(f"finding cannot transition from {row['status']}")
             fields = {"status": new_status, "updated_at": now, **(updates or {})}
             assignments = ", ".join(f"{key} = ?" for key in fields)
             db.execute(f"UPDATE findings SET {assignments} WHERE finding_id = ?",
@@ -178,7 +182,8 @@ class GovernanceCore:
                     likelihood: str, impact: str) -> dict[str, Any]:
         self._require(actor, "risk_owner", "analyst", "admin")
         return self._mutate(finding_id, actor, "risk_assessed", "risk_assessed",
-                            {"likelihood": likelihood, "impact": impact})
+                            {"likelihood": likelihood, "impact": impact},
+                            allowed_statuses={"open", "rejected"})
 
     def propose_treatment(self, finding_id: str, actor: ActorContext,
                           treatment_type: str, reason: str, action_owner: str,
@@ -190,7 +195,8 @@ class GovernanceCore:
             raise ValueError("treatment reason and action owner are required")
         return self._mutate(finding_id, actor, "treatment_proposed", "pending_approval", {
             "treatment_type": treatment_type, "reason": reason, "action_owner": action_owner
-        }, {"treatment_type": treatment_type, "treatment_reason": reason, "action_owner": action_owner, "due_date": due_date})
+        }, {"treatment_type": treatment_type, "treatment_reason": reason, "action_owner": action_owner, "due_date": due_date},
+                            allowed_statuses={"risk_assessed"})
 
     def approve_treatment(self, finding_id: str, actor: ActorContext,
                           decision: str, reason: str = "") -> dict[str, Any]:
@@ -200,9 +206,10 @@ class GovernanceCore:
         finding = self.get_finding(finding_id)
         if actor.actor_id == finding["risk_owner"]:
             raise PermissionError("risk owner cannot approve the same finding")
-        status = "approved" if decision == "approved" else "risk_assessed"
+        status = "accepted" if decision == "approved" and finding["treatment_type"] == "accept" else ("approved" if decision == "approved" else "risk_assessed")
         return self._mutate(finding_id, actor, "treatment_approved" if decision == "approved" else "treatment_rejected",
-                            status, {"decision": decision, "reason": reason})
+                            status, {"decision": decision, "reason": reason},
+                            allowed_statuses={"pending_approval"})
 
     def start_action(self, finding_id: str, actor: ActorContext,
                      implementer: str) -> dict[str, Any]:
@@ -210,7 +217,8 @@ class GovernanceCore:
         if not implementer.strip():
             raise ValueError("implementer is required")
         return self._mutate(finding_id, actor, "action_started", "in_progress",
-                            {"implementer": implementer}, {"implementer": implementer})
+                            {"implementer": implementer}, {"implementer": implementer},
+                            allowed_statuses={"approved"})
 
     def submit_evidence(self, finding_id: str, actor: ActorContext,
                         source: str, content: bytes | str) -> dict[str, Any]:
@@ -244,7 +252,8 @@ class GovernanceCore:
         if actor.actor_id in {finding.get("implementer"), finding.get("evidence_submitter")}:
             raise PermissionError("verification must be independent from implementation and evidence submission")
         return self._mutate(finding_id, actor, "verification_passed" if passed else "verification_failed",
-                            "verified" if passed else "in_progress", {"passed": passed, "notes": notes})
+                            "verified" if passed else "in_progress", {"passed": passed, "notes": notes},
+                            allowed_statuses={"pending_verification"})
 
     def close(self, finding_id: str, actor: ActorContext,
               reason: str = "") -> dict[str, Any]:
@@ -252,7 +261,8 @@ class GovernanceCore:
         finding = self.get_finding(finding_id)
         if finding["status"] not in {"verified", "accepted"}:
             raise ValueError("finding cannot close before verification or accepted-risk treatment")
-        return self._mutate(finding_id, actor, "finding_closed", "closed", {"reason": reason})
+        return self._mutate(finding_id, actor, "finding_closed", "closed", {"reason": reason},
+                            allowed_statuses={"verified", "accepted"})
 
     def get_finding(self, finding_id: str) -> dict[str, Any]:
         with closing(self._connect()) as db:
