@@ -12,6 +12,7 @@ from typing import Any
 import governance
 import workflow
 from audit_log import AuditLog
+from governance_core import ActorContext, GovernanceCore
 from sentinelgrc import append_evidence_atomic, build_evidence, canonical_json, evaluate_control, find_ledger_record, load_json
 from state_store import SQLiteStateStore
 
@@ -39,6 +40,7 @@ def run_pipeline(
     created_at: datetime | None = None,
     audit_path: str | None = None,
     run_lease_seconds: int = 900,
+    governance_db: str | None = None,
 ) -> dict[str, Any]:
     if not isinstance(posture, dict) or not posture.get("asset_id") or not posture.get("hostname"):
         raise ValueError("Posture must contain asset_id and hostname.")
@@ -68,6 +70,20 @@ def run_pipeline(
         evaluated_posture = {**posture, "criticality": asset["criticality"]}
         results = [evaluate_control(control, evaluated_posture) for control in controls]
         remediation = governance.build_remediation_queue(controls, posture, assets)
+        if governance_db:
+            governance_core = GovernanceCore(governance_db)
+            pipeline_actor = ActorContext("sentinelgrc-pipeline", "analyst", "system")
+            for item in remediation["findings"]:
+                control = item["control"]
+                governance_core.upsert_finding(
+                    item["finding_id"],
+                    str(control.get("control_id") or control.get("id") or "legacy"),
+                    str(item["asset"]["asset_id"]),
+                    str(control.get("control_name") or item["finding_id"]),
+                    str(control.get("owner") or "Security Operations"),
+                    str(control.get("severity") or "medium"),
+                    pipeline_actor,
+                )
 
         record = find_ledger_record(ledger_path, input_hash)
         if record is None:
@@ -127,7 +143,7 @@ def run_from_files(args: argparse.Namespace) -> int:
     result = run_pipeline(
         load_json(args.posture), load_json(args.controls), load_json(args.assets),
         args.ledger, args.remediation, args.tickets, args.report, args.state_db,
-        access_review, audit_path=args.audit_log,
+        access_review, audit_path=args.audit_log, governance_db=args.governance_db,
     )
     print(json.dumps(result, indent=2))
     return 0
@@ -147,6 +163,7 @@ def main() -> int:
     run.add_argument("--report", default="executive-report.json")
     run.add_argument("--state-db", default="sentinelgrc-state.db")
     run.add_argument("--audit-log", default="runtime/audit-log.jsonl")
+    run.add_argument("--governance-db")
     args = parser.parse_args()
     return run_from_files(args)
 
