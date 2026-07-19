@@ -26,6 +26,10 @@ class GovernanceApi:
             raise ValueError("actor identity must come from authentication context")
         actor = self.identities.authenticate(key_id, secret)
         finding_id = str(body.get("finding_id", ""))
+        if action == "list":
+            return {"findings": self.core.list_findings(body.get("status"))}
+        if action == "get":
+            return self.core.get_finding(finding_id)
         if action == "create":
             return self.core.create_finding(
                 finding_id, str(body["control_id"]), str(body["asset_id"]),
