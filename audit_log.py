@@ -36,8 +36,21 @@ class AuthenticatedActor:
         }
 
 
+def normalize(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): normalize(value[key]) for key in sorted(value, key=lambda item: str(item))}
+    if isinstance(value, list):
+        return [normalize(item) for item in value]
+    if isinstance(value, (str, int, bool)) or value is None:
+        return value
+    if isinstance(value, float):
+        if not __import__("math").isfinite(value):
+            raise ValueError("non-finite numbers are not permitted in audit records")
+        return value
+    raise TypeError(f"unsupported audit value: {type(value).__name__}")
+
 def canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return json.dumps(normalize(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
 class AuditLog:
