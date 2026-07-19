@@ -36,6 +36,20 @@ class GovernanceHttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(result["finding_id"], "F-HTTP")
 
+    def test_readiness_and_finding_read_routes_require_authentication(self):
+        self.assertEqual(self.app.handle("GET", "/ready", {}, b"")[0], 200)
+        headers = {"X-API-Key-ID": "alice-v1", "Authorization": f"Bearer {self.secret}"}
+        status, result = self.app.handle("GET", "/findings", headers, b"")
+        self.assertEqual(status, 200)
+        self.assertEqual(result["findings"], [])
+        self.app.handle("POST", "/findings/F-READ/create", headers, json.dumps({
+            "control_id": "AC", "asset_id": "APP", "title": "Read route",
+            "risk_owner": "owner", "severity": "low",
+        }).encode())
+        status, result = self.app.handle("GET", "/findings/F-READ", headers, b"")
+        self.assertEqual(status, 200)
+        self.assertEqual(result["finding_id"], "F-READ")
+
     def test_invalid_auth_and_route_are_rejected(self):
         self.assertEqual(self.app.handle("GET", "/wrong", {}, b"")[0], 404)
         status, _ = self.app.handle("POST", "/v1/governance/report", {}, b"{}")
