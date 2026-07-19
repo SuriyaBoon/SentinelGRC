@@ -72,6 +72,39 @@ class GovernanceCore:
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS risk_records (
+                    risk_id TEXT PRIMARY KEY,
+                    finding_id TEXT NOT NULL REFERENCES findings(finding_id),
+                    likelihood TEXT NOT NULL,
+                    impact TEXT NOT NULL,
+                    owner TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    UNIQUE(finding_id)
+                );
+                CREATE TABLE IF NOT EXISTS risk_treatments (
+                    treatment_id TEXT PRIMARY KEY,
+                    finding_id TEXT NOT NULL REFERENCES findings(finding_id),
+                    treatment_type TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    proposed_by TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending_approval'
+                );
+                CREATE TABLE IF NOT EXISTS approval_records (
+                    approval_id TEXT PRIMARY KEY,
+                    finding_id TEXT NOT NULL REFERENCES findings(finding_id),
+                    decision TEXT NOT NULL,
+                    actor_id TEXT NOT NULL,
+                    actor_role TEXT NOT NULL,
+                    reason TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS action_items (
+                    action_id TEXT PRIMARY KEY,
+                    finding_id TEXT NOT NULL REFERENCES findings(finding_id),
+                    owner TEXT NOT NULL,
+                    implementer TEXT,
+                    due_date TEXT,
+                    status TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS governance_evidence (
                     evidence_id TEXT PRIMARY KEY,
                     finding_id TEXT NOT NULL REFERENCES findings(finding_id),
@@ -80,6 +113,19 @@ class GovernanceCore:
                     submitted_by TEXT NOT NULL,
                     submitted_at REAL NOT NULL,
                     status TEXT NOT NULL DEFAULT 'submitted'
+                );
+                CREATE TABLE IF NOT EXISTS verification_records (
+                    verification_id TEXT PRIMARY KEY,
+                    finding_id TEXT NOT NULL REFERENCES findings(finding_id),
+                    verifier_id TEXT NOT NULL,
+                    result TEXT NOT NULL,
+                    notes TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS closure_records (
+                    closure_id TEXT PRIMARY KEY,
+                    finding_id TEXT NOT NULL REFERENCES findings(finding_id),
+                    closed_by TEXT NOT NULL,
+                    reason TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS governance_events (
                     event_id TEXT PRIMARY KEY,
@@ -96,6 +142,11 @@ class GovernanceCore:
                 CREATE INDEX IF NOT EXISTS idx_events_finding ON governance_events(finding_id, occurred_at);
                 """
             )
+            db.commit()
+
+    def _insert_workflow(self, sql: str, values: tuple[Any, ...]) -> None:
+        with closing(self._connect()) as db:
+            db.execute(sql, values)
             db.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -181,9 +232,14 @@ class GovernanceCore:
     def assess_risk(self, finding_id: str, actor: ActorContext,
                     likelihood: str, impact: str) -> dict[str, Any]:
         self._require(actor, "risk_owner", "analyst", "admin")
-        return self._mutate(finding_id, actor, "risk_assessed", "risk_assessed",
-                            {"likelihood": likelihood, "impact": impact},
-                            allowed_statuses={"open", "rejected"})
+        result = self._mutate(finding_id, actor, "risk_assessed", "risk_assessed",
+                              {"likelihood": likelihood, "impact": impact},
+                              allowed_statuses={"open", "rejected"})
+        self._insert_workflow(
+            "INSERT OR REPLACE INTO risk_records VALUES (?, ?, ?, ?, ?, ?)",
+            ("RS-" + uuid.uuid4().hex[:12], finding_id, likelihood, impact, result["risk_owner"], "open"),
+        )
+        return result
 
     def propose_treatment(self, finding_id: str, actor: ActorContext,
                           treatment_type: str, reason: str, action_owner: str,
@@ -193,10 +249,15 @@ class GovernanceCore:
             raise ValueError(f"unsupported treatment: {treatment_type}")
         if not reason.strip() or not action_owner.strip():
             raise ValueError("treatment reason and action owner are required")
-        return self._mutate(finding_id, actor, "treatment_proposed", "pending_approval", {
+        result = self._mutate(finding_id, actor, "treatment_proposed", "pending_approval", {
             "treatment_type": treatment_type, "reason": reason, "action_owner": action_owner
         }, {"treatment_type": treatment_type, "treatment_reason": reason, "action_owner": action_owner, "due_date": due_date},
                             allowed_statuses={"risk_assessed"})
+        self._insert_workflow(
+            "INSERT INTO risk_treatments VALUES (?, ?, ?, ?, ?, ?)",
+            ("RT-" + uuid.uuid4().hex[:12], finding_id, treatment_type, reason, actor.actor_id, "pending_approval"),
+        )
+        return result
 
     def approve_treatment(self, finding_id: str, actor: ActorContext,
                           decision: str, reason: str = "") -> dict[str, Any]:
@@ -207,18 +268,28 @@ class GovernanceCore:
         if actor.actor_id == finding["risk_owner"]:
             raise PermissionError("risk owner cannot approve the same finding")
         status = "accepted" if decision == "approved" and finding["treatment_type"] == "accept" else ("approved" if decision == "approved" else "risk_assessed")
-        return self._mutate(finding_id, actor, "treatment_approved" if decision == "approved" else "treatment_rejected",
-                            status, {"decision": decision, "reason": reason},
-                            allowed_statuses={"pending_approval"})
+        result = self._mutate(finding_id, actor, "treatment_approved" if decision == "approved" else "treatment_rejected",
+                              status, {"decision": decision, "reason": reason},
+                              allowed_statuses={"pending_approval"})
+        self._insert_workflow(
+            "INSERT INTO approval_records VALUES (?, ?, ?, ?, ?, ?)",
+            ("AP-" + uuid.uuid4().hex[:12], finding_id, decision, actor.actor_id, actor.role, reason),
+        )
+        return result
 
     def start_action(self, finding_id: str, actor: ActorContext,
                      implementer: str) -> dict[str, Any]:
         self._require(actor, "risk_owner", "analyst", "admin")
         if not implementer.strip():
             raise ValueError("implementer is required")
-        return self._mutate(finding_id, actor, "action_started", "in_progress",
-                            {"implementer": implementer}, {"implementer": implementer},
-                            allowed_statuses={"approved"})
+        result = self._mutate(finding_id, actor, "action_started", "in_progress",
+                              {"implementer": implementer}, {"implementer": implementer},
+                              allowed_statuses={"approved"})
+        self._insert_workflow(
+            "INSERT INTO action_items VALUES (?, ?, ?, ?, ?, ?)",
+            ("ACT-" + uuid.uuid4().hex[:12], finding_id, result["action_owner"], implementer, result["due_date"], "in_progress"),
+        )
+        return result
 
     def submit_evidence(self, finding_id: str, actor: ActorContext,
                         source: str, content: bytes | str) -> dict[str, Any]:
@@ -254,9 +325,14 @@ class GovernanceCore:
         finding = self.get_finding(finding_id)
         if actor.actor_id in {finding.get("implementer"), finding.get("evidence_submitter")}:
             raise PermissionError("verification must be independent from implementation and evidence submission")
-        return self._mutate(finding_id, actor, "verification_passed" if passed else "verification_failed",
-                            "verified" if passed else "in_progress", {"passed": passed, "notes": notes},
-                            allowed_statuses={"pending_verification"})
+        result = self._mutate(finding_id, actor, "verification_passed" if passed else "verification_failed",
+                              "verified" if passed else "in_progress", {"passed": passed, "notes": notes},
+                              allowed_statuses={"pending_verification"})
+        self._insert_workflow(
+            "INSERT INTO verification_records VALUES (?, ?, ?, ?, ?)",
+            ("VR-" + uuid.uuid4().hex[:12], finding_id, actor.actor_id, "passed" if passed else "failed", notes),
+        )
+        return result
 
     def close(self, finding_id: str, actor: ActorContext,
               reason: str = "") -> dict[str, Any]:
@@ -264,8 +340,13 @@ class GovernanceCore:
         finding = self.get_finding(finding_id)
         if finding["status"] not in {"verified", "accepted"}:
             raise ValueError("finding cannot close before verification or accepted-risk treatment")
-        return self._mutate(finding_id, actor, "finding_closed", "closed", {"reason": reason},
-                            allowed_statuses={"verified", "accepted"})
+        result = self._mutate(finding_id, actor, "finding_closed", "closed", {"reason": reason},
+                              allowed_statuses={"verified", "accepted"})
+        self._insert_workflow(
+            "INSERT INTO closure_records VALUES (?, ?, ?, ?)",
+            ("CL-" + uuid.uuid4().hex[:12], finding_id, actor.actor_id, reason),
+        )
+        return result
 
     def upsert_finding(self, finding_id: str, control_id: str, asset_id: str,
                        title: str, risk_owner: str, severity: str,
