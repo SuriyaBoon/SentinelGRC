@@ -267,6 +267,51 @@ class GovernanceCore:
         return self._mutate(finding_id, actor, "finding_closed", "closed", {"reason": reason},
                             allowed_statuses={"verified", "accepted"})
 
+    def upsert_finding(self, finding_id: str, control_id: str, asset_id: str,
+                       title: str, risk_owner: str, severity: str,
+                       actor: ActorContext) -> dict[str, Any]:
+        """Create a finding once, then record reassessment without duplicates."""
+        self._require(actor, "admin", "analyst")
+        try:
+            return self.create_finding(
+                finding_id, control_id, asset_id, title, risk_owner, severity, actor
+            )
+        except ValueError as error:
+            if "already exists" not in str(error):
+                raise
+        now = self._now()
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM findings WHERE finding_id = ?", (finding_id,)).fetchone()
+            if row is None:
+                db.rollback()
+                raise RuntimeError("finding disappeared during upsert")
+            if row["control_id"] != control_id or row["asset_id"] != asset_id:
+                db.rollback()
+                raise ValueError("finding identity cannot change during reassessment")
+            db.execute(
+                "UPDATE findings SET title = ?, risk_owner = ?, severity = ?, updated_at = ? WHERE finding_id = ?",
+                (title, risk_owner, severity, now, finding_id),
+            )
+            self._event(db, finding_id, "finding_reassessed", actor, {
+                "control_id": control_id, "asset_id": asset_id, "severity": severity
+            }, now)
+            db.commit()
+        return self.get_finding(finding_id)
+
+    def export_summary(self) -> dict[str, Any]:
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                "SELECT status, severity, COUNT(*) AS count FROM findings GROUP BY status, severity"
+            ).fetchall()
+        summary: dict[str, Any] = {"total": 0, "by_status": {}, "by_severity": {}}
+        for row in rows:
+            count = int(row["count"])
+            summary["total"] += count
+            summary["by_status"][row["status"]] = summary["by_status"].get(row["status"], 0) + count
+            summary["by_severity"][row["severity"]] = summary["by_severity"].get(row["severity"], 0) + count
+        return summary
+
     def get_finding(self, finding_id: str) -> dict[str, Any]:
         with closing(self._connect()) as db:
             row = db.execute("SELECT * FROM findings WHERE finding_id = ?", (finding_id,)).fetchone()
