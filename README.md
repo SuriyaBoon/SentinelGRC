@@ -134,6 +134,22 @@ This is a governance-core lab, not a production identity provider. Production st
 - `pipeline.py` remains the deterministic governance engine; evidence integrity and operational audit are separate controls.
 - `docs/enterprise-deployment.md` defines the production boundary, required TLS/mTLS, identity, storage, retention, logging, and recovery controls.
 
+
+## Enterprise domain packs
+
+`security_pack.py` normalizes endpoint posture, AD access review, vulnerability, and network exposure observations into the shared governance finding contract.
+
+`domain_packs.py` defines the reusable contract for the next packs:
+
+- Privacy: data inventory, retention, processor and breach observations
+- BCM: BIA, RTO/RPO, backup and recovery evidence
+- ITSM: incidents, problems, changes, SLA and service availability
+- Vendor: vendor scope, questionnaires, contractual controls and offboarding
+- Cloud: IAM, public exposure, encryption, logging, backup and drift
+- Data: classification, quality, lineage, retention and access
+
+All packs require a stable observation identity, control, asset, title, severity and accountable owner. Closed/resolved observations are ignored, and identical observations produce the same finding ID. The packs emit data only; approval, remediation, evidence verification and closure remain centralized in `governance_core.py`.
+
 ## Security boundaries
 
 The service remains deliberately conservative:
