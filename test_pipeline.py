@@ -66,9 +66,10 @@ class PipelineTests(unittest.TestCase):
 
     def test_governance_storage_mode_makes_sqlite_the_primary_write_path(self):
         import os
+        from unittest.mock import patch
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with unittest.mock.patch.dict(os.environ, {
+            with patch.dict(os.environ, {
                 "SENTINEL_STORAGE": "governance",
                 "SENTINEL_GOVERNANCE_DB": str(root / "governance.db"),
             }, clear=False):
