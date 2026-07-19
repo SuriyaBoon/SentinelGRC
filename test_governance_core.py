@@ -66,6 +66,24 @@ class GovernanceCoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.core.submit_evidence("F-004", owner, "ticket", "proof")
 
+    def test_finding_upsert_is_idempotent_and_summary_is_reportable(self):
+        first = self.core.upsert_finding("F-005", "AC-05", "APP-05",
+                                          "Missing backup evidence", "owner-5", "high", self.analyst)
+        second = self.core.upsert_finding("F-005", "AC-05", "APP-05",
+                                           "Missing backup evidence (reassessed)", "owner-5", "critical", self.analyst)
+        self.assertEqual(first["finding_id"], second["finding_id"])
+        self.assertEqual(second["severity"], "critical")
+        self.assertEqual(self.core.export_summary()["total"], 1)
+        self.assertEqual(len(self.core.list_events("F-005")), 2)
+        self.assertTrue(self.core.verify_event_chain("F-005"))
+
+    def test_finding_identity_cannot_change_on_upsert(self):
+        self.core.upsert_finding("F-006", "AC-06", "APP-06",
+                                 "Weak encryption", "owner-6", "high", self.analyst)
+        with self.assertRaises(ValueError):
+            self.core.upsert_finding("F-006", "AC-99", "APP-06",
+                                     "Weak encryption", "owner-6", "high", self.analyst)
+
     def test_actor_is_server_side_context(self):
         with self.assertRaises(ValueError):
             ActorContext("", "analyst")
