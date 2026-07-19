@@ -213,6 +213,24 @@ python -m unittest discover -v -p "test_*.py"
 
 GitHub Actions validates the Python tests and parses both PowerShell agents on every push and pull request.
 
+
+## Phase 1 implementation status
+
+The authenticated risk-to-evidence workflow is implemented in the repository:
+
+- human users and hashed API keys;
+- server-derived actor context and role checks;
+- relational SQLite findings, evidence and governance events;
+- state-machine guards for risk, treatment, approval, action, evidence, verification and closure;
+- finding upsert/reassessment without duplicate records;
+- typed human, agent and system audit actors;
+- legacy JSON queue migration helper;
+- authenticated Governance API/HTTP adapter;
+- five-page static governance console shell;
+- negative authorization and full lifecycle tests.
+
+The original security pipeline remains available for collection/evaluation. Use migrate_json.py to promote legacy JSON remediation findings into governance_core.py; new lifecycle actions should use the authenticated Governance API. Phase 2+ integrations still require deployment-specific PostgreSQL, OIDC provider, queue, WAF, SIEM and backup configuration.
+
 ## Standards mapping
 
 The catalogue illustrates how implementation evidence can be mapped to:
