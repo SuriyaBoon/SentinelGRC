@@ -26,6 +26,10 @@ class GovernanceHttpApplication:
                 return 200, {"status": "ready"}
             except Exception:
                 return 503, {"status": "not_ready"}
+        known_get = path == "/findings" or path.startswith("/findings/")
+        known_post = path.startswith("/v1/governance/") or path.startswith("/findings/")
+        if (method == "GET" and not known_get) or (method == "POST" and not known_post):
+            return 404, {"error": "not_found"}
         authorization = headers.get("Authorization", "")
         if not authorization.startswith("Bearer "):
             return 401, {"error": "missing_bearer_token"}
