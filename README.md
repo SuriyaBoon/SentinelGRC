@@ -150,6 +150,19 @@ This is a governance-core lab, not a production identity provider. Production st
 
 All packs require a stable observation identity, control, asset, title, severity and accountable owner. Closed/resolved observations are ignored, and identical observations produce the same finding ID. The packs emit data only; approval, remediation, evidence verification and closure remain centralized in `governance_core.py`.
 
+
+## Executive reporting
+
+`reporting.py` produces a sanitized KPI/KRI contract from normalized findings:
+
+- closure rate;
+- overdue findings;
+- verification failures;
+- critical/high open risk;
+- status, severity and domain distribution.
+
+The report contains finding IDs and aggregate metrics only. Evidence content and secret material are not copied into executive output.
+
 ## Security boundaries
 
 The service remains deliberately conservative:
