@@ -84,6 +84,26 @@ class GovernanceCoreTests(unittest.TestCase):
             self.core.upsert_finding("F-006", "AC-99", "APP-06",
                                      "Weak encryption", "owner-6", "high", self.analyst)
 
+    def test_lifecycle_persists_normalized_business_records(self):
+        self.core.create_finding("F-007", "AC-07", "APP-07",
+                                 "Missing logging", "owner-7", "high", self.analyst)
+        owner = ActorContext("owner-7", "risk_owner")
+        self.core.assess_risk("F-007", owner, "high", "high")
+        self.core.propose_treatment("F-007", owner, "mitigate", "enable logging", "team-7")
+        self.core.approve_treatment("F-007", self.approver, "approved")
+        self.core.start_action("F-007", owner, "engineer-7")
+        self.core.submit_evidence("F-007", owner, "ticket", "proof")
+        self.core.verify("F-007", self.verifier, True)
+        self.core.close("F-007", self.approver)
+        import sqlite3
+        with sqlite3.connect(self.core.path) as db:
+            counts = [db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                      for table in ("findings", "risk_records", "risk_treatments",
+                                    "approval_records", "action_items",
+                                    "governance_evidence", "verification_records",
+                                    "closure_records")]
+        self.assertEqual(counts, [1] * 8)
+
     def test_actor_is_server_side_context(self):
         with self.assertRaises(ValueError):
             ActorContext("", "analyst")
