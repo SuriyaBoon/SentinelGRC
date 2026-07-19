@@ -96,7 +96,8 @@ class GovernanceCoreTests(unittest.TestCase):
         self.core.verify("F-007", self.verifier, True)
         self.core.close("F-007", self.approver)
         import sqlite3
-        with sqlite3.connect(self.core.path) as db:
+        from contextlib import closing
+        with closing(sqlite3.connect(self.core.path)) as db:
             counts = [db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                       for table in ("findings", "risk_records", "risk_treatments",
                                     "approval_records", "action_items",
