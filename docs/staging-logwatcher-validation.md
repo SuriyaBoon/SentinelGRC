@@ -1,27 +1,30 @@
 # Staging validation: LogWatcher → SentinelGRC
 
-This is the first real product integration path. It validates the native LogWatcher JSONL schema before connecting a live Elastic/Windows environment.
+This is the first real product integration path. It validates the LogWatcher alert contract before connecting a live Elastic/Windows environment.
 
-## 1. Prepare the product export
+## 1. Generate the product alert export
 
-From the LogWatcher repository:
+From the LogWatcher repository, run the detector against the historical/synthetic event export:
 
 ```powershell
-python -m logwatcher report --events sample_data/sample_events.jsonl --config config.example.json
+python -m logwatcher.cli report \
+  --events sample_data/sample_events.jsonl \
+  --config config.example.json \
+  -o runtime/logwatcher-report.json \
+  --alerts-output runtime/logwatcher-alerts.jsonl
 ```
 
-For the first Sentinel staging test, use the raw JSONL export at:
-
-```text
-LogWatcher/sample_data/sample_events.jsonl
-```
+The raw event file contains 20 Windows-style events. LogWatcher aggregates those events into business alerts. The alert export is the correct input for Sentinel findings; raw events remain useful for connector diagnostics and noise analysis.
 
 ## 2. Run the Sentinel staging harness
 
 From SentinelGRC:
 
 ```powershell
-python staging_logwatcher.py --events ..\LogWatcher\sample_data\sample_events.jsonl --governance-db runtime\staging-governance.db
+python staging_logwatcher.py \
+  --events ..\\LogWatcher\\runtime\\logwatcher-alerts.jsonl \
+  --input-kind alert \
+  --governance-db runtime/staging-governance.db
 ```
 
 The harness reports:
@@ -33,6 +36,24 @@ The harness reports:
 - malformed-line errors;
 - stable finding IDs.
 
+Expected result for the repository sample:
+
+```text
+events_read=3
+findings_created=3
+findings_reassessed=0
+ignored=0
+errors=0
+```
+
+Run the same command again against the same database. Expected result:
+
+```text
+findings_created=0
+findings_reassessed=3
+errors=0
+```
+
 ## 3. Validate the lifecycle
 
 Use the authenticated Governance API to assess, propose treatment, approve, start action, submit evidence, verify with another actor, and close the finding. Do not place actor fields in the request body.
@@ -40,8 +61,8 @@ Use the authenticated Governance API to assess, propose treatment, approve, star
 Expected flow:
 
 ```text
-LogWatcher 4625
-→ SEC-AUTH finding
+LogWatcher alert
+→ Sentinel finding
 → risk owner assessment
 → treatment proposal
 → approver decision
@@ -55,8 +76,10 @@ LogWatcher 4625
 
 Run at least:
 
-- repeated identical event: finding reassessment, no duplicate finding;
-- brute-force event: high/critical mapping;
+- repeated identical alert: finding reassessment, no duplicate finding;
+- brute-force alert: high/critical mapping;
+- account lockout alert: identity-control mapping;
+- privilege escalation alert: critical mapping;
 - malformed JSONL: counted as error;
 - unauthorized approval: rejected;
 - self-approval/self-verification: rejected;
