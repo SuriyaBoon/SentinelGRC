@@ -47,6 +47,25 @@ class GovernanceCoreTests(unittest.TestCase):
             self.core.verify("F-002", ActorContext("engineer-2", "analyst"), True)
         self.assertFalse(self.core.verify("F-002", self.verifier, False)["status"] == "closed")
 
+    def test_accepted_risk_requires_authorized_approval(self):
+        self.core.create_finding("F-003", "AC-03", "APP-03",
+                                 "Unsupported software", "owner-3", "medium", self.analyst)
+        owner = ActorContext("owner-3", "risk_owner")
+        self.core.assess_risk("F-003", owner, "medium", "medium")
+        self.core.propose_treatment("F-003", owner, "accept", "temporary business exception", "service-owner")
+        self.assertEqual(self.core.approve_treatment("F-003", self.approver, "approved")["status"], "accepted")
+        self.assertEqual(self.core.close("F-003", self.approver)["status"], "closed")
+
+    def test_state_machine_rejects_skipping_action(self):
+        self.core.create_finding("F-004", "AC-04", "APP-04",
+                                 "Missing logging", "owner-4", "high", self.analyst)
+        owner = ActorContext("owner-4", "risk_owner")
+        self.core.assess_risk("F-004", owner, "high", "high")
+        self.core.propose_treatment("F-004", owner, "mitigate", "enable logging", "service-owner")
+        self.core.approve_treatment("F-004", self.approver, "approved")
+        with self.assertRaises(ValueError):
+            self.core.submit_evidence("F-004", owner, "ticket", "proof")
+
     def test_actor_is_server_side_context(self):
         with self.assertRaises(ValueError):
             ActorContext("", "analyst")
