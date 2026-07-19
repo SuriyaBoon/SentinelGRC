@@ -234,6 +234,9 @@ class GovernanceCore:
             if row is None:
                 db.rollback()
                 raise KeyError(f"finding {finding_id} was not found")
+            if row["status"] != "in_progress":
+                db.rollback()
+                raise ValueError(f"finding cannot transition from {row['status']}")
             db.execute("INSERT INTO governance_evidence VALUES (?,?,?,?,?,?,?)",
                        (evidence_id, finding_id, source, hashlib.sha256(raw).hexdigest(),
                         actor.actor_id, now, "submitted"))
