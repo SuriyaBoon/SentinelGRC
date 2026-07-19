@@ -41,3 +41,13 @@ def run_logwatcher_staging(events_path: str, governance_db: str) -> dict[str, An
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
             result["errors"] += 1
     return result
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+    parser = argparse.ArgumentParser(description="Validate LogWatcher JSONL into SentinelGRC staging.")
+    parser.add_argument("--events", required=True)
+    parser.add_argument("--governance-db", required=True)
+    args = parser.parse_args()
+    print(json.dumps(run_logwatcher_staging(args.events, args.governance_db), indent=2))
