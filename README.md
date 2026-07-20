@@ -34,6 +34,17 @@ Sentinel replay: 0 created, 3 reassessed, 0 errors
 
 The sanitized evidence is in [`docs/evidence/concept-validation/`](docs/evidence/concept-validation/).
 
+## Repository layout
+
+```text
+scripts/      CLI entrypoints and operational runners
+docs/         architecture, deployment, and validation documentation
+tests         test modules kept at the repository root for the current unittest discovery contract
+runtime/      local runtime state; ignored by Git
+```
+
+Core modules remain importable at the repository root for the current Phase 1 compatibility contract. Run entrypoints with `python -m scripts.<name>` so imports work consistently from the repository root.
+
 ## Run the concept test
 
 From the LogWatcher repository:
@@ -49,7 +60,7 @@ python -m logwatcher.cli report `
 From SentinelGRC:
 
 ```powershell
-python staging_logwatcher.py `
+python -m scripts.staging_logwatcher `
   --events ..\LogWatcher\runtime\alerts.jsonl `
   --input-kind alert `
   --governance-db runtime/concept-governance.db

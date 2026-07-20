@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-import pipeline
+from scripts import pipeline
 from job_queue import SQLiteJobQueue
 from sentinelgrc import load_json
 

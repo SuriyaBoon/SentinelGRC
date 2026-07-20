@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from ingestion_api import (
+from scripts.ingestion_api import (
     IngestionError,
     NonceStore,
     authenticate_request,

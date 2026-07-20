@@ -5,8 +5,8 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pipeline
-from ingestion_api import validate_posture
+from scripts import pipeline
+from scripts.ingestion_api import validate_posture
 from state_store import SQLiteStateStore
 
 

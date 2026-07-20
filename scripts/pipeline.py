@@ -10,8 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import governance
-import workflow
+from scripts import governance, workflow
 from audit_log import AuditLog
 from governance_core import ActorContext, GovernanceCore
 from sentinelgrc import append_evidence_atomic, build_evidence, canonical_json, evaluate_control, find_ledger_record, load_json

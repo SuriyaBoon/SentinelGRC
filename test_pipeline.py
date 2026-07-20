@@ -4,7 +4,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pipeline
+from scripts import pipeline
 
 
 class PipelineTests(unittest.TestCase):

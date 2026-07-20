@@ -21,7 +21,7 @@ The raw event file contains 20 Windows-style events. LogWatcher aggregates those
 From SentinelGRC:
 
 ```powershell
-python staging_logwatcher.py \
+python -m scripts.staging_logwatcher \
   --events ..\\LogWatcher\\runtime\\logwatcher-alerts.jsonl \
   --input-kind alert \
   --governance-db runtime/staging-governance.db

@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from agent_keys import AgentKeyRegistry
+from scripts.agent_keys import AgentKeyRegistry
 from state_store import SQLiteStateStore
 
 MAX_BODY_BYTES = 64 * 1024

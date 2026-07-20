@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from staging_logwatcher import run_logwatcher_staging
+from scripts.staging_logwatcher import run_logwatcher_staging
 
 
 class LogWatcherStagingTests(unittest.TestCase):
