@@ -162,9 +162,15 @@ class PostureHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.ACCEPTED, {"status": "duplicate", "evidence_id": existing_id})
                 return
             evidence_id = payload_hash[:24]
-            self.server.state_store.remember_payload(payload_hash, evidence_id)
-            (self.server.output_dir / f"{evidence_id}.json").write_bytes(body)
-            self._send_json(HTTPStatus.ACCEPTED, {"status": "accepted", "evidence_id": evidence_id})
+            destination = self.server.output_dir / f"{evidence_id}.json"
+            temporary = self.server.output_dir / f".{evidence_id}.tmp"
+            temporary.write_bytes(body)
+            os.replace(temporary, destination)
+            inserted = self.server.state_store.remember_payload(payload_hash, evidence_id)
+            self._send_json(
+                HTTPStatus.ACCEPTED,
+                {"status": "accepted" if inserted else "duplicate", "evidence_id": evidence_id},
+            )
         except (UnicodeDecodeError, json.JSONDecodeError):
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_json"})
         except IngestionError as error:
