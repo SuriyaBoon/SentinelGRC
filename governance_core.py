@@ -152,6 +152,7 @@ class GovernanceCore:
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=10, isolation_level=None)
         db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys = ON")
         return db
 
     @staticmethod
@@ -191,7 +192,8 @@ class GovernanceCore:
     def _mutate(self, finding_id: str, actor: ActorContext, event_type: str,
                 new_status: str, details: dict[str, Any] | None = None,
                 updates: dict[str, Any] | None = None,
-                allowed_statuses: set[str] | None = None) -> dict[str, Any]:
+                allowed_statuses: set[str] | None = None,
+                workflow: tuple[str, tuple[Any, ...]] | None = None) -> dict[str, Any]:
         now = self._now()
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
@@ -207,6 +209,8 @@ class GovernanceCore:
             db.execute(f"UPDATE findings SET {assignments} WHERE finding_id = ?",
                        (*fields.values(), finding_id))
             self._event(db, finding_id, event_type, actor, details or {}, now)
+            if workflow is not None:
+                db.execute(workflow[0], workflow[1])
             db.commit()
             return self.get_finding(finding_id)
 
@@ -232,13 +236,15 @@ class GovernanceCore:
     def assess_risk(self, finding_id: str, actor: ActorContext,
                     likelihood: str, impact: str) -> dict[str, Any]:
         self._require(actor, "risk_owner", "analyst", "admin")
+        finding = self.get_finding(finding_id)
+        risk_id = "RS-" + uuid.uuid4().hex[:12]
         result = self._mutate(finding_id, actor, "risk_assessed", "risk_assessed",
                               {"likelihood": likelihood, "impact": impact},
-                              allowed_statuses={"open", "rejected"})
-        self._insert_workflow(
-            "INSERT OR REPLACE INTO risk_records VALUES (?, ?, ?, ?, ?, ?)",
-            ("RS-" + uuid.uuid4().hex[:12], finding_id, likelihood, impact, result["risk_owner"], "open"),
-        )
+                              allowed_statuses={"open", "rejected"},
+                              workflow=(
+                                  "INSERT OR REPLACE INTO risk_records VALUES (?, ?, ?, ?, ?, ?)",
+                                  (risk_id, finding_id, likelihood, impact, finding["risk_owner"], "open"),
+                              ))
         return result
 
     def propose_treatment(self, finding_id: str, actor: ActorContext,
@@ -249,14 +255,15 @@ class GovernanceCore:
             raise ValueError(f"unsupported treatment: {treatment_type}")
         if not reason.strip() or not action_owner.strip():
             raise ValueError("treatment reason and action owner are required")
+        treatment_id = "RT-" + uuid.uuid4().hex[:12]
         result = self._mutate(finding_id, actor, "treatment_proposed", "pending_approval", {
             "treatment_type": treatment_type, "reason": reason, "action_owner": action_owner
         }, {"treatment_type": treatment_type, "treatment_reason": reason, "action_owner": action_owner, "due_date": due_date},
-                            allowed_statuses={"risk_assessed"})
-        self._insert_workflow(
-            "INSERT INTO risk_treatments VALUES (?, ?, ?, ?, ?, ?)",
-            ("RT-" + uuid.uuid4().hex[:12], finding_id, treatment_type, reason, actor.actor_id, "pending_approval"),
-        )
+                            allowed_statuses={"risk_assessed"},
+                            workflow=(
+                                "INSERT INTO risk_treatments VALUES (?, ?, ?, ?, ?, ?)",
+                                (treatment_id, finding_id, treatment_type, reason, actor.actor_id, "pending_approval"),
+                            ))
         return result
 
     def approve_treatment(self, finding_id: str, actor: ActorContext,
@@ -268,13 +275,14 @@ class GovernanceCore:
         if actor.actor_id == finding["risk_owner"]:
             raise PermissionError("risk owner cannot approve the same finding")
         status = "accepted" if decision == "approved" and finding["treatment_type"] == "accept" else ("approved" if decision == "approved" else "risk_assessed")
+        approval_id = "AP-" + uuid.uuid4().hex[:12]
         result = self._mutate(finding_id, actor, "treatment_approved" if decision == "approved" else "treatment_rejected",
                               status, {"decision": decision, "reason": reason},
-                              allowed_statuses={"pending_approval"})
-        self._insert_workflow(
-            "INSERT INTO approval_records VALUES (?, ?, ?, ?, ?, ?)",
-            ("AP-" + uuid.uuid4().hex[:12], finding_id, decision, actor.actor_id, actor.role, reason),
-        )
+                              allowed_statuses={"pending_approval"},
+                              workflow=(
+                                  "INSERT INTO approval_records VALUES (?, ?, ?, ?, ?, ?)",
+                                  (approval_id, finding_id, decision, actor.actor_id, actor.role, reason),
+                              ))
         return result
 
     def start_action(self, finding_id: str, actor: ActorContext,
@@ -282,13 +290,15 @@ class GovernanceCore:
         self._require(actor, "risk_owner", "analyst", "admin")
         if not implementer.strip():
             raise ValueError("implementer is required")
+        finding = self.get_finding(finding_id)
+        action_id = "ACT-" + uuid.uuid4().hex[:12]
         result = self._mutate(finding_id, actor, "action_started", "in_progress",
                               {"implementer": implementer}, {"implementer": implementer},
-                              allowed_statuses={"approved"})
-        self._insert_workflow(
-            "INSERT INTO action_items VALUES (?, ?, ?, ?, ?, ?)",
-            ("ACT-" + uuid.uuid4().hex[:12], finding_id, result["action_owner"], implementer, result["due_date"], "in_progress"),
-        )
+                              allowed_statuses={"approved"},
+                              workflow=(
+                                  "INSERT INTO action_items VALUES (?, ?, ?, ?, ?, ?)",
+                                  (action_id, finding_id, finding["action_owner"], implementer, finding["due_date"], "in_progress"),
+                              ))
         return result
 
     def submit_evidence(self, finding_id: str, actor: ActorContext,
@@ -325,13 +335,14 @@ class GovernanceCore:
         finding = self.get_finding(finding_id)
         if actor.actor_id in {finding.get("implementer"), finding.get("evidence_submitter")}:
             raise PermissionError("verification must be independent from implementation and evidence submission")
+        verification_id = "VR-" + uuid.uuid4().hex[:12]
         result = self._mutate(finding_id, actor, "verification_passed" if passed else "verification_failed",
                               "verified" if passed else "in_progress", {"passed": passed, "notes": notes},
-                              allowed_statuses={"pending_verification"})
-        self._insert_workflow(
-            "INSERT INTO verification_records VALUES (?, ?, ?, ?, ?)",
-            ("VR-" + uuid.uuid4().hex[:12], finding_id, actor.actor_id, "passed" if passed else "failed", notes),
-        )
+                              allowed_statuses={"pending_verification"},
+                              workflow=(
+                                  "INSERT INTO verification_records VALUES (?, ?, ?, ?, ?)",
+                                  (verification_id, finding_id, actor.actor_id, "passed" if passed else "failed", notes),
+                              ))
         return result
 
     def close(self, finding_id: str, actor: ActorContext,
@@ -340,12 +351,13 @@ class GovernanceCore:
         finding = self.get_finding(finding_id)
         if finding["status"] not in {"verified", "accepted"}:
             raise ValueError("finding cannot close before verification or accepted-risk treatment")
+        closure_id = "CL-" + uuid.uuid4().hex[:12]
         result = self._mutate(finding_id, actor, "finding_closed", "closed", {"reason": reason},
-                              allowed_statuses={"verified", "accepted"})
-        self._insert_workflow(
-            "INSERT INTO closure_records VALUES (?, ?, ?, ?)",
-            ("CL-" + uuid.uuid4().hex[:12], finding_id, actor.actor_id, reason),
-        )
+                              allowed_statuses={"verified", "accepted"},
+                              workflow=(
+                                  "INSERT INTO closure_records VALUES (?, ?, ?, ?)",
+                                  (closure_id, finding_id, actor.actor_id, reason),
+                              ))
         return result
 
     def upsert_finding(self, finding_id: str, control_id: str, asset_id: str,
