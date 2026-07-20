@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import pipeline_worker
+from scripts import pipeline_worker
 
 
 class PipelineWorkerTests(unittest.TestCase):

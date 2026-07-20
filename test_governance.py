@@ -3,7 +3,7 @@ import unittest
 from datetime import date, timedelta
 from pathlib import Path
 
-import governance
+from scripts import governance
 
 
 class GovernanceTests(unittest.TestCase):

@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent_keys import AgentKeyRegistry
+from scripts.agent_keys import AgentKeyRegistry
 
 
 class AgentKeyTests(unittest.TestCase):

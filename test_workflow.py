@@ -3,7 +3,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-import workflow
+from scripts import workflow
 
 
 class WorkflowTests(unittest.TestCase):

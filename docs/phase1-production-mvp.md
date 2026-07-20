@@ -28,13 +28,13 @@ Privacy, BCM, full ITSM, multi-tenant, committee quorum and full framework imple
 Lab/compatibility mode:
 
 $env:SENTINEL_STORAGE = "legacy"
-python pipeline.py run ...
+python -m scripts.pipeline run ...
 
 Production-MVP SQLite mode:
 
 $env:SENTINEL_STORAGE = "governance"
 $env:SENTINEL_GOVERNANCE_DB = "runtime/governance.db"
-python pipeline.py run ...
+python -m scripts.pipeline run ...
 
 The JSON files remain export artifacts for compatibility. A failed GovernanceCore write fails the pipeline; it is not silently downgraded to JSON-only success.
 
