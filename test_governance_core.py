@@ -110,3 +110,16 @@ class GovernanceCoreTests(unittest.TestCase):
             ActorContext("", "analyst")
         with self.assertRaises(ValueError):
             ActorContext("alice", "unknown")
+
+    def test_workflow_write_failure_rolls_back_status_and_event(self):
+        import sqlite3
+        self.core.create_finding("F-008", "AC-08", "APP-08", "Missing logging", "owner-8", "high", self.analyst)
+        with self.assertRaises(sqlite3.OperationalError):
+            self.core._mutate(
+                "F-008", self.owner, "risk_assessed", "risk_assessed",
+                {"likelihood": "high", "impact": "high"},
+                allowed_statuses={"open"},
+                workflow=("INSERT INTO table_that_does_not_exist VALUES (?)", ("x",)),
+            )
+        self.assertEqual(self.core.get_finding("F-008")["status"], "open")
+        self.assertEqual(len(self.core.list_events("F-008")), 1)
