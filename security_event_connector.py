@@ -6,6 +6,24 @@ import hashlib
 from typing import Any
 
 
+def _event_code(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _strict_bool(value: Any, field: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+        return value.strip().lower() == "true"
+    raise ValueError(f"{field} must be boolean")
+
+
 def normalize_logwatcher_alert(alert: dict[str, Any]) -> dict[str, Any] | None:
     kind = str(alert.get("kind", "")).strip()
     if not kind:
@@ -46,7 +64,7 @@ def normalize_logwatcher_alert(alert: dict[str, Any]) -> dict[str, Any] | None:
 def normalize_security_event(event: dict[str, Any]) -> dict[str, Any] | None:
     if "EventID" in event:
         event = {
-            "event_code": event.get("EventID"),
+            "event_code": _event_code(event.get("EventID")),
             "event_id": event.get("EventRecordID") or "|".join([
                 str(event.get("TimeCreated", "")),
                 str(event.get("Computer", "")),
@@ -60,13 +78,14 @@ def normalize_security_event(event: dict[str, Any]) -> dict[str, Any] | None:
             "privileged": str(event.get("TargetUserName", "")).lower() in {"administrator", "admin"},
             "status": event.get("status", "open"),
         }
-    if event.get("event_code") != 4625 or event.get("status", "open") in {"closed", "resolved"}:
+    code = _event_code(event.get("event_code"))
+    if code != 4625 or event.get("status", "open") in {"closed", "resolved"}:
         return None
     required = ("event_id", "asset_id", "timestamp", "account")
     missing = [field for field in required if not str(event.get(field, "")).strip()]
     if missing:
         raise ValueError(f"security event missing: {', '.join(missing)}")
-    privileged = bool(event.get("privileged"))
+    privileged = _strict_bool(event.get("privileged", False), "privileged")
     identity = "|".join([
         "logwatcher", str(event["event_id"]), str(event["asset_id"]),
         str(event["account"]),
