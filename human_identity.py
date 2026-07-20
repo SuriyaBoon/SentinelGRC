@@ -20,7 +20,7 @@ class HumanIdentityStore:
     def __init__(self, path: str = "runtime/identity.db") -> None:
         self.path = str(Path(path))
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(self.path)) as db:
+        with closing(self._connect()) as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id TEXT PRIMARY KEY,
@@ -36,6 +36,11 @@ class HumanIdentityStore:
             """)
             db.commit()
 
+    def _connect(self) -> sqlite3.Connection:
+        db = sqlite3.connect(self.path)
+        db.execute("PRAGMA foreign_keys = ON")
+        return db
+
     @staticmethod
     def _hash(secret: str) -> str:
         return hashlib.sha256(secret.encode("utf-8")).hexdigest()
@@ -43,7 +48,7 @@ class HumanIdentityStore:
     def create_user(self, user_id: str, role: str) -> None:
         if not user_id.strip() or role not in ROLES:
             raise ValueError("user_id and supported role are required")
-        with closing(sqlite3.connect(self.path)) as db:
+        with closing(self._connect()) as db:
             try:
                 db.execute("INSERT INTO users(user_id, role) VALUES (?, ?)", (user_id, role))
             except sqlite3.IntegrityError as error:
@@ -52,7 +57,7 @@ class HumanIdentityStore:
 
     def issue_api_key(self, user_id: str, key_id: str) -> str:
         secret = secrets.token_urlsafe(32)
-        with closing(sqlite3.connect(self.path)) as db:
+        with closing(self._connect()) as db:
             user = db.execute("SELECT active FROM users WHERE user_id = ?", (user_id,)).fetchone()
             if user is None or not user[0]:
                 raise ValueError("active user is required")
@@ -67,12 +72,12 @@ class HumanIdentityStore:
         return secret
 
     def revoke_key(self, key_id: str) -> None:
-        with closing(sqlite3.connect(self.path)) as db:
+        with closing(self._connect()) as db:
             db.execute("UPDATE user_api_keys SET active = 0 WHERE key_id = ?", (key_id,))
             db.commit()
 
     def authenticate(self, key_id: str, secret: str) -> ActorContext:
-        with closing(sqlite3.connect(self.path)) as db:
+        with closing(self._connect()) as db:
             row = db.execute("""
                 SELECT u.user_id, u.role, k.secret_hash
                 FROM user_api_keys k JOIN users u ON u.user_id = k.user_id
