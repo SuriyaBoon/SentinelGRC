@@ -1,246 +1,101 @@
 # SentinelGRC
 
-**Continuous security governance for Windows enterprise environments.**
+SentinelGRC is a security governance concept platform that turns security observations into an authenticated, auditable risk-to-evidence workflow.
 
-SentinelGRC turns endpoint security checks into an auditable governance loop:
+It is a portfolio lab. It does not claim ISO certification, production readiness, or replacement of an organisation's ISMS.
 
-1. Define a security control and its owner.
-2. Collect endpoint posture evidence.
-3. Evaluate compliance and business risk.
-4. Preserve tamper-evident evidence records.
-5. Produce a remediation queue and an executive-ready summary.
+## Concept validation
 
-This is a portfolio lab aligned to governance concepts. It does not claim ISO certification or replace an organisation's ISMS.
-
-## Phase 1–5
-
-The platform covers endpoint control evaluation, asset-aware risk, read-only Windows posture collection, HMAC-authenticated ingestion, AD access review, and SLA-based remediation tickets.
-
-## Phase 6: persistent state and per-agent key lifecycle
-
-state_store.py adds SQLite-backed state for replay nonces and accepted payload hashes. The ingestion API returns the same evidence ID when the same payload is submitted again. Runtime databases and evidence are ignored by Git.
-
-agent_keys.py stores only key metadata and lifecycle status. Secret material is returned once at registration and must be placed in a secret manager or protected environment configuration.
-
-Register a key:
-
-```bash
-python agent_keys.py --db sentinelgrc-state.db register --agent-id WS-001 --key-id ws-001-v1
-```
-
-Start ingestion with a JSON map of active key IDs to secrets:
-
-```powershell
-$env:SENTINELGRC_AGENT_KEYS_JSON = '{"ws-001-v1":"load-this-from-a-secret-manager"}'
-python ingestion_api.py serve --state-db .\runtime\sentinelgrc-state.db
-```
-
-Send from the matching agent:
-
-```powershell
-$env:SENTINELGRC_AGENT_KEY_ID = "ws-001-v1"
-$env:SENTINELGRC_AGENT_SECRET = "load-this-from-a-secret-manager"
-python posture_client.py .\posture.json
-```
-
-Revoke a key immediately:
-
-```bash
-python agent_keys.py --db sentinelgrc-state.db revoke --key-id ws-001-v1
-```
-
-The API rejects unknown or revoked key IDs. For multi-instance deployment, replace SQLite with a shared transactional store and put the service behind TLS/mTLS.
-
-## Phase 7: end-to-end orchestration
-
-`pipeline.py` connects the controls, governance, evidence, and remediation modules into one repeatable run:
+The first product integration is validated with LogWatcher sample events:
 
 ```text
-posture + AD review
+20 Windows-style events
+        ->
+LogWatcher detection
+        ->
+3 business alerts
+        ->
+SentinelGRC staging connector
+        ->
+3 governance findings
+        ->
+Replay
         ↓
-control evaluation + asset-aware risk
-        ↓
-hash-chained evidence ledger
-        ↓
-remediation queue + SLA tickets
-        ↓
-executive report
+0 duplicate findings / 3 reassessments
 ```
 
-Run the complete pipeline:
-
-```bash
-python pipeline.py run --posture sample_posture.json --controls controls.json --assets assets.json --access-review sample_ad_access_review.json --ledger runtime/evidence-ledger.jsonl --remediation runtime/remediation-queue.json --tickets runtime/tickets.json --report runtime/executive-report.json --state-db runtime/sentinelgrc-state.db
-```
-
-The pipeline stores a run fingerprint in SQLite. Reprocessing the same posture, controls, assets, and access review returns `duplicate` and does not append another ledger record.
-
-## Phase 7.2: automatic inbox worker
-
-`ingestion_api.py` writes accepted posture evidence to `evidence-inbox`. Run the worker as a separate process to automatically execute the full governance pipeline:
-
-```powershell
-python pipeline_worker.py serve --inbox evidence-inbox --controls controls.json --assets assets.json --access-review sample_ad_access_review.json --ledger runtime/evidence-ledger.jsonl --state-db runtime/sentinelgrc-state.db --remediation-dir runtime/remediation --tickets-dir runtime/tickets --reports-dir runtime/reports --interval 30
-```
-
-The worker is deliberately decoupled from the HTTP API. Jobs are persisted in SQLite with a lease, retry counter, and dead-letter state. A failed job is retried up to `--max-attempts` and then remains visible as `dead` for operator review. This keeps ingestion responsive, supports retries, and allows multiple worker instances when the state store is migrated to a shared transactional database. The current worker is a polling lab implementation; production deployment should use a durable queue, service supervisor, TLS/mTLS, and centralized logging.
-
-Expire accepted-risk exceptions as a scheduled governance job:
-
-```bash
-python governance.py expire --queue runtime/remediation/WS-001.json --output runtime/remediation/WS-001.json
-```
-
-Run this command from a scheduler after reviewing the output. Expired exceptions return to `open` and must generate a new remediation decision.
-
-
-## Phase 8: authenticated governance lifecycle
-
-`governance_core.py` provides the Phase 1 enterprise governance backbone. It keeps findings, evidence submissions, and governance events in a relational SQLite store while the existing pipeline remains the security-domain evaluator.
-
-The lifecycle is intentionally role-gated:
+Observed result:
 
 ```text
-finding
-  -> risk assessed
-  -> treatment proposed
-  -> authorized approval
-  -> remediation action
-  -> evidence submitted
-  -> independent verification
-  -> verified / accepted
-  -> closed
+LogWatcher: 20 events, 3 alerts
+Sentinel first run: 3 created, 0 reassessed, 0 errors
+Sentinel replay: 0 created, 3 reassessed, 0 errors
 ```
 
-Actors are passed as trusted `ActorContext` values from the application authentication layer. The module does not accept approval, verification, or closure identities from a finding payload. It enforces separation of duties: the risk owner cannot approve the same finding, and an implementer/evidence submitter cannot be the verifier. Each lifecycle event includes actor, role, authentication method, and a per-finding hash-chain link.
+The sanitized evidence is in [`docs/evidence/concept-validation/`](docs/evidence/concept-validation/).
 
-Example:
+## Run the concept test
 
-```python
-from governance_core import ActorContext, GovernanceCore
+From the LogWatcher repository:
 
-core = GovernanceCore("runtime/governance.db")
-owner = ActorContext("risk-owner-1", "risk_owner")
-approver = ActorContext("approver-1", "approver")
-verifier = ActorContext("verifier-1", "analyst")
+```powershell
+python -m logwatcher.cli report `
+  --events sample_data/sample_events.jsonl `
+  --config config.example.json `
+  -o runtime/report.json `
+  --alerts-output runtime/alerts.jsonl
 ```
 
-This is a governance-core lab, not a production identity provider. Production still requires OIDC/SSO, MFA, short-lived tokens, PostgreSQL, a secret manager, immutable audit export, backups/restore tests, monitoring, and security assessment. The framework language is “aligned with” and “supports audit readiness”; it does not claim ISO certification.
+From SentinelGRC:
 
-## Enterprise baseline
+```powershell
+python staging_logwatcher.py `
+  --events ..\LogWatcher\runtime\alerts.jsonl `
+  --input-kind alert `
+  --governance-db runtime/concept-governance.db
+```
 
-- `audit_log.py` provides a separate append-only, hash-chained operational audit trail for pipeline completion events.
-- `job_queue.py` provides durable queue state, leases, retries, and dead-letter visibility.
-- `pipeline.py` remains the deterministic governance engine; evidence integrity and operational audit are separate controls.
-- `docs/enterprise-deployment.md` defines the production boundary, required TLS/mTLS, identity, storage, retention, logging, and recovery controls.
+Run the Sentinel command twice. The second run must reassess the same three findings rather than create duplicates.
 
+## Governance lifecycle
 
-## Enterprise domain packs
+```text
+Finding
+  -> Risk assessment
+  -> Treatment proposal
+  -> Role-gated approval
+  -> Remediation action
+  -> Evidence submission
+  -> Independent verification
+  -> Closure
+```
 
-`security_pack.py` normalizes endpoint posture, AD access review, vulnerability, and network exposure observations into the shared governance finding contract.
+The server-side actor boundary prevents request bodies from choosing the approver, verifier, or closer. Separation of duties prevents the risk owner from approving the same finding and prevents an implementer/evidence submitter from verifying their own work.
 
-`domain_packs.py` defines the reusable contract for the next packs:
+## Current capabilities
 
-- Privacy: data inventory, retention, processor and breach observations
-- BCM: BIA, RTO/RPO, backup and recovery evidence
-- ITSM: incidents, problems, changes, SLA and service availability
-- Vendor: vendor scope, questionnaires, contractual controls and offboarding
-- Cloud: IAM, public exposure, encryption, logging, backup and drift
-- Data: classification, quality, lineage, retention and access
+- Security control and posture evaluation
+- Asset-aware risk scoring
+- Windows posture and AD access-review contracts
+- HMAC agent authentication and replay protection
+- Idempotent ingestion and stable finding identity
+- Relational governance workflow on SQLite for lab use
+- Hash-chained governance and evidence records
+- Role-gated approval and separation of duties
+- Retry/dead-letter job handling
+- Alert-level LogWatcher staging integration
+- Executive reporting and sanitized concept evidence
 
-All packs require a stable observation identity, control, asset, title, severity and accountable owner. Closed/resolved observations are ignored, and identical observations produce the same finding ID. The packs emit data only; approval, remediation, evidence verification and closure remain centralized in `governance_core.py`.
+## Validation
 
+The repository test suite currently passes 85 tests with Python's unittest discovery. GitHub Actions also validates the main branch.
 
-## Executive reporting
-
-`reporting.py` produces a sanitized KPI/KRI contract from normalized findings:
-
-- closure rate;
-- overdue findings;
-- verification failures;
-- critical/high open risk;
-- status, severity and domain distribution.
-
-The report contains finding IDs and aggregate metrics only. Evidence content and secret material are not copied into executive output.
-
-
-## Connector boundary
-
-`connectors.py` defines the integration boundary for SIEM, AD/Entra, cloud, ITSM, vendor and other source systems. Connector events require:
-
-- source and stable event ID;
-- HMAC signature verification before reservation;
-- JSON object payload and size limit;
-- persistent event reservation for replay/idempotence.
-
-The gateway returns only `accepted` or `duplicate` and keeps payload handling separate from the governance lifecycle. Production connectors should use a managed secret/key service, TLS, rate limiting, structured observability and a shared transactional event store.
-
-
-## Human identity and Governance API
-
-`human_identity.py` provides the Phase 1 human identity boundary. It stores users, roles and API-key digests; the secret is returned only at issuance. `governance_api.py` resolves the authenticated `ActorContext` server-side and dispatches lifecycle actions.
-
-Request bodies cannot provide `approved_by`, `reviewed_by`, `closed_by` or `audit_actor`. Production should replace the lab API-key boundary with OIDC/SSO, MFA and short-lived tokens.
-
-
-## Production API and OIDC boundary
-
-- `governance_http.py` exposes health and `/v1/governance/<action>` application routes.
-- `oidc_contract.py` validates issuer, audience, expiry and mapped Sentinel roles after the identity middleware verifies the token signature.
-- `governance_api.py` remains the single lifecycle dispatcher.
-
-The adapter is deliberately transport-neutral. Production deployment must place it behind an ASGI/WSGI server, TLS/WAF, rate limiting, structured logs, OIDC middleware, MFA and a shared database/queue.
-
-## Security boundaries
-
-The service remains deliberately conservative:
-
-- no automatic AD changes;
-- no automatic endpoint remediation;
-- no credentials or user files in posture evidence;
-- loopback bind by default;
-- strict payload size and schema validation;
-- persistent replay protection;
-- idempotent evidence ingestion;
-- per-agent key ID and revocation;
-- CI tests for authentication, replay, ledger integrity, idempotency, and SLA generation.
-
-## Run tests
-
-```bash
+```powershell
 python -m unittest discover -v -p "test_*.py"
 ```
 
-GitHub Actions validates the Python tests and parses both PowerShell agents on every push and pull request.
+## Production boundary
 
+The repository is intentionally a lab/concept implementation. A production deployment still requires PostgreSQL or another shared transactional database, OIDC/SSO and MFA, short-lived tokens, encrypted evidence storage, a durable queue, secret management, TLS/WAF, immutable audit export, backup/restore testing, monitoring, and a security assessment.
 
-## Phase 1 implementation status
-
-The authenticated risk-to-evidence workflow is implemented in the repository:
-
-- human users and hashed API keys;
-- server-derived actor context and role checks;
-- relational SQLite findings, evidence and governance events;
-- state-machine guards for risk, treatment, approval, action, evidence, verification and closure;
-- finding upsert/reassessment without duplicate records;
-- typed human, agent and system audit actors;
-- legacy JSON queue migration helper;
-- authenticated Governance API/HTTP adapter;
-- five-page static governance console shell;
-- negative authorization and full lifecycle tests.
-
-The original security pipeline remains available for collection/evaluation. Use migrate_json.py to promote legacy JSON remediation findings into governance_core.py; new lifecycle actions should use the authenticated Governance API. Phase 2+ integrations still require deployment-specific PostgreSQL, OIDC provider, queue, WAF, SIEM and backup configuration.
-
-## Standards mapping
-
-The catalogue illustrates how implementation evidence can be mapped to:
-
-- ISO/IEC 27001:2022 and ISO/IEC 27002:2022
-- NIST CSF 2.0: Govern, Identify, Protect, Detect, Respond, Recover
-- ISO 22301 continuity objectives (future DR-assurance module)
-
-## Planned modules
-
-- SIEM alert correlation from LogWatcher and SOC-Homelab
-- backup/DR assurance from Backup-dr-lab
-- change approval and evidence closure
+The current LogWatcher path validates an alert export. It does not claim live Elastic availability, Windows fleet coverage, SIEM archival, or enterprise-wide governance integration.

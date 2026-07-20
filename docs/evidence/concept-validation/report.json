@@ -1,0 +1,51 @@
+{
+  "period_start": "2026-07-03T02:14:01",
+  "period_end": "2026-07-03T19:22:16",
+  "total_events": 20,
+  "failed_logons": 17,
+  "lockouts": 1,
+  "privilege_events": 2,
+  "top_offending_ips": [
+    [
+      "203.0.113.45",
+      7
+    ],
+    [
+      "10.0.0.5",
+      6
+    ],
+    [
+      "10.0.0.15",
+      2
+    ],
+    [
+      "198.51.100.23",
+      2
+    ]
+  ],
+  "top_targeted_users": [
+    [
+      "administrator",
+      7
+    ],
+    [
+      "backup_svc",
+      6
+    ],
+    [
+      "jsmith",
+      2
+    ],
+    [
+      "mnguyen",
+      2
+    ]
+  ],
+  "lockout_accounts": [
+    [
+      "jsmith",
+      1
+    ]
+  ],
+  "alerts_fired": 3
+}
