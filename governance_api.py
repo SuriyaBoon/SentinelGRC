@@ -50,7 +50,10 @@ class GovernanceApi:
         if action == "evidence":
             return self.core.submit_evidence(finding_id, actor, str(body["source"]), str(body["content"]))
         if action == "verify":
-            return self.core.verify(finding_id, actor, bool(body["passed"]), str(body.get("notes", "")))
+            passed = body["passed"]
+            if not isinstance(passed, bool):
+                raise ValueError("passed must be a boolean")
+            return self.core.verify(finding_id, actor, passed, str(body.get("notes", "")))
         if action == "close":
             return self.core.close(finding_id, actor, str(body.get("reason", "")))
         if action == "report":
