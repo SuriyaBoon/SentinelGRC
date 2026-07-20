@@ -36,3 +36,9 @@ class GovernanceApiTests(unittest.TestCase):
     def test_invalid_key_is_rejected_before_lifecycle(self):
         with self.assertRaises(PermissionError):
             self.api.dispatch("report", "alice-v1", "wrong", {})
+
+    def test_verify_requires_boolean_passed_value(self):
+        with self.assertRaises(ValueError):
+            self.api.dispatch("verify", "alice-v1", self.secret, {
+                "finding_id": "F-API", "passed": "false",
+            })
