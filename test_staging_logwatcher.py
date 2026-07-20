@@ -78,3 +78,8 @@ class LogWatcherStagingTests(unittest.TestCase):
             path.write_text("{bad json}\n", encoding="utf-8")
             result = run_logwatcher_staging(str(path), str(root / "governance.db"))
             self.assertEqual(result["errors"], 1)
+
+    def test_missing_input_file_is_reported(self):
+        with tempfile.TemporaryDirectory() as temp:
+            result = run_logwatcher_staging(str(Path(temp) / "missing.jsonl"), str(Path(temp) / "governance.db"))
+            self.assertEqual(result["errors"], 1)
