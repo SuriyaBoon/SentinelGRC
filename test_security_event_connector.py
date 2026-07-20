@@ -39,3 +39,13 @@ class SecurityEventConnectorTests(unittest.TestCase):
     def test_malformed_event_is_rejected(self):
         with self.assertRaises(ValueError):
             normalize_security_event({"event_code": 4625, "event_id": "EVT-1"})
+
+    def test_string_event_types_are_normalized_without_false_privilege(self):
+        event = {
+            "event_code": "4625", "event_id": "EVT-2", "asset_id": "DC-01",
+            "timestamp": "2026-07-19T12:00:00Z", "account": "user",
+            "privileged": "false",
+        }
+        finding = normalize_security_event(event)
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding["severity"], "high")
