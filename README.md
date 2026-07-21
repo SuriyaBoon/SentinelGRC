@@ -106,7 +106,7 @@ sequenceDiagram
     C->>G: Ingest alerts
     G-->>C: Create 3 findings
     C->>G: Replay the same 3 alerts
-    G-->>C: Create 0 findings; reassess 3 findings
+    G-->>C: Create 0 findings and reassess 3 findings
 ```
 
 This proves alert ingestion and finding idempotency at concept level. It does not prove live Windows fleet coverage, Elastic availability, SIEM retention, or enterprise deployment.
@@ -154,6 +154,12 @@ For the complete staging procedure and additional scenarios, see:
 
 The sanitized concept evidence is stored in [docs/evidence/concept-validation/](docs/evidence/concept-validation/).
 
+### LogWatcher detection result
+
+![LogWatcher detection report](docs/evidence/concept-validation/01-logwatcher-report.png)
+
+This screenshot shows the source event processing result: 20 Windows-style events were processed and 3 alerts were generated.
+
 | Evidence | What it demonstrates |
 |---|---|
 | `report.json` | LogWatcher processed 20 sample events |
@@ -163,6 +169,12 @@ The sanitized concept evidence is stored in [docs/evidence/concept-validation/](
 | `SHA256SUMS.txt` | Checksums for the evidence files |
 | `python -m unittest discover -q` | 85 automated tests passed locally |
 | GitHub Actions | CI compilation and test validation |
+
+### SentinelGRC replay result
+
+![SentinelGRC replay validation](docs/evidence/concept-validation/02-sentinel-replay.png)
+
+This screenshot shows the SentinelGRC connector output for the first ingestion and the replay. The first run creates 3 findings; replaying the same 3 alerts creates 0 new findings and reassesses all 3 existing findings.
 
 Expected connector results:
 
