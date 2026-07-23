@@ -37,6 +37,19 @@ class SQLiteStateStore:
                     report_path TEXT NOT NULL,
                     processed_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS external_findings (
+                    finding_id TEXT PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    control_id TEXT NOT NULL,
+                    asset_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    risk_owner TEXT NOT NULL,
+                    severity TEXT NOT NULL,
+                    details_json TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    reassessment_count INTEGER NOT NULL DEFAULT 0
+                );
                 """
             )
             columns = {row[1] for row in connection.execute("PRAGMA table_info(pipeline_runs)").fetchall()}
@@ -75,15 +88,14 @@ class SQLiteStateStore:
             ).fetchone()
         return None if row is None else str(row["evidence_id"])
 
-    def remember_payload(self, payload_hash: str, evidence_id: str, now: float | None = None) -> bool:
+    def remember_payload(self, payload_hash: str, evidence_id: str, now: float | None = None) -> None:
         current = time.time() if now is None else now
         with closing(self._connect()) as connection:
-            cursor = connection.execute(
+            connection.execute(
                 "INSERT OR IGNORE INTO accepted_payloads(payload_hash, evidence_id, accepted_at) VALUES (?, ?, ?)",
                 (payload_hash, evidence_id, current),
             )
             connection.commit()
-        return cursor.rowcount == 1
 
     def claim_pipeline_run(self, input_hash: str, now: float | None = None, lease_seconds: int = 900) -> bool:
         current = time.time() if now is None else now
@@ -150,6 +162,73 @@ class SQLiteStateStore:
                 (input_hash, ledger_record_hash, remediation_path, tickets_path, report_path, current),
             )
             connection.commit()
+
+    def get_external_finding(self, finding_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM external_findings WHERE finding_id = ?", (finding_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["details"] = json.loads(result.pop("details_json"))
+        return result
+
+    def upsert_external_finding(self, finding: dict[str, Any], now: float | None = None) -> bool:
+        """Store an external governed finding and return True only on creation.
+
+        A stable connector-derived finding ID makes a repeated evidence bundle
+        reassess the existing record rather than create a duplicate.
+        """
+        required = {
+            "finding_id", "source", "control_id", "asset_id", "title",
+            "risk_owner", "severity", "details",
+        }
+        missing = required.difference(finding)
+        if missing:
+            raise ValueError(f"External finding is missing fields: {sorted(missing)}")
+        if finding["severity"] not in {"low", "medium", "high", "critical"}:
+            raise ValueError("External finding severity is invalid.")
+
+        current = time.time() if now is None else now
+        details_json = json.dumps(finding["details"], sort_keys=True, separators=(",", ":"))
+        values = (
+            finding["finding_id"], finding["source"], finding["control_id"],
+            finding["asset_id"], finding["title"], finding["risk_owner"],
+            finding["severity"], details_json,
+        )
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            exists = connection.execute(
+                "SELECT 1 FROM external_findings WHERE finding_id = ?", (finding["finding_id"],)
+            ).fetchone() is not None
+            if exists:
+                connection.execute(
+                    """
+                    UPDATE external_findings
+                    SET source = ?, control_id = ?, asset_id = ?, title = ?, risk_owner = ?,
+                        severity = ?, details_json = ?, updated_at = ?,
+                        reassessment_count = reassessment_count + 1
+                    WHERE finding_id = ?
+                    """,
+                    (
+                        finding["source"], finding["control_id"], finding["asset_id"],
+                        finding["title"], finding["risk_owner"], finding["severity"],
+                        details_json, current, finding["finding_id"],
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO external_findings(
+                        finding_id, source, control_id, asset_id, title, risk_owner,
+                        severity, details_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    values + (current, current),
+                )
+            connection.commit()
+        return not exists
 
     def export_metadata(self) -> dict[str, Any]:
         with closing(self._connect()) as connection:

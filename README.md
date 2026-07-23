@@ -1,269 +1,179 @@
 # SentinelGRC
 
-SentinelGRC is a security governance platform concept that turns security observations and alerts into an authenticated, auditable risk-to-evidence workflow.
+**Continuous security governance for Windows enterprise environments.**
 
-It is designed as a portfolio lab and Phase 1 concept validation. It does not claim ISO certification, enterprise-wide production readiness, or replacement of an organisation's ISMS.
+SentinelGRC turns endpoint security checks into an auditable governance loop:
 
-## 1. What is SentinelGRC?
+1. Define a security control and its owner.
+2. Collect endpoint posture evidence.
+3. Evaluate compliance and business risk.
+4. Preserve tamper-evident evidence records.
+5. Produce a remediation queue and an executive-ready summary.
 
-Security work is often fragmented across log tools, spreadsheets, chat approvals, ticket systems, and evidence folders. SentinelGRC provides one traceable lifecycle for a security finding:
+This is a portfolio lab aligned to governance concepts. It does not claim ISO certification or replace an organisation's ISMS.
 
-```mermaid
-flowchart LR
-    A["Security observation / alert"] --> B["Finding"]
-    B --> C["Risk assessment"]
-    C --> D["Treatment proposal"]
-    D --> E["Role-gated approval"]
-    E --> F["Remediation action"]
-    F --> G["Evidence submission"]
-    G --> H["Independent verification"]
-    H --> I["Closure"]
+## Phase 1?5
+
+The platform covers endpoint control evaluation, asset-aware risk, read-only Windows posture collection, HMAC-authenticated ingestion, AD access review, and SLA-based remediation tickets.
+
+## Phase 6: persistent state and per-agent key lifecycle
+
+state_store.py adds SQLite-backed state for replay nonces and accepted payload hashes. The ingestion API returns the same evidence ID when the same payload is submitted again. Runtime databases and evidence are ignored by Git.
+
+agent_keys.py stores only key metadata and lifecycle status. Secret material is returned once at registration and must be placed in a secret manager or protected environment configuration.
+
+Register a key:
+
+```bash
+python agent_keys.py --db sentinelgrc-state.db register --agent-id WS-001 --key-id ws-001-v1
 ```
 
-The platform is intended to answer:
-
-- What happened, and which asset or control is affected?
-- Who owns the risk and who is allowed to approve it?
-- What treatment was selected and why?
-- What evidence proves that remediation occurred?
-- Was verification performed by an independent actor?
-- Did replaying the same event create a duplicate finding?
-- Can the complete decision trail be reviewed later?
-
-## 2. How does it work?
-
-### End-to-end architecture
-
-```mermaid
-flowchart TB
-    subgraph Sources["Security sources"]
-        S1["Control evaluation"]
-        S2["Windows posture"]
-        S3["AD access review"]
-        S4["LogWatcher alert export"]
-    end
-
-    subgraph Sentinel["SentinelGRC"]
-        I["Ingestion and validation"]
-        A["Agent authentication and replay protection"]
-        F["Finding identity and idempotent upsert"]
-        R["Risk and treatment workflow"]
-        P["Role-gated approval"]
-        W["Remediation and job handling"]
-        E["Evidence metadata and audit chain"]
-        V["Independent verification and closure"]
-    end
-
-    subgraph Outputs["Governance outputs"]
-        O1["Reports"]
-        O2["Audit records"]
-        O3["Evidence package"]
-    end
-
-    Sources --> I --> A --> F --> R --> P --> W --> E --> V
-    V --> O1
-    E --> O2
-    E --> O3
-```
-
-### Governance lifecycle
-
-Each finding follows a controlled state transition. The server derives the authenticated actor; callers cannot simply choose the approver, verifier, or closer in the request body.
-
-```mermaid
-stateDiagram-v2
-    [*] --> Open
-    Open --> Assessed: risk assessment
-    Assessed --> TreatmentProposed: treatment proposal
-    TreatmentProposed --> Approved: authorised approval
-    Approved --> InProgress: remediation starts
-    InProgress --> EvidenceSubmitted: evidence submitted
-    EvidenceSubmitted --> Verified: independent verification passes
-    EvidenceSubmitted --> InProgress: verification fails
-    Verified --> Closed: closure accepted
-    Closed --> [*]
-```
-
-The workflow enforces separation of duties:
-
-- A risk owner cannot approve the same finding.
-- An implementer or evidence submitter cannot verify their own work.
-- Invalid state transitions are rejected.
-- Replayed input reassesses the existing finding instead of creating another open finding.
-
-### Concept integration flow
-
-The repository contains a simple integration demonstration using LogWatcher sample events:
-
-```mermaid
-sequenceDiagram
-    participant L as LogWatcher
-    participant C as Staging connector
-    participant G as Governance database
-
-    L->>L: Process 20 Windows-style events
-    L-->>C: Export 3 structured alerts
-    C->>G: Ingest alerts
-    G-->>C: Create 3 findings
-    C->>G: Replay the same 3 alerts
-    G-->>C: Create 0 findings and reassess 3 findings
-```
-
-This proves alert ingestion and finding idempotency at concept level. It does not prove live Windows fleet coverage, Elastic availability, SIEM retention, or enterprise deployment.
-
-## 3. Commands used
-
-Run the commands from the repository root.
-
-### Compile and run the automated test suite
+Start ingestion with a JSON map of active key IDs to secrets:
 
 ```powershell
-python -m compileall -q .
-python -m unittest discover -q
+$env:SENTINELGRC_AGENT_KEYS_JSON = '{"ws-001-v1":"load-this-from-a-secret-manager"}'
+python ingestion_api.py serve --state-db .\runtime\sentinelgrc-state.db
 ```
 
-### Run the SentinelGRC staging connector
-
-Use an alert JSONL export such as the sanitized file in `docs/evidence/concept-validation/alerts.jsonl`:
+Send from the matching agent:
 
 ```powershell
-python -m scripts.staging_logwatcher `
-  --events docs\evidence\concept-validation\alerts.jsonl `
-  --input-kind alert `
-  --governance-db runtime\concept-governance.db
+$env:SENTINELGRC_AGENT_KEY_ID = "ws-001-v1"
+$env:SENTINELGRC_AGENT_SECRET = "load-this-from-a-secret-manager"
+python posture_client.py .\posture.json
 ```
 
-Run the same command twice. The first run creates findings; the second run tests replay and deduplication.
+Revoke a key immediately:
 
-### Run the governance pipeline
-
-```powershell
-python -m scripts.pipeline run `
-  --posture sample_posture.json `
-  --access-review sample_ad_access_review.json `
-  --governance-db runtime\governance.db
+```bash
+python agent_keys.py --db sentinelgrc-state.db revoke --key-id ws-001-v1
 ```
 
-For the complete staging procedure and additional scenarios, see:
+The API rejects unknown or revoked key IDs. For multi-instance deployment, replace SQLite with a shared transactional store and put the service behind TLS/mTLS.
 
-- [Staging LogWatcher validation](docs/staging-logwatcher-validation.md)
-- [Phase 1 Production MVP](docs/phase1-production-mvp.md)
-- [Enterprise governance lifecycle](docs/enterprise-governance-lifecycle.md)
+## Phase 7: end-to-end orchestration
 
-## 4. Evidence that proves it works
-
-The sanitized concept evidence is stored in [docs/evidence/concept-validation/](docs/evidence/concept-validation/).
-
-### LogWatcher detection result
-
-![LogWatcher detection report](docs/evidence/concept-validation/01-logwatcher-report.png)
-
-This screenshot shows the source event processing result: 20 Windows-style events were processed and 3 alerts were generated.
-
-| Evidence | What it demonstrates |
-|---|---|
-| `report.json` | LogWatcher processed 20 sample events |
-| `alerts.jsonl` | Three structured alerts were exported |
-| `01-logwatcher-report.png` | LogWatcher terminal result |
-| `02-sentinel-replay.png` | First ingestion and replay results |
-| `SHA256SUMS.txt` | Checksums for the evidence files |
-| `python -m unittest discover -q` | 85 automated tests passed locally |
-| GitHub Actions | CI compilation and test validation |
-
-### SentinelGRC replay result
-
-![SentinelGRC replay validation](docs/evidence/concept-validation/02-sentinel-replay.png)
-
-This screenshot shows the SentinelGRC connector output for the first ingestion and the replay. The first run creates 3 findings; replaying the same 3 alerts creates 0 new findings and reassesses all 3 existing findings.
-
-Expected connector results:
+`pipeline.py` connects the controls, governance, evidence, and remediation modules into one repeatable run:
 
 ```text
-First run:
-events_read=3
-findings_created=3
-findings_reassessed=0
-errors=0
-
-Replay:
-events_read=3
-findings_created=0
-findings_reassessed=3
-errors=0
+posture + AD review
+        ?
+control evaluation + asset-aware risk
+        ?
+hash-chained evidence ledger
+        ?
+remediation queue + SLA tickets
+        ?
+executive report
 ```
 
-These results demonstrate that:
+Run the complete pipeline:
 
-1. The connector reads structured alerts.
-2. SentinelGRC creates governance findings.
-3. Replaying the same alerts does not create duplicates.
-4. Existing findings are reassessed instead.
-
-The repository's test suite also covers authentication, replay protection, idempotent ingestion, workflow transitions, role checks, evidence metadata, audit integrity, migration, and safety constraints.
-
-## 5. What problems does it solve?
-
-### Fragmented security operations
-
-It connects alerts, assets, controls, risks, actions, evidence, and closure in one traceable workflow.
-
-### Duplicate findings from retries or replay
-
-Stable finding identity and idempotent upsert turn repeated input into reassessment instead of duplicate open findings.
-
-### Untrusted approval and closure actors
-
-Authenticated server-side actor context prevents callers from selecting privileged actors by supplying arbitrary values in the request body.
-
-### Lack of separation of duties
-
-Role and ownership rules prevent risk owners from approving their own findings and prevent implementers from verifying their own remediation.
-
-### Evidence and audit scattered across files
-
-Relational governance records, evidence metadata, checksums, and audit-chain events provide a connected history for review.
-
-## Current scope and production boundary
-
-Current scope:
-
-- Security control and posture evaluation
-- Asset-aware risk scoring
-- Windows posture and AD access-review contracts
-- HMAC agent authentication and replay protection
-- Idempotent ingestion and stable finding identity
-- Relational governance workflow on SQLite for lab use
-- Role-gated approval and separation of duties
-- Evidence metadata and audit-chain records
-- Retry and dead-letter job handling
-- LogWatcher alert-level concept integration
-- Executive reporting and sanitized evidence
-
-A real production deployment would still require:
-
-- PostgreSQL or another shared transactional database
-- OIDC/SSO, MFA, and short-lived tokens
-- Encrypted object storage and immutable/WORM archive
-- Durable queues and a managed secret store
-- TLS/WAF, rate limiting, monitoring, and tracing
-- Backup/restore testing and disaster recovery
-- Live connectors for Windows fleets, Elastic/SIEM, and ITSM
-- Independent security assessment and operational runbooks
-
-## Repository layout
-
-```text
-scripts/      CLI entrypoints and operational runners
-docs/         Architecture, deployment, validation, and evidence documentation
-runtime/      Local runtime state; ignored by Git
-ui/           Governance UI shell
-test_*.py     Automated tests kept at repository root for unittest discovery
+```bash
+python pipeline.py run --posture sample_posture.json --controls controls.json --assets assets.json --access-review sample_ad_access_review.json --ledger runtime/evidence-ledger.jsonl --remediation runtime/remediation-queue.json --tickets runtime/tickets.json --report runtime/executive-report.json --state-db runtime/sentinelgrc-state.db
 ```
 
-Core modules remain at the repository root for Phase 1 import compatibility. Operational entrypoints use `python -m scripts.<name>`.
+The pipeline stores a run fingerprint in SQLite. Reprocessing the same posture, controls, assets, and access review returns `duplicate` and does not append another ledger record.
 
-## Status
+## Phase 7.2: automatic inbox worker
 
-SentinelGRC Phase 1 implements an authenticated, relational, risk-to-evidence governance workflow for security findings, with a validated LogWatcher concept integration.
+`ingestion_api.py` writes accepted posture evidence to `evidence-inbox`. Run the worker as a separate process to automatically execute the full governance pipeline:
 
-It is a working security governance lab with test evidence—not a claim that enterprise production infrastructure has already been deployed.
+```powershell
+python pipeline_worker.py serve --inbox evidence-inbox --controls controls.json --assets assets.json --access-review sample_ad_access_review.json --ledger runtime/evidence-ledger.jsonl --state-db runtime/sentinelgrc-state.db --remediation-dir runtime/remediation --tickets-dir runtime/tickets --reports-dir runtime/reports --interval 30
+```
+
+The worker is deliberately decoupled from the HTTP API. Jobs are persisted in SQLite with a lease, retry counter, and dead-letter state. A failed job is retried up to `--max-attempts` and then remains visible as `dead` for operator review. This keeps ingestion responsive, supports retries, and allows multiple worker instances when the state store is migrated to a shared transactional database. The current worker is a polling lab implementation; production deployment should use a durable queue, service supervisor, TLS/mTLS, and centralized logging.
+
+Expire accepted-risk exceptions as a scheduled governance job:
+
+```bash
+python governance.py expire --queue runtime/remediation/WS-001.json --output runtime/remediation/WS-001.json
+```
+
+Run this command from a scheduler after reviewing the output. Expired exceptions return to `open` and must generate a new remediation decision.
+
+## Enterprise baseline
+
+- `audit_log.py` provides a separate append-only, hash-chained operational audit trail for pipeline completion events.
+- `job_queue.py` provides durable queue state, leases, retries, and dead-letter visibility.
+- `pipeline.py` remains the deterministic governance engine; evidence integrity and operational audit are separate controls.
+- `docs/enterprise-deployment.md` defines the production boundary, required TLS/mTLS, identity, storage, retention, logging, and recovery controls.
+
+## Security boundaries
+
+The service remains deliberately conservative:
+
+- no automatic AD changes;
+- no automatic endpoint remediation;
+- no credentials or user files in posture evidence;
+- loopback bind by default;
+- strict payload size and schema validation;
+- persistent replay protection;
+- idempotent evidence ingestion;
+- per-agent key ID and revocation;
+- CI tests for authentication, replay, ledger integrity, idempotency, and SLA generation.
+
+## Run tests
+
+```bash
+python -m unittest discover -v -p "test_*.py"
+```
+
+GitHub Actions validates the Python tests and parses both PowerShell agents on every push and pull request.
+
+## Standards mapping
+
+The catalogue illustrates how implementation evidence can be mapped to:
+
+- ISO/IEC 27001:2022 and ISO/IEC 27002:2022
+- NIST CSF 2.0: Govern, Identify, Protect, Detect, Respond, Recover
+- ISO 22301 continuity objectives (future DR-assurance module)
+
+## Planned modules
+
+- SIEM alert correlation from LogWatcher and SOC-Homelab
+- backup/DR assurance from Backup-dr-lab
+- change approval and evidence closure
+
+## Flagship #3: Mini-SOAR concept
+
+The [Mini-SOAR MVP blueprint](docs/mini-soar-mvp-blueprint.md) defines a
+portfolio-only response orchestrator: detection alert -> governed finding ->
+role-gated approval -> dry-run mock action -> evidence -> independent
+verification. The [architecture brief](docs/mini-soar-blueprint.md) provides a
+shorter design summary.
+It deliberately does not apply changes to real endpoints, identities,
+networks, cloud accounts, or external ticketing systems.
+
+### Verified evidence bridge
+
+`scripts/bridge_minisoar.py` imports one closed Mini-SOAR evidence bundle into
+the local SentinelGRC finding store. The bridge is read-only against
+Mini-SOAR, derives a stable `SEC-IR-*` finding ID, and reassesses that same
+finding when the bundle is replayed. It accepts only `synthetic-lab` evidence
+and, by default, requires a passing independent verification record.
+
+```bash
+python scripts/bridge_minisoar.py \
+  --evidence-dir <mini-soar-export-directory> \
+  --governance-db runtime/minisoar-bridge.db
+```
+
+Use `--allow-unverified` only to demonstrate exception handling in a lab. It
+does not make an unverified response accepted governance evidence.
+
+### JML lifecycle bridge
+
+`scripts/bridge_jml.py` reads JML-Automation's SQLite database using
+read-only `mode=ro`; it does not import JML code or modify lifecycle state.
+Closed requests require a recorded `passed` verification before they can
+become governance findings. Joiner, mover, and leaver requests map separately
+to `SEC-IAM-004`, `SEC-IAM-005`, and `SEC-IAM-006` so their distinct identity
+risks remain visible.
+
+```bash
+python scripts/bridge_jml.py \
+  --jml-db <jml-automation-db> \
+  --governance-db runtime/jml-bridge.db
+```
