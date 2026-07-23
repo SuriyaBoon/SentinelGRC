@@ -160,6 +160,25 @@ flowchart LR
     SG --> AUDIT
 ```
 
+### SentinelGRC governance lifecycle
+
+```mermaid
+flowchart LR
+    INPUT["Posture data or bridged evidence"]
+    VALIDATE["Validate and normalize\ntrusted source boundary"]
+    DEDUPE["Derive stable identity\ncreate or reassess finding"]
+    REVIEW["Risk owner review\nseverity and control context"]
+    DECISION{"Treatment decision"}
+    REMEDIATE["Create remediation ticket\nand collect re-check evidence"]
+    EXCEPTION["Approved exception\nwith expiry"]
+    LEDGER["Evidence ledger\nand hash-chained audit"]
+    REASSESS["Re-assess control\nor evidence state"]
+
+    INPUT --> VALIDATE --> DEDUPE --> REVIEW --> DECISION
+    DECISION -->|"Remediate"| REMEDIATE --> LEDGER --> REASSESS --> REVIEW
+    DECISION -->|"Accept risk temporarily"| EXCEPTION --> LEDGER
+```
+
 ### Verified evidence bridge
 
 `scripts/bridge_minisoar.py` imports one closed Mini-SOAR evidence bundle into
