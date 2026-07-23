@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-Mini-SOAR is Flagship #3 for the security portfolio. It demonstrates how a
+Mini-SOAR is a portfolio concept for security response orchestration. It demonstrates how a
 security alert can move from detection to a controlled, reviewable response:
 
 ```text

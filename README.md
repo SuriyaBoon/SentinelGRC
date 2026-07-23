@@ -136,7 +136,7 @@ The catalogue illustrates how implementation evidence can be mapped to:
 - backup/DR assurance from Backup-dr-lab
 - change approval and evidence closure
 
-## Flagship #3: Mini-SOAR concept
+## Connected portfolio concepts
 
 The [Mini-SOAR MVP blueprint](docs/mini-soar-mvp-blueprint.md) defines a
 portfolio-only response orchestrator: detection alert -> governed finding ->
@@ -145,6 +145,20 @@ verification. The [architecture brief](docs/mini-soar-blueprint.md) provides a
 shorter design summary.
 It deliberately does not apply changes to real endpoints, identities,
 networks, cloud accounts, or external ticketing systems.
+
+```mermaid
+flowchart LR
+    JML["JML-Automation\nClosed and verified dry-run request"]
+    MS["Mini-SOAR\nClosed and verified synthetic incident"]
+    SG["SentinelGRC\nGovernance and evidence sink"]
+    STORE["External findings\nStable ID and reassessment"]
+    AUDIT["Hash-chained\naudit log"]
+
+    JML -->|"Read-only SQLite bridge"| SG
+    MS -->|"Exported evidence bridge"| SG
+    SG --> STORE
+    SG --> AUDIT
+```
 
 ### Verified evidence bridge
 
