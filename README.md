@@ -12,9 +12,81 @@ SentinelGRC turns endpoint security checks into an auditable governance loop:
 
 This is a portfolio lab aligned to governance concepts. It does not claim ISO certification or replace an organisation's ISMS.
 
-## Phase 1?5
+## Phase 1-5
 
 The platform covers endpoint control evaluation, asset-aware risk, read-only Windows posture collection, HMAC-authenticated ingestion, AD access review, and SLA-based remediation tickets.
+
+## Governance workflow
+
+SentinelGRC turns a security observation into a controlled, auditable lifecycle:
+
+```mermaid
+flowchart LR
+    A["Security observation or alert"] --> B["Finding"]
+    B --> C["Risk assessment"]
+    C --> D["Treatment proposal"]
+    D --> E["Role-gated approval"]
+    E --> F["Remediation action"]
+    F --> G["Evidence submission"]
+    G --> H["Independent verification"]
+    H --> I["Closure"]
+```
+
+### End-to-end architecture
+
+```mermaid
+flowchart TB
+    subgraph Sources["Security sources"]
+        S1["Control evaluation"]
+        S2["Windows posture"]
+        S3["AD access review"]
+        S4["LogWatcher alert export"]
+        S5["Mini-SOAR evidence"]
+        S6["JML lifecycle evidence"]
+    end
+
+    subgraph Sentinel["SentinelGRC"]
+        I["Ingestion and validation"]
+        A["Agent authentication and replay protection"]
+        F["Stable finding identity and idempotent upsert"]
+        R["Risk and treatment workflow"]
+        P["Role-gated approval"]
+        W["Remediation and job handling"]
+        E["Evidence metadata and audit chain"]
+        V["Independent verification and closure"]
+    end
+
+    subgraph Outputs["Governance outputs"]
+        O1["Remediation queue"]
+        O2["SLA tickets"]
+        O3["Executive report"]
+        O4["Audit and evidence package"]
+    end
+
+    Sources --> I --> A --> F --> R --> P --> W --> E --> V
+    W --> O1
+    W --> O2
+    V --> O3
+    E --> O4
+```
+
+### Governance lifecycle state machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> Open
+    Open --> Assessed: risk assessment
+    Assessed --> TreatmentProposed: treatment proposal
+    TreatmentProposed --> Approved: authorised approval
+    Approved --> InProgress: remediation starts
+    InProgress --> EvidenceSubmitted: evidence submitted
+    EvidenceSubmitted --> InProgress: verification fails
+    EvidenceSubmitted --> Verified: independent verification passes
+    Verified --> Closed: closure accepted
+    Closed --> [*]
+```
+
+The server derives the authenticated actor. Risk owners cannot approve their own findings, and implementers or evidence submitters cannot verify their own work.
 
 ## Phase 6: persistent state and per-agent key lifecycle
 
@@ -25,14 +97,14 @@ agent_keys.py stores only key metadata and lifecycle status. Secret material is 
 Register a key:
 
 ```bash
-python agent_keys.py --db sentinelgrc-state.db register --agent-id WS-001 --key-id ws-001-v1
+python -m scripts.agent_keys --db sentinelgrc-state.db register --agent-id WS-001 --key-id ws-001-v1
 ```
 
 Start ingestion with a JSON map of active key IDs to secrets:
 
 ```powershell
 $env:SENTINELGRC_AGENT_KEYS_JSON = '{"ws-001-v1":"load-this-from-a-secret-manager"}'
-python ingestion_api.py serve --state-db .\runtime\sentinelgrc-state.db
+python -m scripts.ingestion_api serve --state-db .\runtime\sentinelgrc-state.db
 ```
 
 Send from the matching agent:
@@ -40,13 +112,13 @@ Send from the matching agent:
 ```powershell
 $env:SENTINELGRC_AGENT_KEY_ID = "ws-001-v1"
 $env:SENTINELGRC_AGENT_SECRET = "load-this-from-a-secret-manager"
-python posture_client.py .\posture.json
+python -m scripts.posture_client .\posture.json
 ```
 
 Revoke a key immediately:
 
 ```bash
-python agent_keys.py --db sentinelgrc-state.db revoke --key-id ws-001-v1
+python -m scripts.agent_keys --db sentinelgrc-state.db revoke --key-id ws-001-v1
 ```
 
 The API rejects unknown or revoked key IDs. For multi-instance deployment, replace SQLite with a shared transactional store and put the service behind TLS/mTLS.
@@ -70,7 +142,7 @@ executive report
 Run the complete pipeline:
 
 ```bash
-python pipeline.py run --posture sample_posture.json --controls controls.json --assets assets.json --access-review sample_ad_access_review.json --ledger runtime/evidence-ledger.jsonl --remediation runtime/remediation-queue.json --tickets runtime/tickets.json --report runtime/executive-report.json --state-db runtime/sentinelgrc-state.db
+python -m scripts.pipeline run --posture sample_posture.json --controls controls.json --assets assets.json --access-review sample_ad_access_review.json --ledger runtime/evidence-ledger.jsonl --remediation runtime/remediation-queue.json --tickets runtime/tickets.json --report runtime/executive-report.json --state-db runtime/sentinelgrc-state.db
 ```
 
 The pipeline stores a run fingerprint in SQLite. Reprocessing the same posture, controls, assets, and access review returns `duplicate` and does not append another ledger record.
@@ -80,7 +152,7 @@ The pipeline stores a run fingerprint in SQLite. Reprocessing the same posture, 
 `ingestion_api.py` writes accepted posture evidence to `evidence-inbox`. Run the worker as a separate process to automatically execute the full governance pipeline:
 
 ```powershell
-python pipeline_worker.py serve --inbox evidence-inbox --controls controls.json --assets assets.json --access-review sample_ad_access_review.json --ledger runtime/evidence-ledger.jsonl --state-db runtime/sentinelgrc-state.db --remediation-dir runtime/remediation --tickets-dir runtime/tickets --reports-dir runtime/reports --interval 30
+python -m scripts.pipeline_worker serve --inbox evidence-inbox --controls controls.json --assets assets.json --access-review sample_ad_access_review.json --ledger runtime/evidence-ledger.jsonl --state-db runtime/sentinelgrc-state.db --remediation-dir runtime/remediation --tickets-dir runtime/tickets --reports-dir runtime/reports --interval 30
 ```
 
 The worker is deliberately decoupled from the HTTP API. Jobs are persisted in SQLite with a lease, retry counter, and dead-letter state. A failed job is retried up to `--max-attempts` and then remains visible as `dead` for operator review. This keeps ingestion responsive, supports retries, and allows multiple worker instances when the state store is migrated to a shared transactional database. The current worker is a polling lab implementation; production deployment should use a durable queue, service supervisor, TLS/mTLS, and centralized logging.
@@ -88,7 +160,7 @@ The worker is deliberately decoupled from the HTTP API. Jobs are persisted in SQ
 Expire accepted-risk exceptions as a scheduled governance job:
 
 ```bash
-python governance.py expire --queue runtime/remediation/WS-001.json --output runtime/remediation/WS-001.json
+python -m scripts.governance expire --queue runtime/remediation/WS-001.json --output runtime/remediation/WS-001.json
 ```
 
 Run this command from a scheduler after reviewing the output. Expired exceptions return to `open` and must generate a new remediation decision.
@@ -135,6 +207,52 @@ The catalogue illustrates how implementation evidence can be mapped to:
 - SIEM alert correlation from LogWatcher and SOC-Homelab
 - backup/DR assurance from Backup-dr-lab
 - change approval and evidence closure
+
+## Concept validation with LogWatcher
+
+The repository contains a simple product-style integration demonstration using LogWatcher sample events:
+
+```mermaid
+sequenceDiagram
+    participant L as LogWatcher
+    participant C as Staging connector
+    participant G as Governance database
+
+    L->>L: Process 20 Windows-style events
+    L-->>C: Export 3 structured alerts
+    C->>G: Ingest alerts
+    G-->>C: Create 3 findings
+    C->>G: Replay the same 3 alerts
+    G-->>C: Create 0 findings and reassess 3 findings
+```
+
+### Evidence that proves it works
+
+![LogWatcher detection report](docs/evidence/concept-validation/01-logwatcher-report.png)
+
+The LogWatcher screenshot proves that 20 sample events were processed and 3 alerts were generated.
+
+![SentinelGRC replay validation](docs/evidence/concept-validation/02-sentinel-replay.png)
+
+The SentinelGRC screenshot proves that the first ingestion created 3 findings and replaying the same alerts created 0 new findings while reassessing 3 existing findings.
+
+Expected connector output:
+
+```text
+First run:
+events_read=3
+findings_created=3
+findings_reassessed=0
+errors=0
+
+Replay:
+events_read=3
+findings_created=0
+findings_reassessed=3
+errors=0
+```
+
+This validates alert ingestion and idempotent finding handling at concept level. It does not claim live Windows fleet, Elastic, SIEM, or enterprise production integration.
 
 ## Connected portfolio concepts
 
