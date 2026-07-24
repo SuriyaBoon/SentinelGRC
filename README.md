@@ -78,6 +78,96 @@ stateDiagram-v2
     Closed --> [*]
 ```
 
+The normal remediation path is `Open` through `Closed`. A failed independent check returns the finding to `InProgress`; an approved risk-acceptance treatment takes the controlled `Accepted` path and still requires authorised closure. There is no transition that allows a finding to skip approval, evidence, or verification.
+
+### Alert intake and idempotent replay
+
+`connectors.py`, `security_event_connector.py`, and `GovernanceCore.upsert_finding()` separate a newly observed alert from a replay. The event identity includes its source, so two sources can use the same event identifier without being treated as the same event.
+
+```mermaid
+flowchart LR
+    S["Security alert or control observation"] --> V["Validate schema and source"]
+    V --> K["Derive source and stable identity"]
+    K --> D{"Previously accepted"}
+    D -->|"No"| C["Create finding"]
+    D -->|"Yes"| R["Reassess existing finding"]
+    C --> E["Record governance event"]
+    R --> E
+    E --> O["Return finding ID and outcome"]
+```
+
+The first LogWatcher concept run takes the **Create finding** path for three alerts. Replaying the same three alerts takes the **Reassess existing finding** path, so the database contains three findings rather than six.
+
+### Authenticated agent ingestion
+
+The HTTP ingestion path is intentionally separate from the human governance API. An agent must present a known key ID and a valid HMAC signature; nonce and payload state reject replay before a posture document is accepted for downstream processing.
+
+```mermaid
+flowchart LR
+    A["Posture client"] --> H["Agent key ID and HMAC"]
+    H --> V{"Signature and schema valid"}
+    V -->|"No"| X["Reject request"]
+    V -->|"Yes"| N{"Nonce and payload are new"}
+    N -->|"No"| I["Return existing evidence ID"]
+    N -->|"Yes"| S["Persist accepted payload state"]
+    S --> B["Write posture document to inbox"]
+    B --> Q["SQLite job queue"]
+```
+
+This flow is implemented for the local lab using per-agent key lifecycle and SQLite state. It is not a substitute for TLS, mTLS, a secret manager, or a shared production replay store.
+
+### Background worker and recovery path
+
+`scripts/pipeline_worker.py` keeps ingestion responsive by processing inbox files through `job_queue.py`. A worker owns a job only while its lease is valid; a stale worker cannot later mark a reclaimed job complete or failed.
+
+```mermaid
+flowchart LR
+    I["Evidence inbox"] --> Q["Enqueue job"]
+    Q --> C["Worker claims valid lease"]
+    C --> P["Run deterministic pipeline"]
+    P -->|"Success"| OK["Complete job and write outputs"]
+    P -->|"Retryable error"| R["Release for retry"]
+    R --> Q
+    P -->|"Retry limit reached"| D["Dead-letter state for review"]
+    C -->|"Lease expires"| Q
+```
+
+The queue provides local retry, lease, and dead-letter behaviour for a concept environment. It is not a managed message broker and should not be used as the production queue.
+
+### Evidence and audit integrity
+
+Every governance mutation records a deterministic event sequence. Evidence content is hashed before its metadata is recorded, and the event chain links each event to the hash of its predecessor.
+
+```mermaid
+flowchart LR
+    M["Lifecycle mutation"] --> J["Canonical event details"]
+    J --> P["Previous event hash"]
+    P --> H["Compute event hash"]
+    H --> L["Governance event sequence"]
+    E["Evidence content"] --> S["SHA-256 evidence hash"]
+    S --> G["Evidence metadata record"]
+    G --> L
+    L --> V["Verify per-finding chain"]
+```
+
+The hashes detect changes to recorded data in the local ledger. They do not make a local SQLite file immutable; immutable storage and retained exports are production requirements.
+
+### Connected portfolio boundaries
+
+The repository has two narrow portfolio bridges. They feed SentinelGRC as evidence sources but do not import external code, operate external systems, or turn SentinelGRC into a response platform.
+
+```mermaid
+flowchart LR
+    J["JML-Automation SQLite database"] -->|"Read-only closed and verified requests"| JB["JML bridge"]
+    M["Mini-SOAR evidence bundle"] -->|"Closed verified synthetic-lab evidence"| MB["Mini-SOAR bridge"]
+    JB --> G["SentinelGRC governance core"]
+    MB --> G
+    G --> F["Stable finding or reassessment"]
+    G --> A["Audit and evidence records"]
+```
+
+The JML bridge requires a closed request and a passing verification record. The Mini-SOAR bridge accepts synthetic-lab evidence and requires passing verification by default. Both boundaries are implemented and tested locally; neither is a live production integration.
+
 ## Commands used
 
 The repository has no third-party Python package requirement for the concept workflow. Use a supported Python installation; GitHub Actions validates the code with Python 3.12.
