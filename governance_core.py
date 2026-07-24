@@ -14,11 +14,17 @@ import time
 import uuid
 from contextlib import closing
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 ROLES = {"admin", "analyst", "risk_owner", "approver", "ciso", "risk_committee"}
 TREATMENTS = {"mitigate", "accept", "transfer", "avoid"}
+SEVERITIES = {"low", "medium", "high", "critical"}
+RISK_RATINGS = {"low", "medium", "high", "critical"}
+MAX_IDENTIFIER_LENGTH = 128
+MAX_TEXT_LENGTH = 4_096
+MAX_EVIDENCE_BYTES = 256 * 1024
 ACTIVE_STATUSES = {
     "open",
     "risk_assessed",
@@ -130,6 +136,7 @@ class GovernanceCore:
                 CREATE TABLE IF NOT EXISTS governance_events (
                     event_id TEXT PRIMARY KEY,
                     finding_id TEXT NOT NULL REFERENCES findings(finding_id),
+                    event_sequence INTEGER NOT NULL,
                     event_type TEXT NOT NULL,
                     actor_id TEXT NOT NULL,
                     actor_role TEXT NOT NULL,
@@ -139,10 +146,43 @@ class GovernanceCore:
                     previous_hash TEXT NOT NULL,
                     event_hash TEXT NOT NULL UNIQUE
                 );
-                CREATE INDEX IF NOT EXISTS idx_events_finding ON governance_events(finding_id, occurred_at);
+                CREATE INDEX IF NOT EXISTS idx_events_finding ON governance_events(finding_id, event_sequence);
                 """
             )
+            columns = {row[1] for row in db.execute("PRAGMA table_info(governance_events)").fetchall()}
+            if "event_sequence" not in columns:
+                db.execute("ALTER TABLE governance_events ADD COLUMN event_sequence INTEGER NOT NULL DEFAULT 0")
+            self._backfill_event_sequences(db)
             db.commit()
+
+    @staticmethod
+    def _backfill_event_sequences(db: sqlite3.Connection) -> None:
+        """Assign deterministic sequence values to existing per-finding chains."""
+        finding_rows = db.execute("SELECT DISTINCT finding_id FROM governance_events").fetchall()
+        for finding_row in finding_rows:
+            finding_id = str(finding_row[0])
+            rows = db.execute(
+                "SELECT event_id, previous_hash, event_hash, occurred_at FROM governance_events "
+                "WHERE finding_id = ? ORDER BY occurred_at, event_id",
+                (finding_id,),
+            ).fetchall()
+            if rows and all(int(row[0] or 0) > 0 for row in db.execute(
+                "SELECT event_sequence FROM governance_events WHERE finding_id = ?", (finding_id,)
+            ).fetchall()):
+                continue
+            by_previous = {str(row[1]): row for row in rows}
+            ordered: list[sqlite3.Row] = []
+            current = by_previous.get("")
+            while current is not None:
+                ordered.append(current)
+                current = by_previous.get(str(current[2]))
+            known_ids = {str(row[0]) for row in ordered}
+            ordered.extend(row for row in rows if str(row[0]) not in known_ids)
+            for sequence, row in enumerate(ordered, start=1):
+                db.execute(
+                    "UPDATE governance_events SET event_sequence = ? WHERE event_id = ?",
+                    (sequence, row[0]),
+                )
 
     def _insert_workflow(self, sql: str, values: tuple[Any, ...]) -> None:
         with closing(self._connect()) as db:
@@ -164,15 +204,57 @@ class GovernanceCore:
         if actor.role not in roles:
             raise PermissionError(f"role {actor.role} cannot perform this action")
 
+    @staticmethod
+    def _required_text(value: str, field: str, limit: int = MAX_TEXT_LENGTH) -> str:
+        if not isinstance(value, str) or not value.strip() or len(value) > limit:
+            raise ValueError(f"{field} must be non-empty and at most {limit} characters")
+        return value.strip()
+
+    @classmethod
+    def _identifier(cls, value: str, field: str) -> str:
+        return cls._required_text(value, field, MAX_IDENTIFIER_LENGTH)
+
+    @staticmethod
+    def _severity(value: str) -> str:
+        normalized = value.lower() if isinstance(value, str) else ""
+        if normalized not in SEVERITIES:
+            raise ValueError("severity must be low, medium, high, or critical")
+        return normalized
+
+    @staticmethod
+    def _risk_rating(value: str, field: str) -> str:
+        normalized = value.lower() if isinstance(value, str) else ""
+        if normalized not in RISK_RATINGS:
+            raise ValueError(f"{field} must be low, medium, high, or critical")
+        return normalized
+
+    @staticmethod
+    def _due_date(value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("due_date must be an ISO date")
+        try:
+            date.fromisoformat(value)
+        except ValueError as error:
+            raise ValueError("due_date must be an ISO date") from error
+        return value
+
     def _event(
         self, db: sqlite3.Connection, finding_id: str, event_type: str,
         actor: ActorContext, details: dict[str, Any], now: float,
     ) -> None:
         previous = db.execute(
-            "SELECT event_hash FROM governance_events WHERE finding_id = ? ORDER BY occurred_at DESC LIMIT 1",
+            "SELECT event_hash FROM governance_events WHERE finding_id = ? "
+            "ORDER BY event_sequence DESC LIMIT 1",
             (finding_id,),
         ).fetchone()
         previous_hash = "" if previous is None else str(previous["event_hash"])
+        sequence_row = db.execute(
+            "SELECT COALESCE(MAX(event_sequence), 0) + 1 FROM governance_events WHERE finding_id = ?",
+            (finding_id,),
+        ).fetchone()
+        event_sequence = int(sequence_row[0])
         body = {
             "finding_id": finding_id, "event_type": event_type,
             "actor_id": actor.actor_id, "actor_role": actor.role,
@@ -183,9 +265,12 @@ class GovernanceCore:
             (previous_hash + json.dumps(body, sort_keys=True, separators=(",", ":"))).encode("utf-8")
         ).hexdigest()
         db.execute(
-            "INSERT INTO governance_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (uuid.uuid4().hex, finding_id, event_type, actor.actor_id, actor.role,
-             actor.auth_method, now, json.dumps(details, sort_keys=True),
+            "INSERT INTO governance_events("
+            "event_id, finding_id, event_sequence, event_type, actor_id, actor_role, "
+            "auth_method, occurred_at, details_json, previous_hash, event_hash"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (uuid.uuid4().hex, finding_id, event_sequence, event_type, actor.actor_id,
+             actor.role, actor.auth_method, now, json.dumps(details, sort_keys=True),
              previous_hash, event_hash),
         )
 
@@ -218,6 +303,12 @@ class GovernanceCore:
                        title: str, risk_owner: str, severity: str,
                        actor: ActorContext) -> dict[str, Any]:
         self._require(actor, "admin", "analyst")
+        finding_id = self._identifier(finding_id, "finding_id")
+        control_id = self._identifier(control_id, "control_id")
+        asset_id = self._identifier(asset_id, "asset_id")
+        title = self._required_text(title, "title")
+        risk_owner = self._identifier(risk_owner, "risk_owner")
+        severity = self._severity(severity)
         values = (finding_id, control_id, asset_id, title, risk_owner, severity, "open",
                   None, None, None, None, None, None, self._now(), self._now())
         with closing(self._connect()) as db:
@@ -236,6 +327,8 @@ class GovernanceCore:
     def assess_risk(self, finding_id: str, actor: ActorContext,
                     likelihood: str, impact: str) -> dict[str, Any]:
         self._require(actor, "risk_owner", "analyst", "admin")
+        likelihood = self._risk_rating(likelihood, "likelihood")
+        impact = self._risk_rating(impact, "impact")
         finding = self.get_finding(finding_id)
         risk_id = "RS-" + uuid.uuid4().hex[:12]
         result = self._mutate(finding_id, actor, "risk_assessed", "risk_assessed",
@@ -253,8 +346,9 @@ class GovernanceCore:
         self._require(actor, "risk_owner", "analyst", "admin")
         if treatment_type not in TREATMENTS:
             raise ValueError(f"unsupported treatment: {treatment_type}")
-        if not reason.strip() or not action_owner.strip():
-            raise ValueError("treatment reason and action owner are required")
+        reason = self._required_text(reason, "treatment reason")
+        action_owner = self._identifier(action_owner, "action_owner")
+        due_date = self._due_date(due_date)
         treatment_id = "RT-" + uuid.uuid4().hex[:12]
         result = self._mutate(finding_id, actor, "treatment_proposed", "pending_approval", {
             "treatment_type": treatment_type, "reason": reason, "action_owner": action_owner
@@ -288,8 +382,7 @@ class GovernanceCore:
     def start_action(self, finding_id: str, actor: ActorContext,
                      implementer: str) -> dict[str, Any]:
         self._require(actor, "risk_owner", "analyst", "admin")
-        if not implementer.strip():
-            raise ValueError("implementer is required")
+        implementer = self._identifier(implementer, "implementer")
         finding = self.get_finding(finding_id)
         action_id = "ACT-" + uuid.uuid4().hex[:12]
         result = self._mutate(finding_id, actor, "action_started", "in_progress",
@@ -304,9 +397,12 @@ class GovernanceCore:
     def submit_evidence(self, finding_id: str, actor: ActorContext,
                         source: str, content: bytes | str) -> dict[str, Any]:
         self._require(actor, "risk_owner", "analyst", "admin")
-        if not source.strip():
-            raise ValueError("evidence source is required")
+        source = self._required_text(source, "evidence source", MAX_IDENTIFIER_LENGTH)
+        if not isinstance(content, (bytes, str)):
+            raise ValueError("evidence content must be bytes or text")
         raw = content.encode("utf-8") if isinstance(content, str) else content
+        if not raw or len(raw) > MAX_EVIDENCE_BYTES:
+            raise ValueError("evidence content must be non-empty and within the size limit")
         evidence_id = "EV-" + uuid.uuid4().hex[:12].upper()
         now = self._now()
         with closing(self._connect()) as db:
@@ -365,6 +461,12 @@ class GovernanceCore:
                        actor: ActorContext) -> dict[str, Any]:
         """Create a finding once, then record reassessment without duplicates."""
         self._require(actor, "admin", "analyst")
+        finding_id = self._identifier(finding_id, "finding_id")
+        control_id = self._identifier(control_id, "control_id")
+        asset_id = self._identifier(asset_id, "asset_id")
+        title = self._required_text(title, "title")
+        risk_owner = self._identifier(risk_owner, "risk_owner")
+        severity = self._severity(severity)
         try:
             return self.create_finding(
                 finding_id, control_id, asset_id, title, risk_owner, severity, actor
@@ -424,7 +526,7 @@ class GovernanceCore:
 
     def list_events(self, finding_id: str) -> list[dict[str, Any]]:
         with closing(self._connect()) as db:
-            rows = db.execute("SELECT * FROM governance_events WHERE finding_id = ? ORDER BY occurred_at, event_id",
+            rows = db.execute("SELECT * FROM governance_events WHERE finding_id = ? ORDER BY event_sequence",
                               (finding_id,)).fetchall()
         return [dict(row) for row in rows]
 

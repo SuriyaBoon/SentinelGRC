@@ -19,20 +19,37 @@ class ConnectorEventStore:
         with closing(sqlite3.connect(self.path)) as db:
             db.execute("""
                 CREATE TABLE IF NOT EXISTS connector_events (
-                    event_id TEXT PRIMARY KEY,
                     source TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
                     payload_hash TEXT NOT NULL,
-                    accepted_at REAL NOT NULL
+                    accepted_at REAL NOT NULL,
+                    PRIMARY KEY (source, event_id)
                 )
             """)
+            columns = db.execute("PRAGMA table_info(connector_events)").fetchall()
+            primary_keys = [row[1] for row in sorted(columns, key=lambda row: row[5]) if row[5]]
+            if primary_keys == ["event_id"]:
+                db.executescript("""
+                    CREATE TABLE connector_events_v2 (
+                        source TEXT NOT NULL,
+                        event_id TEXT NOT NULL,
+                        payload_hash TEXT NOT NULL,
+                        accepted_at REAL NOT NULL,
+                        PRIMARY KEY (source, event_id)
+                    );
+                    INSERT OR IGNORE INTO connector_events_v2(source, event_id, payload_hash, accepted_at)
+                        SELECT source, event_id, payload_hash, accepted_at FROM connector_events;
+                    DROP TABLE connector_events;
+                    ALTER TABLE connector_events_v2 RENAME TO connector_events;
+                """)
             db.commit()
 
     def reserve(self, event_id: str, source: str, payload_hash: str) -> bool:
         with closing(sqlite3.connect(self.path, timeout=10)) as db:
             try:
                 db.execute(
-                    "INSERT INTO connector_events VALUES (?, ?, ?, ?)",
-                    (event_id, source, payload_hash, time.time()),
+                    "INSERT INTO connector_events(source, event_id, payload_hash, accepted_at) VALUES (?, ?, ?, ?)",
+                    (source, event_id, payload_hash, time.time()),
                 )
             except sqlite3.IntegrityError:
                 db.rollback()

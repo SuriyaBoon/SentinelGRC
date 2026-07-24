@@ -54,3 +54,29 @@ class GovernanceHttpTests(unittest.TestCase):
         self.assertEqual(self.app.handle("GET", "/wrong", {}, b"")[0], 404)
         status, _ = self.app.handle("POST", "/v1/governance/report", {}, b"{}")
         self.assertEqual(status, 401)
+
+    def test_invalid_json_and_oversized_requests_are_rejected(self):
+        headers = {"X-API-Key-ID": "alice-v1", "Authorization": f"Bearer {self.secret}"}
+        self.assertEqual(
+            self.app.handle("POST", "/v1/governance/create", headers, b"\xff")[0], 400
+        )
+        self.assertEqual(
+            self.app.handle("POST", "/v1/governance/create", headers, b"x" * (256 * 1024 + 1))[0], 413
+        )
+
+    def test_authorization_failure_is_not_reported_as_authentication_failure(self):
+        identities = HumanIdentityStore(str(Path(self.temp.name) / "restricted-identity.db"))
+        identities.create_user("reviewer", "risk_owner")
+        secret = identities.issue_api_key("reviewer", "reviewer-v1")
+        app = GovernanceHttpApplication(
+            GovernanceApi(GovernanceCore(str(Path(self.temp.name) / "restricted.db")), identities)
+        )
+        status, _ = app.handle(
+            "POST", "/v1/governance/create",
+            {"X-API-Key-ID": "reviewer-v1", "Authorization": f"Bearer {secret}"},
+            json.dumps({
+                "finding_id": "F-FORBIDDEN", "control_id": "AC", "asset_id": "APP",
+                "title": "Forbidden", "risk_owner": "owner", "severity": "low",
+            }).encode(),
+        )
+        self.assertEqual(status, 403)

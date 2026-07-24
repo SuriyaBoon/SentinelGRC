@@ -52,10 +52,12 @@ def process_inbox_once(
                 state_db, access_review, audit_path=audit_path,
                 run_lease_seconds=lease_seconds,
             )
-            queue.complete(int(job["job_id"]))
-            results.append({"file": str(posture_path), **result})
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
-            status = queue.fail(int(job["job_id"]), str(error), max_attempts, retry_delay)
+            if not queue.complete(int(job["job_id"]), worker_id):
+                results.append({"file": str(posture_path), "status": "lease_lost"})
+            else:
+                results.append({"file": str(posture_path), **result})
+        except Exception as error:
+            status = queue.fail(int(job["job_id"]), worker_id, str(error), max_attempts, retry_delay)
             results.append({"file": str(posture_path), "status": "error", "queue_status": status, "error": str(error)})
         finally:
             stop.set()

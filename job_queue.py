@@ -41,6 +41,8 @@ class SQLiteJobQueue:
         return cursor.rowcount == 1
 
     def claim(self, worker_id: str, lease_seconds: int = 300, now: float | None = None) -> dict[str, Any] | None:
+        if not worker_id.strip() or lease_seconds <= 0:
+            raise ValueError("worker_id and a positive lease_seconds are required")
         current = time.time() if now is None else now
         with closing(sqlite3.connect(self.path, timeout=5)) as connection:
             connection.row_factory = sqlite3.Row
@@ -67,35 +69,52 @@ class SQLiteJobQueue:
             return result
 
     def renew(self, job_id: int, worker_id: str, lease_seconds: int = 300, now: float | None = None) -> bool:
+        if not worker_id.strip() or lease_seconds <= 0:
+            raise ValueError("worker_id and a positive lease_seconds are required")
         current = time.time() if now is None else now
         with closing(sqlite3.connect(self.path)) as connection:
             cursor = connection.execute(
-                "UPDATE pipeline_jobs SET locked_until = ? WHERE job_id = ? AND status = 'running' AND worker_id = ?",
-                (current + lease_seconds, job_id, worker_id),
+                "UPDATE pipeline_jobs SET locked_until = ? WHERE job_id = ? AND status = 'running' AND worker_id = ? AND locked_until > ?",
+                (current + lease_seconds, job_id, worker_id, current),
             )
             connection.commit()
         return cursor.rowcount == 1
-    def complete(self, job_id: int) -> None:
-        with closing(sqlite3.connect(self.path)) as connection:
-            connection.execute(
-                "UPDATE pipeline_jobs SET status = 'completed', locked_until = NULL, last_error = NULL WHERE job_id = ?",
-                (job_id,),
-            )
-            connection.commit()
 
-    def fail(self, job_id: int, error: str, max_attempts: int = 3, retry_delay: int = 60, now: float | None = None) -> str:
+    def complete(self, job_id: int, worker_id: str, now: float | None = None) -> bool:
+        """Complete only a job still leased to the calling worker."""
+        if not worker_id.strip():
+            raise ValueError("worker_id is required")
         current = time.time() if now is None else now
         with closing(sqlite3.connect(self.path)) as connection:
-            row = connection.execute("SELECT attempts FROM pipeline_jobs WHERE job_id = ?", (job_id,)).fetchone()
-            if row is None:
-                raise ValueError(f"Unknown job {job_id}.")
-            status = "dead" if row[0] >= max_attempts else "pending"
-            connection.execute(
-                "UPDATE pipeline_jobs SET status = ?, available_at = ?, locked_until = NULL, worker_id = NULL, last_error = ? WHERE job_id = ?",
-                (status, current + (0 if status == "dead" else retry_delay), error[:2000], job_id),
+            cursor = connection.execute(
+                "UPDATE pipeline_jobs SET status = 'completed', locked_until = NULL, last_error = NULL "
+                "WHERE job_id = ? AND status = 'running' AND worker_id = ? AND locked_until > ?",
+                (job_id, worker_id, current),
             )
             connection.commit()
-        return status
+        return cursor.rowcount == 1
+
+    def fail(self, job_id: int, worker_id: str, error: str, max_attempts: int = 3, retry_delay: int = 60, now: float | None = None) -> str:
+        """Return lease_lost rather than mutating a job reclaimed by another worker."""
+        if not worker_id.strip() or max_attempts < 1 or retry_delay < 0:
+            raise ValueError("worker_id, max_attempts, and retry_delay are invalid")
+        current = time.time() if now is None else now
+        with closing(sqlite3.connect(self.path)) as connection:
+            row = connection.execute(
+                "SELECT attempts, status, worker_id, locked_until FROM pipeline_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Unknown job {job_id}.")
+            if row[1] != "running" or row[2] != worker_id or row[3] is None or row[3] <= current:
+                return "lease_lost"
+            status = "dead" if row[0] >= max_attempts else "pending"
+            cursor = connection.execute(
+                "UPDATE pipeline_jobs SET status = ?, available_at = ?, locked_until = NULL, worker_id = NULL, last_error = ? "
+                "WHERE job_id = ? AND status = 'running' AND worker_id = ? AND locked_until > ?",
+                (status, current + (0 if status == "dead" else retry_delay), error[:2000], job_id, worker_id, current),
+            )
+            connection.commit()
+        return status if cursor.rowcount == 1 else "lease_lost"
 
     def metadata(self) -> dict[str, int]:
         with closing(sqlite3.connect(self.path)) as connection:

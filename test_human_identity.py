@@ -34,3 +34,10 @@ class HumanIdentityTests(unittest.TestCase):
         self.store.create_user("carol", "analyst")
         secret = self.store.issue_api_key("carol", "carol-v1")
         self.assertNotIn(secret, Path(self.store.path).read_bytes().decode("utf-8", errors="ignore"))
+
+    def test_user_and_key_identifiers_are_constrained(self):
+        with self.assertRaises(ValueError):
+            self.store.create_user("alice admin", "analyst")
+        self.store.create_user("alice", "analyst")
+        with self.assertRaises(ValueError):
+            self.store.issue_api_key("alice", "key with spaces")

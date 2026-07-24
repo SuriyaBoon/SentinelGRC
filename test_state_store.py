@@ -17,7 +17,8 @@ class StateStoreTests(unittest.TestCase):
     def test_payload_identity_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             store = SQLiteStateStore(str(Path(directory) / "state.db"))
-            store.remember_payload("hash-1", "evidence-1", now=1000)
+            self.assertTrue(store.remember_payload("hash-1", "evidence-1", now=1000))
+            self.assertFalse(store.remember_payload("hash-1", "evidence-2", now=1001))
             self.assertEqual(store.get_evidence_id("hash-1"), "evidence-1")
             self.assertIsNone(store.get_evidence_id("hash-2"))
 
