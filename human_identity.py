@@ -8,12 +8,20 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import secrets
 import sqlite3
 from contextlib import closing
 from pathlib import Path
 
 from governance_core import ActorContext, ROLES
+
+
+class AuthenticationError(PermissionError):
+    """Raised only when a supplied credential cannot be authenticated."""
+
+
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 
 class HumanIdentityStore:
@@ -46,7 +54,7 @@ class HumanIdentityStore:
         return hashlib.sha256(secret.encode("utf-8")).hexdigest()
 
     def create_user(self, user_id: str, role: str) -> None:
-        if not user_id.strip() or role not in ROLES:
+        if not _IDENTIFIER_RE.fullmatch(user_id) or role not in ROLES:
             raise ValueError("user_id and supported role are required")
         with closing(self._connect()) as db:
             try:
@@ -56,6 +64,8 @@ class HumanIdentityStore:
             db.commit()
 
     def issue_api_key(self, user_id: str, key_id: str) -> str:
+        if not _IDENTIFIER_RE.fullmatch(key_id):
+            raise ValueError("key_id must contain only letters, numbers, dot, underscore or hyphen")
         secret = secrets.token_urlsafe(32)
         with closing(self._connect()) as db:
             user = db.execute("SELECT active FROM users WHERE user_id = ?", (user_id,)).fetchone()
@@ -84,5 +94,5 @@ class HumanIdentityStore:
                 WHERE k.key_id = ? AND k.active = 1 AND u.active = 1
             """, (key_id,)).fetchone()
         if row is None or not hmac.compare_digest(row[2], self._hash(secret)):
-            raise PermissionError("invalid or revoked human API key")
+            raise AuthenticationError("invalid or revoked human API key")
         return ActorContext(row[0], row[1], auth_method="api_key")

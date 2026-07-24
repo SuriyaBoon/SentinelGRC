@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from governance_core import ActorContext, GovernanceCore
 
@@ -77,12 +78,32 @@ class GovernanceCoreTests(unittest.TestCase):
         self.assertEqual(len(self.core.list_events("F-005")), 2)
         self.assertTrue(self.core.verify_event_chain("F-005"))
 
+    def test_event_chain_uses_sequence_when_timestamps_match(self):
+        with patch.object(self.core, "_now", return_value=1000.0):
+            self.core.upsert_finding("F-SEQ", "AC-SEQ", "APP-SEQ",
+                                     "Sequence test", "owner-seq", "high", self.analyst)
+            self.core.upsert_finding("F-SEQ", "AC-SEQ", "APP-SEQ",
+                                     "Sequence test reassessed", "owner-seq", "high", self.analyst)
+        events = self.core.list_events("F-SEQ")
+        self.assertEqual([event["event_sequence"] for event in events], [1, 2])
+        self.assertTrue(self.core.verify_event_chain("F-SEQ"))
+
     def test_finding_identity_cannot_change_on_upsert(self):
         self.core.upsert_finding("F-006", "AC-06", "APP-06",
                                  "Weak encryption", "owner-6", "high", self.analyst)
         with self.assertRaises(ValueError):
             self.core.upsert_finding("F-006", "AC-99", "APP-06",
                                      "Weak encryption", "owner-6", "high", self.analyst)
+
+    def test_governance_input_validation_rejects_invalid_risk_and_evidence(self):
+        with self.assertRaises(ValueError):
+            self.core.create_finding("F-BAD", "AC-BAD", "APP-BAD", "Bad", "owner", "urgent", self.analyst)
+        self.core.create_finding("F-VALID", "AC-VALID", "APP-VALID", "Valid", "owner-valid", "high", self.analyst)
+        with self.assertRaises(ValueError):
+            self.core.assess_risk("F-VALID", ActorContext("owner-valid", "risk_owner"), "likely", "high")
+        self.core.assess_risk("F-VALID", ActorContext("owner-valid", "risk_owner"), "high", "high")
+        with self.assertRaises(ValueError):
+            self.core.propose_treatment("F-VALID", ActorContext("owner-valid", "risk_owner"), "mitigate", "fix", "team", "not-a-date")
 
     def test_lifecycle_persists_normalized_business_records(self):
         self.core.create_finding("F-007", "AC-07", "APP-07",

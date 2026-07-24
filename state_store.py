@@ -88,14 +88,16 @@ class SQLiteStateStore:
             ).fetchone()
         return None if row is None else str(row["evidence_id"])
 
-    def remember_payload(self, payload_hash: str, evidence_id: str, now: float | None = None) -> None:
+    def remember_payload(self, payload_hash: str, evidence_id: str, now: float | None = None) -> bool:
+        """Persist an accepted payload and report whether this call created it."""
         current = time.time() if now is None else now
         with closing(self._connect()) as connection:
-            connection.execute(
+            cursor = connection.execute(
                 "INSERT OR IGNORE INTO accepted_payloads(payload_hash, evidence_id, accepted_at) VALUES (?, ?, ?)",
                 (payload_hash, evidence_id, current),
             )
             connection.commit()
+        return cursor.rowcount == 1
 
     def claim_pipeline_run(self, input_hash: str, now: float | None = None, lease_seconds: int = 900) -> bool:
         current = time.time() if now is None else now

@@ -41,3 +41,11 @@ class ConnectorTests(unittest.TestCase):
         accepted = ingest_event(self.raw, source="cloud", event_id="evt-4",
                                 signature=self.signature, secret="connector-secret", store=self.store)
         self.assertEqual(accepted["status"], "accepted")
+
+    def test_same_event_id_from_different_sources_is_not_a_duplicate(self):
+        first = ingest_event(self.raw, source="siem", event_id="shared-event",
+                             signature=self.signature, secret="connector-secret", store=self.store)
+        second = ingest_event(self.raw, source="edr", event_id="shared-event",
+                              signature=self.signature, secret="connector-secret", store=self.store)
+        self.assertEqual(first["status"], "accepted")
+        self.assertEqual(second["status"], "accepted")

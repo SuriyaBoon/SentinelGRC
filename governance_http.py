@@ -10,6 +10,10 @@ import json
 from typing import Any
 
 from governance_api import GovernanceApi
+from human_identity import AuthenticationError
+
+
+MAX_REQUEST_BODY_BYTES = 256 * 1024
 
 
 class GovernanceHttpApplication:
@@ -17,6 +21,12 @@ class GovernanceHttpApplication:
         self.api = api
 
     def handle(self, method: str, path: str, headers: dict[str, str], body: bytes) -> tuple[int, dict[str, Any]]:
+        if not isinstance(method, str) or not isinstance(path, str):
+            return 400, {"error": "invalid_request"}
+        if not isinstance(headers, dict) or not isinstance(body, bytes):
+            return 400, {"error": "invalid_request"}
+        if len(body) > MAX_REQUEST_BODY_BYTES:
+            return 413, {"error": "request_too_large"}
         method = method.upper()
         if method == "GET" and path in {"/health", "/healthz"}:
             return 200, {"status": "ok"}
@@ -59,8 +69,12 @@ class GovernanceHttpApplication:
                 payload.update(parsed)
             result = self.api.dispatch(action, key_id, secret, payload)
             return 200, result
-        except (PermissionError, ValueError, KeyError) as error:
-            status = 401 if isinstance(error, PermissionError) else 400
+        except AuthenticationError as error:
+            return 401, {"error": str(error)}
+        except PermissionError as error:
+            return 403, {"error": str(error)}
+        except (ValueError, KeyError) as error:
+            status = 400
             return status, {"error": str(error)}
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             return 400, {"error": "invalid_json"}
