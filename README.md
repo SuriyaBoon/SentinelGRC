@@ -168,6 +168,42 @@ flowchart LR
 
 The JML bridge requires a closed request and a passing verification record. The Mini-SOAR bridge accepts synthetic-lab evidence and requires passing verification by default. Both boundaries are implemented and tested locally; neither is a live production integration.
 
+### Connected systems map
+
+This is the single map for the three connected portfolio systems. **LogWatcher** provides a validated synthetic alert fixture. **JML-Automation** is read through SQLite in read-only mode. **Mini-SOAR** provides only closed, independently verified `synthetic-lab` evidence. SentinelGRC is the common governance and evidence sink; none of these connections can change the source system.
+
+```mermaid
+flowchart LR
+    subgraph Sources["Connected portfolio systems"]
+        LW["LogWatcher"]
+        JML["JML-Automation"]
+        MS["Mini-SOAR"]
+    end
+
+    subgraph Boundaries["Accepted connector boundary"]
+        LC["Staging alert connector"]
+        JC["Read-only JML bridge"]
+        MC["Verified synthetic-evidence bridge"]
+    end
+
+    subgraph Sentinel["SentinelGRC"]
+        IN["Validate and normalize"]
+        FI["Create or reassess stable finding"]
+        GO["Governance lifecycle"]
+        AU["Audit and evidence records"]
+    end
+
+    LW -->|"Alert JSONL fixture"| LC
+    JML -->|"Closed verified request"| JC
+    MS -->|"Closed verified synthetic evidence"| MC
+    LC --> IN
+    JC --> IN
+    MC --> IN
+    IN --> FI --> GO --> AU
+```
+
+The three paths differ in their trust condition, but converge only after validation and stable-identity handling. The LogWatcher path has tracked concept proof of first ingestion and replay. The JML and Mini-SOAR paths are covered by local bridge tests. All three remain portfolio integrations, not live production connectors.
+
 ### Mini-SOAR blueprint appendix
 
 The next six diagrams are the remaining Mermaid diagrams from the Mini-SOAR design documents. They describe a **separate concept-only response layer** that can feed evidence back into SentinelGRC. They do not represent an implemented live response service in this repository: all action adapters and target stores below are synthetic or mock by design.
