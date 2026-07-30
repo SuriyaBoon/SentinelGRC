@@ -12,3 +12,4 @@ posture.json
 ad-access-review.json
 runtime/
 *.lock
+infra/azure/*.bicepparam

@@ -85,6 +85,14 @@ jobs:
           SENTINEL_TEST_POSTGRES_URL: postgresql://sentinel:sentinel-test-only@127.0.0.1:5432/sentinel_test
         run: python -m unittest discover -v -p "test_postgres*.py"
 
+      - name: Compile Azure staging Bicep
+        run: |
+          docker run --rm \
+            --mount "type=bind,source=$PWD,target=/src,readonly" \
+            --entrypoint /bin/sh \
+            mcr.microsoft.com/azure-cli@sha256:23b520868509add054d385d90dc3fc5268f10a2f58947a994e30babe938e31ae \
+            -c "az bicep install --version v0.45.15 && az bicep build --file /src/infra/azure/main.bicep --outfile /tmp/main.json"
+
       - name: Build runtime image
         run: docker build --tag sentinelgrc:${{ github.sha }} .
 
