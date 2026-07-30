@@ -51,6 +51,7 @@ class RuntimeApplicationTests(unittest.TestCase):
         self.assertEqual(ready_body["status"], "ready")
         self.assertIn("governance_store", ready_body["checks"])
         self.assertIn("identity_store", ready_body["checks"])
+        self.assertIn("evidence_store", ready_body["checks"])
         self.assertEqual(
             live["headers"]["X-Request-ID"], live_body["request_id"]
         )
@@ -125,6 +126,9 @@ class RuntimeApplicationTests(unittest.TestCase):
             oidc_audience="api://sentinel",
             oidc_tenant_id="00000000-0000-0000-0000-000000000001",
             oidc_jwks_url="https://login.microsoftonline.com/tenant/discovery/v2.0/keys",
+            azure_managed_identity_client_id=(
+                "00000000-0000-0000-0000-000000000002"
+            ),
             require_tls=True,
         )
         with self.assertRaisesRegex(RuntimeError, "production startup is blocked"):

@@ -7,10 +7,10 @@ templates in `infra/azure`. It does not authorize deployment, create an Azure
 subscription, configure Microsoft Entra, publish an image, or enable
 `SENTINEL_ENV=production`.
 
-The staging runtime includes verified OIDC middleware. Production startup still
-has explicit gates for object-storage evidence persistence and immutable audit
-export. The Azure resources below provide deployment boundaries for those
-remaining adapters; provisioning resources does not make the adapters exist.
+The staging runtime includes verified OIDC middleware and a managed-identity
+Azure Blob evidence adapter. Production startup still has an explicit gate for
+immutable audit export. Provisioning the resources below is not proof that
+these controls have been validated in a real Azure tenant.
 
 ```mermaid
 flowchart LR

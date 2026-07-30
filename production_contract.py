@@ -54,6 +54,7 @@ class Settings:
     oidc_jwks_url: str = ""
     oidc_role_map: dict[str, str] = field(default_factory=dict)
     oidc_group_role_map: dict[str, str] = field(default_factory=dict)
+    azure_managed_identity_client_id: str = ""
     require_tls: bool = False
 
     @classmethod
@@ -81,6 +82,9 @@ class Settings:
             oidc_jwks_url=os.getenv("SENTINEL_OIDC_JWKS_URL", "").strip(),
             oidc_role_map=_read_mapping("SENTINEL_OIDC_ROLE_MAP"),
             oidc_group_role_map=_read_mapping("SENTINEL_OIDC_GROUP_ROLE_MAP"),
+            azure_managed_identity_client_id=os.getenv(
+                "SENTINEL_AZURE_CLIENT_ID", ""
+            ).strip(),
             require_tls=_read_bool("SENTINEL_REQUIRE_TLS"),
         )
 
@@ -103,6 +107,14 @@ class Settings:
                 errors.append(f"{self.environment} requires SENTINEL_OIDC_TENANT_ID")
             if not self.oidc_jwks_url:
                 errors.append(f"{self.environment} requires SENTINEL_OIDC_JWKS_URL")
+            if not self.evidence_store_url:
+                errors.append(
+                    f"{self.environment} requires SENTINEL_EVIDENCE_STORE_URL"
+                )
+            if not self.azure_managed_identity_client_id:
+                errors.append(
+                    f"{self.environment} requires SENTINEL_AZURE_CLIENT_ID"
+                )
         if self.environment == "production":
             if not self.database_url.startswith(("postgresql://", "postgresql+psycopg://")):
                 errors.append("production requires PostgreSQL")
@@ -110,8 +122,6 @@ class Settings:
                 ("postgresql://", "postgresql+psycopg://")
             ):
                 errors.append("production identity storage requires PostgreSQL")
-            if not self.evidence_store_url:
-                errors.append("production requires SENTINEL_EVIDENCE_STORE_URL")
             if not self.audit_archive_url:
                 errors.append("production requires SENTINEL_AUDIT_ARCHIVE_URL")
             if not self.require_tls:

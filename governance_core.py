@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+from evidence_store import EvidenceStore, MemoryEvidenceStore
 from persistence import Database, DatabaseConnection, DatabaseIntegrityError
 
 ROLES = {"admin", "analyst", "risk_owner", "approver", "ciso", "risk_committee"}
@@ -58,8 +59,10 @@ class GovernanceCore:
         path: str = "runtime/governance.db",
         *,
         database: Database | None = None,
+        evidence_store: EvidenceStore | None = None,
     ) -> None:
         self.database = database or Database.from_target(path)
+        self.evidence_store = evidence_store or MemoryEvidenceStore()
         self.path = self.database.path or "postgresql"
         if self.database.dialect != "sqlite":
             return
@@ -125,7 +128,10 @@ class GovernanceCore:
                     sha256 TEXT NOT NULL,
                     submitted_by TEXT NOT NULL,
                     submitted_at REAL NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'submitted'
+                    status TEXT NOT NULL DEFAULT 'submitted',
+                    object_key TEXT,
+                    size_bytes INTEGER,
+                    etag TEXT
                 );
                 CREATE TABLE IF NOT EXISTS verification_records (
                     verification_id TEXT PRIMARY KEY,
@@ -173,6 +179,22 @@ class GovernanceCore:
             columns = {row[1] for row in db.execute("PRAGMA table_info(governance_events)").fetchall()}
             if "event_sequence" not in columns:
                 db.execute("ALTER TABLE governance_events ADD COLUMN event_sequence INTEGER NOT NULL DEFAULT 0")
+            evidence_columns = {
+                row[1]
+                for row in db.execute(
+                    "PRAGMA table_info(governance_evidence)"
+                ).fetchall()
+            }
+            for name, declaration in (
+                ("object_key", "TEXT"),
+                ("size_bytes", "INTEGER"),
+                ("etag", "TEXT"),
+            ):
+                if name not in evidence_columns:
+                    db.execute(
+                        f"ALTER TABLE governance_evidence "
+                        f"ADD COLUMN {name} {declaration}"
+                    )
             self._backfill_event_sequences(db)
             db.commit()
 
@@ -454,7 +476,25 @@ class GovernanceCore:
         raw = content.encode("utf-8") if isinstance(content, str) else content
         if not raw or len(raw) > MAX_EVIDENCE_BYTES:
             raise ValueError("evidence content must be non-empty and within the size limit")
+        digest = hashlib.sha256(raw).hexdigest()
+        finding = self.get_finding(finding_id)
+        if finding["status"] == "pending_verification":
+            existing = [
+                item
+                for item in self.list_evidence(finding_id)
+                if item["sha256"] == digest
+                and item["source"] == source
+                and item["submitted_by"] == actor.actor_id
+                and item["status"] == "submitted"
+            ]
+            if existing:
+                return finding
+        if finding["status"] != "in_progress":
+            raise ValueError(f"finding cannot transition from {finding['status']}")
         evidence_id = "EV-" + uuid.uuid4().hex[:12].upper()
+        stored = self.evidence_store.persist(raw)
+        if stored.sha256 != digest:
+            raise RuntimeError("evidence store returned inconsistent integrity metadata")
         now = self._now()
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
@@ -468,15 +508,44 @@ class GovernanceCore:
                 db.rollback()
                 raise KeyError(f"finding {finding_id} was not found")
             if row["status"] != "in_progress":
+                if row["status"] == "pending_verification":
+                    existing = db.execute(
+                        "SELECT evidence_id FROM governance_evidence "
+                        "WHERE finding_id = ? AND sha256 = ? AND source = ? "
+                        "AND submitted_by = ? AND status = 'submitted'",
+                        (finding_id, digest, source, actor.actor_id),
+                    ).fetchone()
+                    if existing is not None:
+                        db.rollback()
+                        return self.get_finding(finding_id)
                 db.rollback()
                 raise ValueError(f"finding cannot transition from {row['status']}")
-            db.execute("INSERT INTO governance_evidence VALUES (?,?,?,?,?,?,?)",
-                       (evidence_id, finding_id, source, hashlib.sha256(raw).hexdigest(),
-                        actor.actor_id, now, "submitted"))
+            db.execute(
+                "INSERT INTO governance_evidence("
+                "evidence_id, finding_id, source, sha256, submitted_by, "
+                "submitted_at, status, object_key, size_bytes, etag"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    evidence_id,
+                    finding_id,
+                    source,
+                    stored.sha256,
+                    actor.actor_id,
+                    now,
+                    "submitted",
+                    stored.object_key,
+                    stored.size_bytes,
+                    stored.etag,
+                ),
+            )
             db.execute("UPDATE findings SET status = 'pending_verification', evidence_submitter = ?, updated_at = ? WHERE finding_id = ?",
                        (actor.actor_id, now, finding_id))
             self._event(db, finding_id, "evidence_submitted", actor, {
-                "evidence_id": evidence_id, "source": source, "sha256": hashlib.sha256(raw).hexdigest()
+                "evidence_id": evidence_id,
+                "source": source,
+                "sha256": stored.sha256,
+                "object_key": stored.object_key,
+                "size_bytes": stored.size_bytes,
             }, now)
             db.commit()
         return self.get_finding(finding_id)
@@ -589,6 +658,17 @@ class GovernanceCore:
         with closing(self._connect()) as db:
             rows = db.execute("SELECT * FROM governance_events WHERE finding_id = ? ORDER BY event_sequence",
                               (finding_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_evidence(self, finding_id: str) -> list[dict[str, Any]]:
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                "SELECT evidence_id, finding_id, source, sha256, submitted_by, "
+                "submitted_at, status, object_key, size_bytes, etag "
+                "FROM governance_evidence WHERE finding_id = ? "
+                "ORDER BY submitted_at, evidence_id",
+                (finding_id,),
+            ).fetchall()
         return [dict(row) for row in rows]
 
     def verify_event_chain(self, finding_id: str) -> bool:

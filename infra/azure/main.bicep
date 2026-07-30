@@ -774,6 +774,10 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = if (deployAppli
               value: '${storage.properties.primaryEndpoints.blob}${evidenceContainerName}'
             }
             {
+              name: 'SENTINEL_AZURE_CLIENT_ID'
+              value: appIdentity.properties.clientId
+            }
+            {
               name: 'SENTINEL_AUDIT_ARCHIVE_URL'
               value: '${storage.properties.primaryEndpoints.blob}${auditContainerName}'
             }

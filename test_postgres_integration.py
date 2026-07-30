@@ -57,7 +57,11 @@ class PostgresIntegrationTests(unittest.TestCase):
         status = self.migrations.status()
         self.assertEqual(
             [row["migration_id"] for row in status],
-            ["001_canonical_governance", "002_runtime_delivery"],
+            [
+                "001_canonical_governance",
+                "002_runtime_delivery",
+                "003_evidence_objects",
+            ],
         )
         self.assertEqual(len(status[0]["checksum"]), 64)
         with tempfile.TemporaryDirectory() as temp:
@@ -75,6 +79,13 @@ class PostgresIntegrationTests(unittest.TestCase):
             def ready(self):
                 return True
 
+        class ReadyEvidenceStore:
+            def ready(self):
+                return True
+
+            def persist(self, content):
+                raise AssertionError("not used by runtime composition test")
+
         with tempfile.TemporaryDirectory() as temp:
             settings = Settings(
                 environment="staging",
@@ -85,8 +96,16 @@ class PostgresIntegrationTests(unittest.TestCase):
                 oidc_audience="api://sentinel",
                 oidc_tenant_id="00000000-0000-0000-0000-000000000001",
                 oidc_jwks_url="https://login.microsoftonline.com/tenant/keys",
+                evidence_store_url="https://account.blob.core.windows.net/evidence",
+                azure_managed_identity_client_id=(
+                    "00000000-0000-0000-0000-000000000002"
+                ),
             )
-            runtime = SentinelRuntime(settings, ReadyVerifier())
+            runtime = SentinelRuntime(
+                settings,
+                ReadyVerifier(),
+                ReadyEvidenceStore(),
+            )
             try:
                 self.assertEqual(
                     runtime.governance_database.dialect, "postgresql"
