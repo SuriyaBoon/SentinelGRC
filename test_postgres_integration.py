@@ -71,14 +71,22 @@ class PostgresIntegrationTests(unittest.TestCase):
                 ).apply()
 
     def test_staging_runtime_composes_postgres_without_sqlite_fallback(self):
+        class ReadyVerifier:
+            def ready(self):
+                return True
+
         with tempfile.TemporaryDirectory() as temp:
             settings = Settings(
                 environment="staging",
                 database_url=POSTGRES_URL,
                 identity_database_url=POSTGRES_URL,
                 evidence_dir=temp,
+                oidc_issuer="https://login.microsoftonline.com/tenant/v2.0",
+                oidc_audience="api://sentinel",
+                oidc_tenant_id="00000000-0000-0000-0000-000000000001",
+                oidc_jwks_url="https://login.microsoftonline.com/tenant/keys",
             )
-            runtime = SentinelRuntime(settings)
+            runtime = SentinelRuntime(settings, ReadyVerifier())
             try:
                 self.assertEqual(
                     runtime.governance_database.dialect, "postgresql"

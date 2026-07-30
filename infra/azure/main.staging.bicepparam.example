@@ -18,3 +18,5 @@ param databaseAdministratorLogin = 'sentinelbootstrap'
 
 param oidcIssuer = 'https://login.microsoftonline.com/REPLACE_TENANT_ID/v2.0'
 param oidcAudience = 'api://REPLACE_SENTINEL_APP_ID'
+param oidcTenantId = 'REPLACE_TENANT_ID'
+param oidcJwksUrl = 'https://login.microsoftonline.com/REPLACE_TENANT_ID/discovery/v2.0/keys'

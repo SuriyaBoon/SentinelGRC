@@ -4,9 +4,9 @@ import unittest
 from pathlib import Path
 
 from governance_api import GovernanceApi
-from governance_core import GovernanceCore
+from governance_core import ActorContext, GovernanceCore
 from governance_http import GovernanceHttpApplication
-from human_identity import HumanIdentityStore
+from human_identity import AuthenticationError, HumanIdentityStore
 
 
 class GovernanceHttpTests(unittest.TestCase):
@@ -80,3 +80,39 @@ class GovernanceHttpTests(unittest.TestCase):
             }).encode(),
         )
         self.assertEqual(status, 403)
+
+    def test_oidc_actor_is_server_derived_and_body_cannot_override_it(self):
+        class VerifiedActor:
+            def verify(self, token):
+                if token != "signed-token":
+                    raise AuthenticationError("invalid bearer token")
+                return ActorContext("entra-user", "analyst", auth_method="oidc")
+
+        app = GovernanceHttpApplication(
+            self.app.api,
+            authentication_mode="oidc",
+            oidc_verifier=VerifiedActor(),
+        )
+        headers = {"Authorization": "Bearer signed-token"}
+        body = {
+            "finding_id": "F-OIDC",
+            "control_id": "AC-OIDC",
+            "asset_id": "APP-OIDC",
+            "title": "OIDC boundary",
+            "risk_owner": "owner",
+            "severity": "high",
+        }
+        status, result = app.handle(
+            "POST", "/v1/governance/create", headers, json.dumps(body).encode()
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(result["finding_id"], "F-OIDC")
+        event = self.app.api.core.list_events("F-OIDC")[0]
+        self.assertEqual((event["actor_id"], event["auth_method"]), (
+            "entra-user", "oidc"
+        ))
+        body["actor_id"] = "forged-user"
+        status, _ = app.handle(
+            "POST", "/v1/governance/create", headers, json.dumps(body).encode()
+        )
+        self.assertEqual(status, 400)

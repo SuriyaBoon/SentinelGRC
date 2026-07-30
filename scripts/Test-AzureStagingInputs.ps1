@@ -16,7 +16,13 @@ param(
     [string]$OidcIssuer,
 
     [Parameter(Mandatory = $true)]
-    [string]$OidcAudience
+    [string]$OidcAudience,
+
+    [Parameter(Mandatory = $true)]
+    [string]$OidcTenantId,
+
+    [Parameter(Mandatory = $true)]
+    [string]$OidcJwksUrl
 )
 
 $ErrorActionPreference = "Stop"
@@ -50,11 +56,25 @@ if ([string]::IsNullOrWhiteSpace($OidcAudience)) {
     throw "OidcAudience is required."
 }
 
+$tenantGuid = [Guid]::Empty
+if (-not [Guid]::TryParse($OidcTenantId, [ref]$tenantGuid) -or
+    $tenantGuid -eq [Guid]::Empty) {
+    throw "OidcTenantId must be a non-empty GUID."
+}
+
+$jwks = $null
+if (-not [Uri]::TryCreate($OidcJwksUrl, [UriKind]::Absolute, [ref]$jwks) -or
+    $jwks.Scheme -ne "https") {
+    throw "OidcJwksUrl must be an absolute HTTPS URL."
+}
+
 [pscustomobject]@{
     status = "valid"
     image_is_digest_pinned = $true
     registry = "$RegistryName.azurecr.io"
     oidc_issuer = $issuer.AbsoluteUri
     oidc_audience = $OidcAudience
+    oidc_tenant_id = $tenantGuid.ToString()
+    oidc_jwks_url = $jwks.AbsoluteUri
     azure_mutation_performed = $false
 } | ConvertTo-Json

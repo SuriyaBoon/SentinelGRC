@@ -7,10 +7,10 @@ templates in `infra/azure`. It does not authorize deployment, create an Azure
 subscription, configure Microsoft Entra, publish an image, or enable
 `SENTINEL_ENV=production`.
 
-The repository application still has explicit production startup gates:
-verified OIDC middleware, object-storage evidence persistence, and immutable
-audit export are not implemented. The Azure resources below provide the
-deployment boundary for those adapters; they do not make the adapters exist.
+The staging runtime includes verified OIDC middleware. Production startup still
+has explicit gates for object-storage evidence persistence and immutable audit
+export. The Azure resources below provide deployment boundaries for those
+remaining adapters; provisioning resources does not make the adapters exist.
 
 ```mermaid
 flowchart LR
@@ -120,7 +120,9 @@ Run the repository preflight. It performs no Azure mutation:
   -RegistryResourceGroup "<acr-resource-group>" `
   -RegistryName "<acr-name>" `
   -OidcIssuer "https://login.microsoftonline.com/<tenant-id>/v2.0" `
-  -OidcAudience "api://<sentinel-application-id>"
+  -OidcAudience "api://<sentinel-application-id>" `
+  -OidcTenantId "<tenant-id>" `
+  -OidcJwksUrl "https://login.microsoftonline.com/<tenant-id>/discovery/v2.0/keys"
 ```
 
 Expected result:
