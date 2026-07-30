@@ -536,7 +536,7 @@ python -m unittest discover -v -p "test_*.py"
 Current local regression result without an external database:
 
 ```text
-Ran 122 tests
+Ran 128 tests
 OK (skipped=9 PostgreSQL integration tests)
 ```
 
@@ -544,7 +544,7 @@ The PostgreSQL tests run when `SENTINEL_TEST_POSTGRES_URL` is set. The complete
 suite was also validated against an isolated PostgreSQL 17 container:
 
 ```text
-Ran 122 tests
+Ran 128 tests
 OK
 ```
 
@@ -553,8 +553,8 @@ human identity authentication, the full finding lifecycle, rollback,
 idempotent concurrent reassessment, ordered event chains, and runtime
 readiness. GitHub Actions runs the normal test discovery command, executes the
 nine PostgreSQL tests against an ephemeral database service, parses both
-PowerShell collectors, builds the non-root image, and checks that runtime
-artifacts are not tracked.
+PowerShell collectors, compiles the Azure Bicep with pinned tools, builds the
+non-root image, and checks that runtime artifacts are not tracked.
 
 ### Synthetic-lab integration proof
 
@@ -604,32 +604,39 @@ The following guardrails are implemented in code and covered by tests:
 
 ```text
 SentinelGRC/
-├── governance_core.py          # Finding, risk, approval, evidence, verification, closure state machine
-├── governance_api.py           # Transport-neutral authenticated workflow dispatcher
-├── governance_http.py          # Minimal HTTP adapter and request limits
+├── governance_core.py          # Finding-to-closure state machine
+├── governance_api.py           # Authenticated workflow dispatcher
+├── governance_http.py          # HTTP adapter and request limits
 ├── human_identity.py           # Human identity and hashed API-key store
-├── persistence.py              # SQLite/PostgreSQL adapter and connection pool
+├── persistence.py              # SQLite/PostgreSQL adapter and pool
+├── postgres_runtime_state.py   # PostgreSQL replay, queue, and outbox
 ├── runtime_app.py              # WSGI composition, readiness, and production gate
 ├── security_pack.py            # Control observation normalization
 ├── security_event_connector.py # Alert-to-finding mapping
 ├── connectors.py               # Connector event identity and replay state
-├── state_store.py              # Nonce, payload, and pipeline-run persistence
-├── job_queue.py                # SQLite queue leases, retry, and dead-letter state
-├── audit_log.py                # Append-only hash-chained operational audit log
+├── state_store.py              # Local nonce, payload, and pipeline state
+├── job_queue.py                # Local queue lease, retry, and dead-letter state
+├── audit_log.py                # Hash-chained operational audit log
 ├── reporting.py                # Summary and KPI/KRI report generation
-├── scripts/                    # CLI adapters, pipeline, worker, ingestion, and portfolio bridges
-├── agent/                      # Read-only Windows posture and AD access-review collectors
-├── migrations/                 # SQLite contracts and executable PostgreSQL schema
+├── scripts/                    # CLI adapters, workers, bridges, and Azure preflight
+├── agent/                      # Read-only Windows and AD collectors
+├── migrations/                 # SQLite contracts and PostgreSQL migrations
+├── infra/azure/                # Manual Azure staging Bicep and parameter contract
 ├── docs/evidence/              # Sanitized synthetic-lab proof package
 ├── ui/                         # Static workflow UI shell
-└── test_*.py                   # Automated unit and integration-style concept tests
+└── test_*.py                   # Automated unit and integration tests
 ```
 
 ## Production boundary
 
 This repository is **not** a production deployment. Before even a limited internal pilot, it would need at least:
 
-- An Azure Database for PostgreSQL instance with private networking, managed credentials, backup/restore validation, capacity tests, and operational ownership. The canonical governance and identity adapters and migrations are implemented and container-tested; no Azure database has been provisioned by this repository.
+- A reviewed Azure staging deployment and operational validation. The repository
+  now includes manual Bicep for an internal Container Apps environment,
+  private PostgreSQL, Key Vault, encrypted Blob containers, Service Bus,
+  monitoring, private endpoints, managed identity, and resource-scoped RBAC.
+  The template compiles in CI but no Azure resource has been provisioned or
+  validated by this repository.
 - Real OIDC or SSO with MFA, short-lived tokens, role/group mapping, and lifecycle-managed service identities; local hashed API keys are only the current concept mechanism.
 - A secrets manager, TLS termination, network policy, rate limiting, and a hardened WSGI or ASGI server around the HTTP adapter.
 - Encrypted object storage with retention and immutable export for evidence; local JSON, JSONL, and SQLite files are not an evidence vault.
@@ -652,4 +659,9 @@ contracts are not proof that their external controls have been deployed.
 | Mini-SOAR | **Implemented as a synthetic-evidence bridge and covered by repository tests.** It accepts `synthetic-lab` evidence and requires independent verification by default. |
 | Windows, Elastic, SIEM, ITSM, object storage, and SSO | **Designed or documented, not validated as live integrations in this repository.** |
 
-For the deployment outline and remaining infrastructure requirements, see [`docs/production-runbook.md`](docs/production-runbook.md) and [`docs/enterprise-deployment.md`](docs/enterprise-deployment.md).
+For the Azure IaC boundary, exact manual deployment steps, rollback, and
+remaining user-owned prerequisites, see
+[`docs/azure-staging-deployment.md`](docs/azure-staging-deployment.md).
+For the wider production requirements, see
+[`docs/production-runbook.md`](docs/production-runbook.md) and
+[`docs/enterprise-deployment.md`](docs/enterprise-deployment.md).

@@ -1,0 +1,20 @@
+using './main.bicep'
+
+param namePrefix = 'sgrc'
+param environmentName = 'staging'
+param location = 'southeastasia'
+param deployApplication = false
+
+// Required even for the infrastructure-only pass so the reviewed deployment
+// contract cannot silently fall back to a mutable image tag.
+param containerImage = 'example.azurecr.io/sentinelgrc@sha256:REPLACE_WITH_64_HEX_DIGEST'
+param containerRegistrySubscriptionId = '00000000-0000-0000-0000-000000000000'
+param containerRegistryResourceGroup = 'replace-with-acr-resource-group'
+param containerRegistryName = 'replacewithacrname'
+
+param databaseAdministratorLogin = 'sentinelbootstrap'
+// Supply databaseAdministratorPassword on the command line or through a
+// private parameter source. Never put it in this file.
+
+param oidcIssuer = 'https://login.microsoftonline.com/REPLACE_TENANT_ID/v2.0'
+param oidcAudience = 'api://REPLACE_SENTINEL_APP_ID'
