@@ -10,11 +10,10 @@ import hashlib
 import hmac
 import re
 import secrets
-import sqlite3
 from contextlib import closing
-from pathlib import Path
 
 from governance_core import ActorContext, ROLES
+from persistence import Database, DatabaseConnection, DatabaseIntegrityError
 
 
 class AuthenticationError(PermissionError):
@@ -25,9 +24,16 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 
 class HumanIdentityStore:
-    def __init__(self, path: str = "runtime/identity.db") -> None:
-        self.path = str(Path(path))
-        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+    def __init__(
+        self,
+        path: str = "runtime/identity.db",
+        *,
+        database: Database | None = None,
+    ) -> None:
+        self.database = database or Database.from_target(path)
+        self.path = self.database.path or "postgresql"
+        if self.database.dialect != "sqlite":
+            return
         with closing(self._connect()) as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -44,10 +50,8 @@ class HumanIdentityStore:
             """)
             db.commit()
 
-    def _connect(self) -> sqlite3.Connection:
-        db = sqlite3.connect(self.path)
-        db.execute("PRAGMA foreign_keys = ON")
-        return db
+    def _connect(self) -> DatabaseConnection:
+        return self.database.connect()
 
     @staticmethod
     def _hash(secret: str) -> str:
@@ -59,7 +63,7 @@ class HumanIdentityStore:
         with closing(self._connect()) as db:
             try:
                 db.execute("INSERT INTO users(user_id, role) VALUES (?, ?)", (user_id, role))
-            except sqlite3.IntegrityError as error:
+            except DatabaseIntegrityError as error:
                 raise ValueError("user already exists") from error
             db.commit()
 
@@ -68,31 +72,42 @@ class HumanIdentityStore:
             raise ValueError("key_id must contain only letters, numbers, dot, underscore or hyphen")
         secret = secrets.token_urlsafe(32)
         with closing(self._connect()) as db:
-            user = db.execute("SELECT active FROM users WHERE user_id = ?", (user_id,)).fetchone()
-            if user is None or not user[0]:
+            user = db.execute(
+                "SELECT active AS active FROM users WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+            if user is None or not user["active"]:
                 raise ValueError("active user is required")
             try:
                 db.execute(
                     "INSERT INTO user_api_keys(key_id, user_id, secret_hash) VALUES (?, ?, ?)",
                     (key_id, user_id, self._hash(secret)),
                 )
-            except sqlite3.IntegrityError as error:
+            except DatabaseIntegrityError as error:
                 raise ValueError("key already exists") from error
             db.commit()
         return secret
 
     def revoke_key(self, key_id: str) -> None:
         with closing(self._connect()) as db:
-            db.execute("UPDATE user_api_keys SET active = 0 WHERE key_id = ?", (key_id,))
+            db.execute(
+                "UPDATE user_api_keys SET active = FALSE WHERE key_id = ?",
+                (key_id,),
+            )
             db.commit()
 
     def authenticate(self, key_id: str, secret: str) -> ActorContext:
         with closing(self._connect()) as db:
             row = db.execute("""
-                SELECT u.user_id, u.role, k.secret_hash
+                SELECT u.user_id AS user_id, u.role AS role,
+                       k.secret_hash AS secret_hash
                 FROM user_api_keys k JOIN users u ON u.user_id = k.user_id
-                WHERE k.key_id = ? AND k.active = 1 AND u.active = 1
+                WHERE k.key_id = ? AND k.active = TRUE AND u.active = TRUE
             """, (key_id,)).fetchone()
-        if row is None or not hmac.compare_digest(row[2], self._hash(secret)):
+        if row is None or not hmac.compare_digest(
+            row["secret_hash"], self._hash(secret)
+        ):
             raise AuthenticationError("invalid or revoked human API key")
-        return ActorContext(row[0], row[1], auth_method="api_key")
+        return ActorContext(
+            row["user_id"], row["role"], auth_method="api_key"
+        )

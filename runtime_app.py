@@ -1,17 +1,15 @@
 """WSGI runtime composition for the SentinelGRC modular monolith.
 
-The current runtime deliberately supports SQLite only for lab and staging.
-Production configuration fails closed until the PostgreSQL, OIDC middleware,
-object-storage, and immutable-audit adapters are implemented.
+SQLite supports local lab and staging runs. PostgreSQL supports the canonical
+governance and human-identity staging path. Production remains fail closed
+until verified OIDC, object storage, and immutable audit are implemented.
 """
 
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
 import uuid
-from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.parse import unquote, urlparse
@@ -20,6 +18,8 @@ from governance_api import GovernanceApi
 from governance_core import GovernanceCore
 from governance_http import GovernanceHttpApplication, MAX_REQUEST_BODY_BYTES
 from human_identity import HumanIdentityStore
+from migration_runner import PostgresMigrationRunner
+from persistence import Database
 from production_contract import Settings
 
 
@@ -38,9 +38,7 @@ STATUS_TEXT = {
 def sqlite_path(database_url: str) -> str:
     parsed = urlparse(database_url)
     if parsed.scheme != "sqlite":
-        raise RuntimeError(
-            "this runtime supports SQLite only; PostgreSQL adapter is not implemented"
-        )
+        raise RuntimeError("sqlite_path accepts only SQLite URLs")
     if parsed.netloc not in {"", "localhost"}:
         raise ValueError("SQLite URL must not include a remote host")
     raw_path = unquote(parsed.path)
@@ -58,17 +56,38 @@ class SentinelRuntime:
             raise RuntimeError("invalid Sentinel configuration: " + "; ".join(errors))
         if settings.environment == "production":
             raise RuntimeError(
-                "production startup is blocked until PostgreSQL, verified OIDC, "
-                "object-storage, and immutable-audit adapters are implemented"
+                "production startup is blocked until verified OIDC, object-storage, "
+                "and immutable-audit adapters are implemented"
             )
         self.settings = settings
-        self.governance_path = sqlite_path(settings.database_url)
-        self.identity_path = sqlite_path(settings.identity_database_url)
+        self.governance_database = Database(settings.database_url)
+        self.identity_database = (
+            self.governance_database
+            if settings.identity_database_url == settings.database_url
+            else Database(settings.identity_database_url)
+        )
+        migrations = Path(__file__).parent / "migrations" / "postgresql"
+        migrated: set[int] = set()
+        for database in (
+            self.governance_database,
+            self.identity_database,
+        ):
+            if database.dialect == "postgresql" and id(database) not in migrated:
+                PostgresMigrationRunner(database, str(migrations)).apply()
+                migrated.add(id(database))
+        self.governance_path = (
+            self.governance_database.path
+            or "postgresql"
+        )
+        self.identity_path = (
+            self.identity_database.path
+            or "postgresql"
+        )
         Path(settings.evidence_dir).mkdir(parents=True, exist_ok=True)
         self.http = GovernanceHttpApplication(
             GovernanceApi(
-                GovernanceCore(self.governance_path),
-                HumanIdentityStore(self.identity_path),
+                GovernanceCore(database=self.governance_database),
+                HumanIdentityStore(database=self.identity_database),
             )
         )
 
@@ -77,16 +96,11 @@ class SentinelRuntime:
             "configuration": not self.settings.validate(),
             "evidence_directory": Path(self.settings.evidence_dir).is_dir(),
         }
-        for name, path in (
-            ("governance_store", self.governance_path),
-            ("identity_store", self.identity_path),
+        for name, database in (
+            ("governance_store", self.governance_database),
+            ("identity_store", self.identity_database),
         ):
-            try:
-                with closing(sqlite3.connect(path, timeout=2)) as db:
-                    db.execute("SELECT 1").fetchone()
-                checks[name] = True
-            except (OSError, sqlite3.Error):
-                checks[name] = False
+            checks[name] = database.ping()
         return {
             "status": "ready" if all(checks.values()) else "not_ready",
             "checks": checks,

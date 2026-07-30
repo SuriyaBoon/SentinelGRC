@@ -134,7 +134,7 @@ class RuntimeApplicationTests(unittest.TestCase):
                 Settings.from_env()
 
     def test_non_sqlite_and_remote_sqlite_urls_are_rejected(self):
-        with self.assertRaisesRegex(RuntimeError, "PostgreSQL adapter"):
+        with self.assertRaisesRegex(RuntimeError, "only SQLite"):
             sqlite_path("postgresql://db/sentinel")
         with self.assertRaisesRegex(ValueError, "remote host"):
             sqlite_path("sqlite://server/share/sentinel.db")

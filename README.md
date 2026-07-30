@@ -2,7 +2,7 @@
 
 **A Python concept MVP that turns security-control observations into traceable findings, governed remediation decisions, evidence, verification, and closure.**
 
-**Stack:** Python standard library, SQLite, JSON and JSONL fixtures, PowerShell posture collectors, and GitHub Actions. The CI workflow uses Python 3.12.
+**Stack:** Python 3.12, SQLite for local labs, PostgreSQL for the canonical shared-state staging path, Gunicorn/WSGI, JSON and JSONL fixtures, PowerShell posture collectors, Docker, and GitHub Actions.
 
 **Status:** Portfolio / concept MVP. It completes a bounded security-governance workflow end to end, but it is not production-ready.
 
@@ -533,14 +533,28 @@ The current test command is:
 python -m unittest discover -v -p "test_*.py"
 ```
 
-Current verified result:
+Current local regression result without an external database:
 
 ```text
-Ran 106 tests
+Ran 118 tests
+OK (skipped=5 PostgreSQL integration tests)
+```
+
+The PostgreSQL tests run when `SENTINEL_TEST_POSTGRES_URL` is set. The complete
+suite was also validated against an isolated PostgreSQL 17 container:
+
+```text
+Ran 118 tests
 OK
 ```
 
-GitHub Actions runs the same test discovery command, parses both PowerShell collectors, and checks that runtime artifacts are not tracked.
+Those tests cover transactional migrations, checksum mismatch rejection,
+human identity authentication, the full finding lifecycle, rollback,
+idempotent concurrent reassessment, ordered event chains, and runtime
+readiness. GitHub Actions runs the normal test discovery command, executes the
+five PostgreSQL tests against an ephemeral database service, parses both
+PowerShell collectors, builds the non-root image, and checks that runtime
+artifacts are not tracked.
 
 ### Synthetic-lab integration proof
 
@@ -593,7 +607,9 @@ SentinelGRC/
 ├── governance_core.py          # Finding, risk, approval, evidence, verification, closure state machine
 ├── governance_api.py           # Transport-neutral authenticated workflow dispatcher
 ├── governance_http.py          # Minimal HTTP adapter and request limits
-├── human_identity.py           # Local users and hashed human API keys for the lab
+├── human_identity.py           # Human identity and hashed API-key store
+├── persistence.py              # SQLite/PostgreSQL adapter and connection pool
+├── runtime_app.py              # WSGI composition, readiness, and production gate
 ├── security_pack.py            # Control observation normalization
 ├── security_event_connector.py # Alert-to-finding mapping
 ├── connectors.py               # Connector event identity and replay state
@@ -603,7 +619,7 @@ SentinelGRC/
 ├── reporting.py                # Summary and KPI/KRI report generation
 ├── scripts/                    # CLI adapters, pipeline, worker, ingestion, and portfolio bridges
 ├── agent/                      # Read-only Windows posture and AD access-review collectors
-├── migrations/                 # PostgreSQL migration contracts for a future deployment path
+├── migrations/                 # SQLite contracts and executable PostgreSQL schema
 ├── docs/evidence/              # Sanitized synthetic-lab proof package
 ├── ui/                         # Static workflow UI shell
 └── test_*.py                   # Automated unit and integration-style concept tests
@@ -613,7 +629,7 @@ SentinelGRC/
 
 This repository is **not** a production deployment. Before even a limited internal pilot, it would need at least:
 
-- PostgreSQL configured as the authoritative workflow database and tested migration/rollback procedures; SQLite is the current lab store.
+- An Azure Database for PostgreSQL instance with private networking, managed credentials, backup/restore validation, capacity tests, and operational ownership. The canonical governance and identity adapters and migrations are implemented and container-tested; no Azure database has been provisioned by this repository.
 - Real OIDC or SSO with MFA, short-lived tokens, role/group mapping, and lifecycle-managed service identities; local hashed API keys are only the current concept mechanism.
 - A secrets manager, TLS termination, network policy, rate limiting, and a hardened WSGI or ASGI server around the HTTP adapter.
 - Encrypted object storage with retention and immutable export for evidence; local JSON, JSONL, and SQLite files are not an evidence vault.
@@ -621,7 +637,10 @@ This repository is **not** a production deployment. Before even a limited intern
 - Centralized logging, metrics, tracing, alerting, backup/restore tests, disaster-recovery procedures, and security assessment.
 - A real connector test against an authorised Windows and SIEM environment, including failure recovery and access-control validation.
 
-The PostgreSQL, OIDC, deployment, and observability modules or documents define part of this path, but they are not proof that those external controls have been deployed.
+The PostgreSQL adapter is repository-tested for canonical governance and human
+identity state. Connector replay state, the polling job queue, and legacy
+pipeline stores remain SQLite-specific. OIDC, deployment, and observability
+contracts are not proof that their external controls have been deployed.
 
 ## Planned integration
 
