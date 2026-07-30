@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 import time
 import uuid
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
 from typing import Any
+
+from persistence import Database, DatabaseConnection, DatabaseIntegrityError
 
 ROLES = {"admin", "analyst", "risk_owner", "approver", "ciso", "risk_committee"}
 TREATMENTS = {"mitigate", "accept", "transfer", "avoid"}
@@ -53,9 +53,16 @@ class ActorContext:
             raise ValueError("auth_method is required")
 
 class GovernanceCore:
-    def __init__(self, path: str = "runtime/governance.db") -> None:
-        self.path = str(Path(path))
-        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+    def __init__(
+        self,
+        path: str = "runtime/governance.db",
+        *,
+        database: Database | None = None,
+    ) -> None:
+        self.database = database or Database.from_target(path)
+        self.path = self.database.path or "postgresql"
+        if self.database.dialect != "sqlite":
+            return
         with closing(self._connect()) as db:
             db.executescript(
                 """
@@ -156,7 +163,7 @@ class GovernanceCore:
             db.commit()
 
     @staticmethod
-    def _backfill_event_sequences(db: sqlite3.Connection) -> None:
+    def _backfill_event_sequences(db: DatabaseConnection) -> None:
         """Assign deterministic sequence values to existing per-finding chains."""
         finding_rows = db.execute("SELECT DISTINCT finding_id FROM governance_events").fetchall()
         for finding_row in finding_rows:
@@ -171,7 +178,7 @@ class GovernanceCore:
             ).fetchall()):
                 continue
             by_previous = {str(row[1]): row for row in rows}
-            ordered: list[sqlite3.Row] = []
+            ordered: list[Any] = []
             current = by_previous.get("")
             while current is not None:
                 ordered.append(current)
@@ -189,11 +196,8 @@ class GovernanceCore:
             db.execute(sql, values)
             db.commit()
 
-    def _connect(self) -> sqlite3.Connection:
-        db = sqlite3.connect(self.path, timeout=10, isolation_level=None)
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA foreign_keys = ON")
-        return db
+    def _connect(self) -> DatabaseConnection:
+        return self.database.connect()
 
     @staticmethod
     def _now() -> float:
@@ -241,7 +245,7 @@ class GovernanceCore:
         return value
 
     def _event(
-        self, db: sqlite3.Connection, finding_id: str, event_type: str,
+        self, db: DatabaseConnection, finding_id: str, event_type: str,
         actor: ActorContext, details: dict[str, Any], now: float,
     ) -> None:
         previous = db.execute(
@@ -251,10 +255,11 @@ class GovernanceCore:
         ).fetchone()
         previous_hash = "" if previous is None else str(previous["event_hash"])
         sequence_row = db.execute(
-            "SELECT COALESCE(MAX(event_sequence), 0) + 1 FROM governance_events WHERE finding_id = ?",
+            "SELECT COALESCE(MAX(event_sequence), 0) + 1 AS next_sequence "
+            "FROM governance_events WHERE finding_id = ?",
             (finding_id,),
         ).fetchone()
-        event_sequence = int(sequence_row[0])
+        event_sequence = int(sequence_row["next_sequence"])
         body = {
             "finding_id": finding_id, "event_type": event_type,
             "actor_id": actor.actor_id, "actor_role": actor.role,
@@ -282,7 +287,12 @@ class GovernanceCore:
         now = self._now()
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT * FROM findings WHERE finding_id = ?", (finding_id,)).fetchone()
+            row = db.execute(
+                self.database.for_update(
+                    "SELECT * FROM findings WHERE finding_id = ?"
+                ),
+                (finding_id,),
+            ).fetchone()
             if row is None:
                 db.rollback()
                 raise KeyError(f"finding {finding_id} was not found")
@@ -318,7 +328,7 @@ class GovernanceCore:
                 self._event(db, finding_id, "finding_created", actor, {
                     "control_id": control_id, "asset_id": asset_id, "severity": severity
                 }, values[-2])
-            except sqlite3.IntegrityError as error:
+            except DatabaseIntegrityError as error:
                 db.rollback()
                 raise ValueError(f"finding {finding_id} already exists") from error
             db.commit()
@@ -335,7 +345,14 @@ class GovernanceCore:
                               {"likelihood": likelihood, "impact": impact},
                               allowed_statuses={"open", "rejected"},
                               workflow=(
-                                  "INSERT OR REPLACE INTO risk_records VALUES (?, ?, ?, ?, ?, ?)",
+                                  "INSERT INTO risk_records("
+                                  "risk_id, finding_id, likelihood, impact, owner, status"
+                                  ") VALUES (?, ?, ?, ?, ?, ?) "
+                                  "ON CONFLICT(finding_id) DO UPDATE SET "
+                                  "risk_id = excluded.risk_id, "
+                                  "likelihood = excluded.likelihood, "
+                                  "impact = excluded.impact, owner = excluded.owner, "
+                                  "status = excluded.status",
                                   (risk_id, finding_id, likelihood, impact, finding["risk_owner"], "open"),
                               ))
         return result
@@ -407,7 +424,12 @@ class GovernanceCore:
         now = self._now()
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT * FROM findings WHERE finding_id = ?", (finding_id,)).fetchone()
+            row = db.execute(
+                self.database.for_update(
+                    "SELECT * FROM findings WHERE finding_id = ?"
+                ),
+                (finding_id,),
+            ).fetchone()
             if row is None:
                 db.rollback()
                 raise KeyError(f"finding {finding_id} was not found")
@@ -477,7 +499,12 @@ class GovernanceCore:
         now = self._now()
         with closing(self._connect()) as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT * FROM findings WHERE finding_id = ?", (finding_id,)).fetchone()
+            row = db.execute(
+                self.database.for_update(
+                    "SELECT * FROM findings WHERE finding_id = ?"
+                ),
+                (finding_id,),
+            ).fetchone()
             if row is None:
                 db.rollback()
                 raise RuntimeError("finding disappeared during upsert")

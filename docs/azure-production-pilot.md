@@ -6,10 +6,16 @@ SentinelGRC now has a WSGI runtime entry point (`runtime_app:application`),
 strict environment parsing, separate liveness and readiness responses, a pinned
 non-root container image, and a Linux container smoke test in CI.
 
-The container is intentionally usable only in `lab` or `staging` mode with
-SQLite. `SENTINEL_ENV=production` fails startup even when production-looking
-URLs are supplied. This prevents the repository's contractual PostgreSQL and
-OIDC modules from being mistaken for working integrations.
+The canonical governance and human-identity path supports SQLite for local
+lab/staging runs and PostgreSQL for shared-state staging validation. PostgreSQL
+uses a bounded connection pool, transactional checksum-protected migrations,
+row locks for per-finding event sequencing, and readiness probes. CI exercises
+the lifecycle, identity, rollback, idempotency, and concurrency behavior
+against an ephemeral PostgreSQL 17 service.
+
+`SENTINEL_ENV=production` still fails startup because OIDC verification, object
+storage, and immutable audit export are not implemented. The PostgreSQL adapter
+is proof of a repository-level storage path, not proof of an Azure deployment.
 
 ## Target Azure topology
 
@@ -29,8 +35,9 @@ flowchart LR
 
 ## Required before production startup can be enabled
 
-1. Replace SQLite-specific governance, identity, connector, queue, and migration
-   code with tested PostgreSQL adapters and transactional migrations.
+1. Move connector replay state and queue/outbox processing from SQLite to
+   PostgreSQL and a durable queue. Canonical governance and human identity are
+   already covered by the PostgreSQL adapter.
 2. Verify Entra access-token signatures, issuer, audience, expiry, tenant, and
    role/group mapping inside trusted middleware; `oidc_contract.py` only maps
    claims that another component has already verified.
