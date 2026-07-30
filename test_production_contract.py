@@ -51,4 +51,5 @@ class ProductionContractTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIn(f"staging requires SENTINEL_OIDC_{name}", errors)
         self.assertIn("staging requires SENTINEL_EVIDENCE_STORE_URL", errors)
+        self.assertIn("staging requires SENTINEL_AUDIT_ARCHIVE_URL", errors)
         self.assertIn("staging requires SENTINEL_AZURE_CLIENT_ID", errors)

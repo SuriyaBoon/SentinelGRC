@@ -5,6 +5,8 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
+from audit_archive import MemoryAuditArchive
+from audit_delivery import AuditExportQueue, AuditExportWorker
 from connectors import ingest_event, sign_event
 from governance_core import ActorContext, GovernanceCore
 from migration_runner import PostgresMigrationRunner
@@ -33,7 +35,7 @@ class PostgresRuntimeStateTests(unittest.TestCase):
         ).apply()
         with closing(self.database.connect()) as db:
             db.execute(
-                "TRUNCATE TABLE governance_outbox, pipeline_jobs, "
+                "TRUNCATE TABLE audit_exports, governance_outbox, pipeline_jobs, "
                 "connector_events, closure_records, verification_records, "
                 "governance_evidence, action_items, approval_records, "
                 "risk_treatments, risk_records, governance_events, findings "
@@ -206,3 +208,35 @@ class PostgresRuntimeStateTests(unittest.TestCase):
             db.rollback()
         self.assertEqual(finding_count, 0)
         self.assertEqual(outbox_count, 0)
+
+    def test_postgres_audit_exports_are_claimed_and_archived_in_order(self):
+        core = GovernanceCore(database=self.database)
+        actor = ActorContext("analyst-archive", "analyst")
+        core.create_finding(
+            "AUDIT-PG-1",
+            "CTRL-AUDIT",
+            "ASSET-AUDIT",
+            "PostgreSQL audit archive",
+            "owner-audit",
+            "high",
+            actor,
+        )
+        core.assess_risk(
+            "AUDIT-PG-1",
+            ActorContext("owner-audit", "risk_owner"),
+            "high",
+            "high",
+        )
+        queue = AuditExportQueue(self.database)
+        worker = AuditExportWorker(
+            queue,
+            MemoryAuditArchive(),
+            "postgres-audit-worker",
+        )
+        self.assertEqual(worker.run_once(now=10**10), "archived")
+        self.assertEqual(worker.run_once(now=10**10 + 1), "archived")
+        self.assertEqual(worker.run_once(now=10**10 + 2), "empty")
+        self.assertEqual(
+            queue.metrics(),
+            {"archived": 2, "pending": 0, "dead": 0},
+        )

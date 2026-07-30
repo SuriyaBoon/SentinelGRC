@@ -75,6 +75,11 @@ param databaseBackupRetentionDays int = 14
 @description('Soft-delete retention for evidence and audit blobs.')
 param blobDeleteRetentionDays int = 30
 
+@minValue(7)
+@maxValue(365)
+@description('Unlocked staging audit-retention policy. Lock only after an approved live validation.')
+param auditImmutabilityDays int = 30
+
 @description('Common resource tags.')
 param tags object = {
   application: 'SentinelGRC'
@@ -436,6 +441,15 @@ resource auditContainer 'Microsoft.Storage/storageAccounts/blobServices/containe
   }
 }
 
+resource auditImmutabilityPolicy 'Microsoft.Storage/storageAccounts/blobServices/containers/immutabilityPolicies@2023-05-01' = {
+  name: 'default'
+  parent: auditContainer
+  properties: {
+    allowProtectedAppendWrites: true
+    immutabilityPeriodSinceCreationInDays: auditImmutabilityDays
+  }
+}
+
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: keyVaultName
   location: location
@@ -768,6 +782,10 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = if (deployAppli
             {
               name: 'SENTINEL_EVIDENCE_DIR'
               value: '/tmp/sentinel-evidence'
+            }
+            {
+              name: 'SENTINEL_AUDIT_DIR'
+              value: '/tmp/sentinel-audit'
             }
             {
               name: 'SENTINEL_EVIDENCE_STORE_URL'

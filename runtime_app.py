@@ -1,9 +1,9 @@
 """WSGI runtime composition for the SentinelGRC modular monolith.
 
 SQLite and a content-addressed filesystem support local lab runs. PostgreSQL,
-verified OIDC, and managed-identity Azure Blob evidence storage support the
-staging path. Production remains fail closed until immutable audit export is
-implemented.
+verified OIDC, managed-identity evidence storage, and append-only audit export
+support the staging path. Production remains fail closed until the external
+retention policy and worker controls are validated.
 """
 
 from __future__ import annotations
@@ -15,6 +15,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable
 from urllib.parse import unquote, urlparse
 
+from audit_archive import (
+    AuditArchive,
+    AzureBlobAuditArchive,
+    LocalAuditArchive,
+)
 from evidence_store import (
     AzureBlobEvidenceStore,
     EvidenceStore,
@@ -65,14 +70,15 @@ class SentinelRuntime:
         settings: Settings,
         oidc_verifier: EntraTokenVerifier | None = None,
         evidence_store: EvidenceStore | None = None,
+        audit_archive: AuditArchive | None = None,
     ) -> None:
         errors = settings.validate()
         if errors:
             raise RuntimeError("invalid Sentinel configuration: " + "; ".join(errors))
         if settings.environment == "production":
             raise RuntimeError(
-                "production startup is blocked until the immutable-audit "
-                "adapter is implemented"
+                "production startup is blocked until immutable-audit retention "
+                "and worker delivery are validated in the target environment"
             )
         self.settings = settings
         self.governance_database = Database(settings.database_url)
@@ -109,6 +115,17 @@ class SentinelRuntime:
                     ),
                 )
         self.evidence_store = evidence_store
+        if audit_archive is None:
+            if settings.environment == "lab":
+                audit_archive = LocalAuditArchive(settings.audit_dir)
+            else:
+                audit_archive = AzureBlobAuditArchive(
+                    settings.audit_archive_url,
+                    managed_identity_client_id=(
+                        settings.azure_managed_identity_client_id
+                    ),
+                )
+        self.audit_archive = audit_archive
         if settings.environment != "lab" and oidc_verifier is None:
             try:
                 from oidc_auth import EntraTokenVerifier, OidcVerifierConfig
@@ -145,6 +162,7 @@ class SentinelRuntime:
         checks: dict[str, bool] = {
             "configuration": not self.settings.validate(),
             "evidence_store": self.evidence_store.ready(),
+            "audit_archive": self.audit_archive.ready(),
         }
         for name, database in (
             ("governance_store", self.governance_database),
@@ -223,12 +241,14 @@ def create_application(
     settings: Settings | None = None,
     oidc_verifier: EntraTokenVerifier | None = None,
     evidence_store: EvidenceStore | None = None,
+    audit_archive: AuditArchive | None = None,
 ) -> SentinelWsgiApplication:
     return SentinelWsgiApplication(
         SentinelRuntime(
             settings or Settings.from_env(),
             oidc_verifier,
             evidence_store,
+            audit_archive,
         )
     )
 

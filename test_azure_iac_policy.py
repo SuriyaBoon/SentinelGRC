@@ -101,6 +101,10 @@ class AzureIacPolicyTests(unittest.TestCase):
         self.assertIn("supportsHttpsTrafficOnly: true", self.source)
         self.assertIn("minimumTlsVersion: 'TLS1_2'", self.source)
         self.assertIn("immutableStorageWithVersioning", self.source)
+        self.assertIn("immutabilityPolicies", self.source)
+        self.assertIn("immutabilityPeriodSinceCreationInDays", self.source)
+        self.assertNotIn("state: 'Locked'", self.source)
+        self.assertIn("allowProtectedAppendWrites: true", self.source)
         self.assertIn("enablePurgeProtection: true", self.source)
         self.assertIn("privateDnsZones", self.source)
 

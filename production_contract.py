@@ -46,6 +46,7 @@ class Settings:
     database_url: str = "sqlite:///runtime/governance.db"
     identity_database_url: str = "sqlite:///runtime/identity.db"
     evidence_dir: str = "runtime/evidence"
+    audit_dir: str = "runtime/audit-archive"
     evidence_store_url: str = ""
     audit_archive_url: str = ""
     oidc_issuer: str = ""
@@ -69,6 +70,9 @@ class Settings:
             ).strip(),
             evidence_dir=os.getenv(
                 "SENTINEL_EVIDENCE_DIR", cls.evidence_dir
+            ).strip(),
+            audit_dir=os.getenv(
+                "SENTINEL_AUDIT_DIR", cls.audit_dir
             ).strip(),
             evidence_store_url=os.getenv(
                 "SENTINEL_EVIDENCE_STORE_URL", ""
@@ -98,6 +102,8 @@ class Settings:
             errors.append("SENTINEL_IDENTITY_DATABASE_URL is required")
         if not self.evidence_dir:
             errors.append("SENTINEL_EVIDENCE_DIR is required")
+        if not self.audit_dir:
+            errors.append("SENTINEL_AUDIT_DIR is required")
         if self.environment in {"staging", "production"}:
             if not self.oidc_issuer:
                 errors.append(f"{self.environment} requires SENTINEL_OIDC_ISSUER")
@@ -111,6 +117,10 @@ class Settings:
                 errors.append(
                     f"{self.environment} requires SENTINEL_EVIDENCE_STORE_URL"
                 )
+            if not self.audit_archive_url:
+                errors.append(
+                    f"{self.environment} requires SENTINEL_AUDIT_ARCHIVE_URL"
+                )
             if not self.azure_managed_identity_client_id:
                 errors.append(
                     f"{self.environment} requires SENTINEL_AZURE_CLIENT_ID"
@@ -122,8 +132,6 @@ class Settings:
                 ("postgresql://", "postgresql+psycopg://")
             ):
                 errors.append("production identity storage requires PostgreSQL")
-            if not self.audit_archive_url:
-                errors.append("production requires SENTINEL_AUDIT_ARCHIVE_URL")
             if not self.require_tls:
                 errors.append("production requires SENTINEL_REQUIRE_TLS=true")
         return errors
