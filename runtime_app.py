@@ -1,8 +1,9 @@
 """WSGI runtime composition for the SentinelGRC modular monolith.
 
-SQLite supports local lab runs. PostgreSQL supports the canonical governance
-and human-identity staging path. Staging uses verified OIDC. Production remains
-fail closed until object storage and immutable audit adapters are implemented.
+SQLite and a content-addressed filesystem support local lab runs. PostgreSQL,
+verified OIDC, and managed-identity Azure Blob evidence storage support the
+staging path. Production remains fail closed until immutable audit export is
+implemented.
 """
 
 from __future__ import annotations
@@ -14,6 +15,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable
 from urllib.parse import unquote, urlparse
 
+from evidence_store import (
+    AzureBlobEvidenceStore,
+    EvidenceStore,
+    LocalEvidenceStore,
+)
 from governance_api import GovernanceApi
 from governance_core import GovernanceCore
 from governance_http import GovernanceHttpApplication, MAX_REQUEST_BODY_BYTES
@@ -58,14 +64,15 @@ class SentinelRuntime:
         self,
         settings: Settings,
         oidc_verifier: EntraTokenVerifier | None = None,
+        evidence_store: EvidenceStore | None = None,
     ) -> None:
         errors = settings.validate()
         if errors:
             raise RuntimeError("invalid Sentinel configuration: " + "; ".join(errors))
         if settings.environment == "production":
             raise RuntimeError(
-                "production startup is blocked until object-storage and "
-                "immutable-audit adapters are implemented"
+                "production startup is blocked until the immutable-audit "
+                "adapter is implemented"
             )
         self.settings = settings
         self.governance_database = Database(settings.database_url)
@@ -91,7 +98,17 @@ class SentinelRuntime:
             self.identity_database.path
             or "postgresql"
         )
-        Path(settings.evidence_dir).mkdir(parents=True, exist_ok=True)
+        if evidence_store is None:
+            if settings.environment == "lab":
+                evidence_store = LocalEvidenceStore(settings.evidence_dir)
+            else:
+                evidence_store = AzureBlobEvidenceStore(
+                    settings.evidence_store_url,
+                    managed_identity_client_id=(
+                        settings.azure_managed_identity_client_id
+                    ),
+                )
+        self.evidence_store = evidence_store
         if settings.environment != "lab" and oidc_verifier is None:
             try:
                 from oidc_auth import EntraTokenVerifier, OidcVerifierConfig
@@ -112,7 +129,10 @@ class SentinelRuntime:
         self.oidc_verifier = oidc_verifier
         self.http = GovernanceHttpApplication(
             GovernanceApi(
-                GovernanceCore(database=self.governance_database),
+                GovernanceCore(
+                    database=self.governance_database,
+                    evidence_store=self.evidence_store,
+                ),
                 HumanIdentityStore(database=self.identity_database),
             ),
             authentication_mode=(
@@ -124,7 +144,7 @@ class SentinelRuntime:
     def readiness(self) -> dict[str, Any]:
         checks: dict[str, bool] = {
             "configuration": not self.settings.validate(),
-            "evidence_directory": Path(self.settings.evidence_dir).is_dir(),
+            "evidence_store": self.evidence_store.ready(),
         }
         for name, database in (
             ("governance_store", self.governance_database),
@@ -202,9 +222,14 @@ class SentinelWsgiApplication:
 def create_application(
     settings: Settings | None = None,
     oidc_verifier: EntraTokenVerifier | None = None,
+    evidence_store: EvidenceStore | None = None,
 ) -> SentinelWsgiApplication:
     return SentinelWsgiApplication(
-        SentinelRuntime(settings or Settings.from_env(), oidc_verifier)
+        SentinelRuntime(
+            settings or Settings.from_env(),
+            oidc_verifier,
+            evidence_store,
+        )
     )
 
 

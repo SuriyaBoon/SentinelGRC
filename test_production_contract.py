@@ -25,6 +25,7 @@ class ProductionContractTests(unittest.TestCase):
         self.assertIn("production requires SENTINEL_OIDC_TENANT_ID", result["errors"])
         self.assertIn("production requires SENTINEL_OIDC_JWKS_URL", result["errors"])
         self.assertIn("production requires SENTINEL_EVIDENCE_STORE_URL", result["errors"])
+        self.assertIn("production requires SENTINEL_AZURE_CLIENT_ID", result["errors"])
         self.assertIn("production requires SENTINEL_AUDIT_ARCHIVE_URL", result["errors"])
         self.assertIn("production requires SENTINEL_REQUIRE_TLS=true", result["errors"])
 
@@ -49,3 +50,5 @@ class ProductionContractTests(unittest.TestCase):
         for name in ("ISSUER", "AUDIENCE", "TENANT_ID", "JWKS_URL"):
             with self.subTest(name=name):
                 self.assertIn(f"staging requires SENTINEL_OIDC_{name}", errors)
+        self.assertIn("staging requires SENTINEL_EVIDENCE_STORE_URL", errors)
+        self.assertIn("staging requires SENTINEL_AZURE_CLIENT_ID", errors)

@@ -536,7 +536,7 @@ python -m unittest discover -v -p "test_*.py"
 Current local regression result without an external database:
 
 ```text
-Ran 138 tests
+Ran 146 tests
 OK (skipped=9 PostgreSQL integration tests)
 ```
 
@@ -544,14 +544,15 @@ The PostgreSQL tests run when `SENTINEL_TEST_POSTGRES_URL` is set. The complete
 suite was also validated against an isolated PostgreSQL 17 container:
 
 ```text
-Ran 138 tests
+Ran 146 tests
 OK
 ```
 
 Those tests cover transactional migrations, checksum mismatch rejection,
 human identity authentication, the full finding lifecycle, rollback,
 idempotent concurrent reassessment, ordered event chains, strict OIDC token
-verification, server-derived OIDC actors, and runtime readiness. GitHub Actions
+verification, server-derived OIDC actors, content-addressed evidence storage,
+bounded Azure retry/failure behavior, and runtime readiness. GitHub Actions
 installs the pinned runtime dependencies, runs normal test discovery, executes
 the nine PostgreSQL tests against an ephemeral database service, parses both
 PowerShell collectors, compiles the Azure Bicep with pinned tools, builds the
@@ -599,6 +600,7 @@ The following guardrails are implemented in code and covered by tests:
 - **Agent authentication and replay protection:** `scripts/ingestion_api.py`, `scripts/agent_keys.py`, and `state_store.py` validate HMAC-backed agent identity, nonces, and payload hashes.
 - **Idempotent finding identity:** repeated LogWatcher alerts and bridged evidence reassess the same finding rather than creating duplicates.
 - **Integrity records:** governance events are hash chained in a deterministic per-finding sequence; submitted evidence is SHA-256 hashed.
+- **Evidence object boundary:** lab evidence uses server-generated content-addressed paths. Staging uses create-only Azure Blob writes through a user-assigned managed identity and commits governance metadata only after read-after-write integrity verification.
 - **Bounded lab automation:** the repository collects and evaluates data. It does not automatically remediate endpoints or modify Active Directory.
 - **Worker lease fencing:** a stale queue worker cannot complete or fail a job after its lease is no longer valid.
 
@@ -612,6 +614,7 @@ SentinelGRC/
 ├── oidc_auth.py                # JWT signature, trust, JWKS, and time verification
 ├── oidc_contract.py            # Verified claim-to-role mapping
 ├── human_identity.py           # Lab-only human identity and hashed API-key store
+├── evidence_store.py           # Local and managed-identity Azure evidence objects
 ├── persistence.py              # SQLite/PostgreSQL adapter and pool
 ├── postgres_runtime_state.py   # PostgreSQL replay, queue, and outbox
 ├── runtime_app.py              # WSGI composition, readiness, and production gate
@@ -643,7 +646,11 @@ This repository is **not** a production deployment. Before even a limited intern
   validated by this repository.
 - A real Microsoft Entra tenant/app registration, role assignments, Conditional Access/MFA policy, and lifecycle-managed service identities. The staging code verifies OIDC signatures and trust claims; local hashed API keys are lab-only.
 - A secrets manager, TLS termination, network policy, rate limiting, and a hardened WSGI or ASGI server around the HTTP adapter.
-- Encrypted object storage with retention and immutable export for evidence; local JSON, JSONL, and SQLite files are not an evidence vault.
+- Validation of the managed-identity Azure Blob adapter against a private
+  staging container, plus orphan reconciliation and retention/restore
+  operations. Local JSON, JSONL, and SQLite files are not an evidence vault.
+- Immutable audit export with monitored delivery and retention lock; the Blob
+  evidence adapter does not make the operational audit log immutable.
 - A managed durable queue and supervised workers; the current queue is SQLite polling with lease and retry logic.
 - Centralized logging, metrics, tracing, alerting, backup/restore tests, disaster-recovery procedures, and security assessment.
 - A real connector test against an authorised Windows and SIEM environment, including failure recovery and access-control validation.
@@ -661,7 +668,7 @@ contracts are not proof that their external controls have been deployed.
 | LogWatcher | **Connected and validated at synthetic-lab level.** The tracked fixture demonstrates 20 source events, 3 alerts, and idempotent finding replay. |
 | JML-Automation | **Implemented as a read-only portfolio bridge and covered by repository tests.** It requires closed requests with passing verification records. No live directory changes are made. |
 | Mini-SOAR | **Implemented as a synthetic-evidence bridge and covered by repository tests.** It accepts `synthetic-lab` evidence and requires independent verification by default. |
-| Windows, Elastic, SIEM, ITSM, object storage, and SSO | **Designed or documented, not validated as live integrations in this repository.** |
+| Windows, Elastic, SIEM, ITSM, Azure Blob, and SSO | **Adapters or contracts exist, but they have not been validated as live integrations in an organisation-owned environment.** |
 
 For the Azure IaC boundary, exact manual deployment steps, rollback, and
 remaining user-owned prerequisites, see

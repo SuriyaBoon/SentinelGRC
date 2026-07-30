@@ -18,9 +18,15 @@ allows only RS256, and validates issuer, audience, tenant, time claims, and key
 identity before creating an actor. Sentinel roles come only from configured
 Microsoft Entra app-role or group mappings. Local API keys remain lab-only.
 
-`SENTINEL_ENV=production` still fails startup because object-storage evidence
-persistence and immutable audit export are not implemented. The PostgreSQL and
-OIDC adapters prove repository-level paths, not an Azure deployment.
+Staging evidence bytes now cross a bounded content-addressed store interface.
+The Azure adapter uses a user-assigned managed identity, create-only writes,
+bounded retries and timeouts, ETag capture, and read-after-write SHA-256
+verification before governance metadata is committed. The lab adapter remains
+local-only.
+
+`SENTINEL_ENV=production` still fails startup because immutable audit export is
+not implemented. The PostgreSQL, OIDC, and Blob adapters prove repository-level
+paths, not an Azure deployment.
 
 ## Target Azure topology
 
@@ -47,8 +53,9 @@ flowchart LR
 2. Provision and validate the real Entra application registration, app roles,
    assignments, Conditional Access/MFA policy, issuer, audience, tenant, and
    JWKS values in the target staging tenant.
-3. Store evidence bytes in encrypted Blob Storage and keep only immutable
-   metadata and hashes in PostgreSQL.
+3. Provision and validate the managed-identity Blob adapter against the real
+   private evidence container, including retry, orphan reconciliation,
+   retention, and restore scenarios.
 4. Replace remaining legacy pipeline filesystem outputs with export-only
    adapters; PostgreSQL governance events already create transactional outbox
    records.

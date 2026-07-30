@@ -68,6 +68,8 @@ class AzureIacPolicyTests(unittest.TestCase):
                 self.assertIn(f"name: '{environment_name}'", self.source)
         self.assertIn("[Guid]::TryParse($OidcTenantId", self.preflight)
         self.assertIn("$jwks.Scheme -ne \"https\"", self.preflight)
+        self.assertIn("name: 'SENTINEL_AZURE_CLIENT_ID'", self.source)
+        self.assertIn("value: appIdentity.properties.clientId", self.source)
 
     def test_managed_identity_and_resource_scoped_roles_are_used(self):
         self.assertIn("Microsoft.ManagedIdentity/userAssignedIdentities", self.source)
