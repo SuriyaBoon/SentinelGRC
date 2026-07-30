@@ -35,16 +35,18 @@ flowchart LR
 
 ## Required before production startup can be enabled
 
-1. Move connector replay state and queue/outbox processing from SQLite to
-   PostgreSQL and a durable queue. Canonical governance and human identity are
-   already covered by the PostgreSQL adapter.
+1. Connect the PostgreSQL transactional outbox to an Azure Service Bus worker,
+   monitor delivery lag, and retain dead-letter operations. Connector replay,
+   fenced queue claims, and outbox state are repository-tested, but no external
+   broker or publisher has been deployed.
 2. Verify Entra access-token signatures, issuer, audience, expiry, tenant, and
    role/group mapping inside trusted middleware; `oidc_contract.py` only maps
    claims that another component has already verified.
 3. Store evidence bytes in encrypted Blob Storage and keep only immutable
    metadata and hashes in PostgreSQL.
-4. Use a durable queue and transactional outbox instead of filesystem polling
-   and dual-write business state.
+4. Replace remaining legacy pipeline filesystem outputs with export-only
+   adapters; PostgreSQL governance events already create transactional outbox
+   records.
 5. Export audit events to a retention-locked immutable container and monitor
    export lag.
 6. Provision Azure resources through reviewed IaC, private networking, managed

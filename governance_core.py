@@ -154,6 +154,20 @@ class GovernanceCore:
                     event_hash TEXT NOT NULL UNIQUE
                 );
                 CREATE INDEX IF NOT EXISTS idx_events_finding ON governance_events(finding_id, event_sequence);
+                CREATE TABLE IF NOT EXISTS governance_outbox (
+                    outbox_id TEXT PRIMARY KEY,
+                    event_id TEXT NOT NULL UNIQUE REFERENCES governance_events(event_id),
+                    topic TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    available_at REAL NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    locked_until REAL,
+                    worker_id TEXT,
+                    lock_token TEXT,
+                    delivered_at REAL,
+                    last_error TEXT
+                );
                 """
             )
             columns = {row[1] for row in db.execute("PRAGMA table_info(governance_events)").fetchall()}
@@ -269,14 +283,34 @@ class GovernanceCore:
         event_hash = hashlib.sha256(
             (previous_hash + json.dumps(body, sort_keys=True, separators=(",", ":"))).encode("utf-8")
         ).hexdigest()
+        event_id = uuid.uuid4().hex
         db.execute(
             "INSERT INTO governance_events("
             "event_id, finding_id, event_sequence, event_type, actor_id, actor_role, "
             "auth_method, occurred_at, details_json, previous_hash, event_hash"
             ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (uuid.uuid4().hex, finding_id, event_sequence, event_type, actor.actor_id,
+            (event_id, finding_id, event_sequence, event_type, actor.actor_id,
              actor.role, actor.auth_method, now, json.dumps(details, sort_keys=True),
              previous_hash, event_hash),
+        )
+        outbox_payload = {
+            **body,
+            "event_id": event_id,
+            "event_sequence": event_sequence,
+            "event_hash": event_hash,
+        }
+        db.execute(
+            "INSERT INTO governance_outbox("
+            "outbox_id, event_id, topic, payload_json, created_at, available_at"
+            ") VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                uuid.uuid4().hex,
+                event_id,
+                "governance.event.v1",
+                json.dumps(outbox_payload, sort_keys=True, separators=(",", ":")),
+                now,
+                now,
+            ),
         )
 
     def _mutate(self, finding_id: str, actor: ActorContext, event_type: str,

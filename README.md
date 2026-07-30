@@ -536,15 +536,15 @@ python -m unittest discover -v -p "test_*.py"
 Current local regression result without an external database:
 
 ```text
-Ran 118 tests
-OK (skipped=5 PostgreSQL integration tests)
+Ran 122 tests
+OK (skipped=9 PostgreSQL integration tests)
 ```
 
 The PostgreSQL tests run when `SENTINEL_TEST_POSTGRES_URL` is set. The complete
 suite was also validated against an isolated PostgreSQL 17 container:
 
 ```text
-Ran 118 tests
+Ran 122 tests
 OK
 ```
 
@@ -552,7 +552,7 @@ Those tests cover transactional migrations, checksum mismatch rejection,
 human identity authentication, the full finding lifecycle, rollback,
 idempotent concurrent reassessment, ordered event chains, and runtime
 readiness. GitHub Actions runs the normal test discovery command, executes the
-five PostgreSQL tests against an ephemeral database service, parses both
+nine PostgreSQL tests against an ephemeral database service, parses both
 PowerShell collectors, builds the non-root image, and checks that runtime
 artifacts are not tracked.
 
@@ -637,9 +637,10 @@ This repository is **not** a production deployment. Before even a limited intern
 - Centralized logging, metrics, tracing, alerting, backup/restore tests, disaster-recovery procedures, and security assessment.
 - A real connector test against an authorised Windows and SIEM environment, including failure recovery and access-control validation.
 
-The PostgreSQL adapter is repository-tested for canonical governance and human
-identity state. Connector replay state, the polling job queue, and legacy
-pipeline stores remain SQLite-specific. OIDC, deployment, and observability
+The PostgreSQL adapters are repository-tested for canonical governance, human
+identity, connector replay, fenced job claims, and transactional outbox state.
+Legacy pipeline stores remain SQLite-specific, and no external message broker
+or outbox destination has been deployed. OIDC, deployment, and observability
 contracts are not proof that their external controls have been deployed.
 
 ## Planned integration
