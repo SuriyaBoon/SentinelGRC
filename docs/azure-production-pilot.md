@@ -24,9 +24,16 @@ bounded retries and timeouts, ETag capture, and read-after-write SHA-256
 verification before governance metadata is committed. The lab adapter remains
 local-only.
 
-`SENTINEL_ENV=production` still fails startup because immutable audit export is
-not implemented. The PostgreSQL, OIDC, and Blob adapters prove repository-level
-paths, not an Azure deployment.
+Governance events now create ordered audit-export records in the same database
+transaction. A bounded worker archives canonical events through a local lab
+adapter or a managed-identity Azure Blob adapter, verifies the stored bytes and
+metadata, and records success, retry, or dead-letter state. Crash replay is
+create-only and idempotent.
+
+`SENTINEL_ENV=production` still fails startup until the real container
+retention policy, managed identity, worker supervision, delivery monitoring,
+and recovery procedure are validated. Repository tests do not prove an Azure
+deployment or a locked WORM policy.
 
 ## Target Azure topology
 
@@ -59,8 +66,9 @@ flowchart LR
 4. Replace remaining legacy pipeline filesystem outputs with export-only
    adapters; PostgreSQL governance events already create transactional outbox
    records.
-5. Export audit events to a retention-locked immutable container and monitor
-   export lag.
+5. Deploy and supervise the implemented audit worker, validate create-only
+   delivery and dead-letter recovery against the private audit container, then
+   lock the reviewed retention policy and monitor export lag.
 6. Provision Azure resources through reviewed IaC, private networking, managed
    identities, Key Vault references, backups, alerts, and restore tests.
 

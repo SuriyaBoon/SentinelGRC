@@ -19,6 +19,7 @@ class RuntimeApplicationTests(unittest.TestCase):
             database_url=f"sqlite:///{root / 'governance.db'}",
             identity_database_url=f"sqlite:///{root / 'identity.db'}",
             evidence_dir=str(root / "evidence"),
+            audit_dir=str(root / "audit-archive"),
         )
         self.application = create_application(self.settings)
 
@@ -52,6 +53,7 @@ class RuntimeApplicationTests(unittest.TestCase):
         self.assertIn("governance_store", ready_body["checks"])
         self.assertIn("identity_store", ready_body["checks"])
         self.assertIn("evidence_store", ready_body["checks"])
+        self.assertIn("audit_archive", ready_body["checks"])
         self.assertEqual(
             live["headers"]["X-Request-ID"], live_body["request_id"]
         )
@@ -114,7 +116,7 @@ class RuntimeApplicationTests(unittest.TestCase):
         self.assertTrue(captured["status"].startswith("413"))
         self.assertEqual(json.loads(encoded)["error"], "request_too_large")
 
-    def test_production_startup_is_fail_closed_until_adapters_exist(self):
+    def test_production_startup_is_fail_closed_until_live_audit_controls_exist(self):
         settings = Settings(
             environment="production",
             database_url="postgresql://db/sentinel",
@@ -131,7 +133,7 @@ class RuntimeApplicationTests(unittest.TestCase):
             ),
             require_tls=True,
         )
-        with self.assertRaisesRegex(RuntimeError, "production startup is blocked"):
+        with self.assertRaisesRegex(RuntimeError, "retention and worker delivery"):
             create_application(settings)
 
     def test_environment_boolean_is_strict(self):

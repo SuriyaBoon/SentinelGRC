@@ -144,13 +144,24 @@ flowchart LR
     J --> P["Previous event hash"]
     P --> H["Compute event hash"]
     H --> L["Governance event sequence"]
+    L --> Q["Transactional audit export record"]
+    Q --> W["Fenced archive worker"]
+    W --> B["Create-only local or Azure audit object"]
+    B --> R["Read-back SHA-256 verification"]
+    R --> A["Acknowledge or retry/dead-letter"]
     E["Evidence content"] --> S["SHA-256 evidence hash"]
     S --> G["Evidence metadata record"]
     G --> L
     L --> V["Verify per-finding chain"]
 ```
 
-The hashes detect changes to recorded data in the local ledger. They do not make a local SQLite file immutable; immutable storage and retained exports are production requirements.
+The governance event and its audit-export record commit in the same database
+transaction. The worker preserves per-finding order, uses deterministic
+server-generated object names, and acknowledges delivery only after reading the
+object back and verifying its SHA-256. A failed archive remains visible for
+retry or dead-letter review. The lab filesystem is not immutable; Azure
+retention becomes enforceable only after the operator validates and locks the
+container policy.
 
 ### Connected portfolio boundaries
 
@@ -514,6 +525,13 @@ Run the exact same command a second time against the same database to test repla
 ```powershell
 python -m unittest discover -v -p "test_*.py"
 
+python audit_worker.py --max-items 100
+
+# Explicit operator recovery for a reviewed dead-letter export
+python audit_worker.py `
+  --requeue-export "<32-character-export-id>" `
+  --confirm "REQUEUE <32-character-export-id>"
+
 Get-Content runtime/executive-report.json
 Get-Content runtime/remediation-queue.json
 Get-Content runtime/evidence-ledger.jsonl
@@ -536,15 +554,15 @@ python -m unittest discover -v -p "test_*.py"
 Current local regression result without an external database:
 
 ```text
-Ran 146 tests
-OK (skipped=9 PostgreSQL integration tests)
+Ran 159 tests
+OK (skipped=10 PostgreSQL integration tests)
 ```
 
 The PostgreSQL tests run when `SENTINEL_TEST_POSTGRES_URL` is set. The complete
 suite was also validated against an isolated PostgreSQL 17 container:
 
 ```text
-Ran 146 tests
+Ran 159 tests
 OK
 ```
 
@@ -554,7 +572,7 @@ idempotent concurrent reassessment, ordered event chains, strict OIDC token
 verification, server-derived OIDC actors, content-addressed evidence storage,
 bounded Azure retry/failure behavior, and runtime readiness. GitHub Actions
 installs the pinned runtime dependencies, runs normal test discovery, executes
-the nine PostgreSQL tests against an ephemeral database service, parses both
+the ten PostgreSQL tests against an ephemeral database service, parses both
 PowerShell collectors, compiles the Azure Bicep with pinned tools, builds the
 non-root image, and checks that runtime artifacts are not tracked.
 
@@ -601,6 +619,10 @@ The following guardrails are implemented in code and covered by tests:
 - **Idempotent finding identity:** repeated LogWatcher alerts and bridged evidence reassess the same finding rather than creating duplicates.
 - **Integrity records:** governance events are hash chained in a deterministic per-finding sequence; submitted evidence is SHA-256 hashed.
 - **Evidence object boundary:** lab evidence uses server-generated content-addressed paths. Staging uses create-only Azure Blob writes through a user-assigned managed identity and commits governance metadata only after read-after-write integrity verification.
+- **Recoverable immutable-audit boundary:** every governance event creates an
+  audit-export record transactionally. A fenced worker archives canonical
+  events in order with create-only writes, read-back verification, bounded
+  retry, and explicit dead-letter state.
 - **Bounded lab automation:** the repository collects and evaluates data. It does not automatically remediate endpoints or modify Active Directory.
 - **Worker lease fencing:** a stale queue worker cannot complete or fail a job after its lease is no longer valid.
 
@@ -615,6 +637,9 @@ SentinelGRC/
 ├── oidc_contract.py            # Verified claim-to-role mapping
 ├── human_identity.py           # Lab-only human identity and hashed API-key store
 ├── evidence_store.py           # Local and managed-identity Azure evidence objects
+├── audit_archive.py            # Local and managed-identity audit archives
+├── audit_delivery.py           # Ordered retry and dead-letter delivery state
+├── audit_worker.py             # Bounded audit-export worker entry point
 ├── persistence.py              # SQLite/PostgreSQL adapter and pool
 ├── postgres_runtime_state.py   # PostgreSQL replay, queue, and outbox
 ├── runtime_app.py              # WSGI composition, readiness, and production gate
@@ -649,8 +674,10 @@ This repository is **not** a production deployment. Before even a limited intern
 - Validation of the managed-identity Azure Blob adapter against a private
   staging container, plus orphan reconciliation and retention/restore
   operations. Local JSON, JSONL, and SQLite files are not an evidence vault.
-- Immutable audit export with monitored delivery and retention lock; the Blob
-  evidence adapter does not make the operational audit log immutable.
+- Validation of the managed-identity audit adapter and worker against the real
+  private audit container. The IaC declares an **unlocked** retention policy so
+  it can be tested safely; an authorised operator must validate it, lock it,
+  monitor delivery lag/dead letters, and retain proof.
 - A managed durable queue and supervised workers; the current queue is SQLite polling with lease and retry logic.
 - Centralized logging, metrics, tracing, alerting, backup/restore tests, disaster-recovery procedures, and security assessment.
 - A real connector test against an authorised Windows and SIEM environment, including failure recovery and access-control validation.

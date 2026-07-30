@@ -7,10 +7,12 @@ templates in `infra/azure`. It does not authorize deployment, create an Azure
 subscription, configure Microsoft Entra, publish an image, or enable
 `SENTINEL_ENV=production`.
 
-The staging runtime includes verified OIDC middleware and a managed-identity
-Azure Blob evidence adapter. Production startup still has an explicit gate for
-immutable audit export. Provisioning the resources below is not proof that
-these controls have been validated in a real Azure tenant.
+The staging runtime includes verified OIDC middleware, a managed-identity Azure
+Blob evidence adapter, and a managed-identity audit archive adapter with an
+ordered retry/dead-letter worker. Production startup remains blocked until the
+real retention policy and worker delivery controls are validated. Provisioning
+the resources below is not proof that these controls have been validated in a
+real Azure tenant.
 
 ```mermaid
 flowchart LR
@@ -245,11 +247,17 @@ From an approved private-network execution point, validate:
 - replay does not create a duplicate finding;
 - outbox delivery and Service Bus dead-letter behavior are observed;
 - evidence and audit objects are accessible only through managed identity;
+- `python audit_worker.py --max-items 100` drains synthetic audit exports in
+  event order, replay creates no duplicate object, and retry/dead-letter
+  metrics are retained;
+- the audit immutability policy remains unlocked during validation and is
+  locked only through a separately approved operator change after retention
+  and recovery tests pass;
 - logs contain request IDs but no secrets or bearer tokens;
 - backup restore succeeds into an isolated validation server.
 
-These checks require adapters and operational work beyond this IaC phase. Do
-not describe the deployment as production-ready until they pass and evidence is
+These checks require live operational work beyond repository tests. Do not
+describe the deployment as production-ready until they pass and evidence is
 retained.
 
 ## 8. Rollback

@@ -174,6 +174,29 @@ class GovernanceCore:
                     delivered_at REAL,
                     last_error TEXT
                 );
+                CREATE TABLE IF NOT EXISTS audit_exports (
+                    export_id TEXT PRIMARY KEY,
+                    event_id TEXT NOT NULL UNIQUE REFERENCES governance_events(event_id),
+                    finding_id TEXT NOT NULL,
+                    event_sequence INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    available_at REAL NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    locked_until REAL,
+                    worker_id TEXT,
+                    lock_token TEXT,
+                    archived_at REAL,
+                    dead_at REAL,
+                    object_key TEXT,
+                    sha256 TEXT,
+                    size_bytes INTEGER,
+                    etag TEXT,
+                    last_error TEXT,
+                    UNIQUE(finding_id, event_sequence)
+                );
+                CREATE INDEX IF NOT EXISTS idx_audit_exports_claim
+                    ON audit_exports(archived_at, dead_at, available_at, locked_until, created_at);
                 """
             )
             columns = {row[1] for row in db.execute("PRAGMA table_info(governance_events)").fetchall()}
@@ -196,6 +219,7 @@ class GovernanceCore:
                         f"ADD COLUMN {name} {declaration}"
                     )
             self._backfill_event_sequences(db)
+            self._backfill_audit_exports(db)
             db.commit()
 
     @staticmethod
@@ -226,6 +250,46 @@ class GovernanceCore:
                     "UPDATE governance_events SET event_sequence = ? WHERE event_id = ?",
                     (sequence, row[0]),
                 )
+
+    @staticmethod
+    def _backfill_audit_exports(db: DatabaseConnection) -> None:
+        rows = db.execute(
+            "SELECT event_id, finding_id, event_sequence, event_type, actor_id, "
+            "actor_role, auth_method, occurred_at, details_json, previous_hash, "
+            "event_hash FROM governance_events ORDER BY finding_id, event_sequence"
+        ).fetchall()
+        for row in rows:
+            payload = {
+                "finding_id": row["finding_id"],
+                "event_type": row["event_type"],
+                "actor_id": row["actor_id"],
+                "actor_role": row["actor_role"],
+                "auth_method": row["auth_method"],
+                "occurred_at": row["occurred_at"],
+                "details": json.loads(row["details_json"]),
+                "previous_hash": row["previous_hash"],
+                "event_id": row["event_id"],
+                "event_sequence": row["event_sequence"],
+                "event_hash": row["event_hash"],
+            }
+            export_id = hashlib.sha256(
+                f"audit-export:{row['event_id']}".encode("utf-8")
+            ).hexdigest()[:32]
+            db.execute(
+                "INSERT OR IGNORE INTO audit_exports("
+                "export_id, event_id, finding_id, event_sequence, payload_json, "
+                "created_at, available_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    export_id,
+                    row["event_id"],
+                    row["finding_id"],
+                    row["event_sequence"],
+                    json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                    row["occurred_at"],
+                    row["occurred_at"],
+                ),
+            )
 
     def _insert_workflow(self, sql: str, values: tuple[Any, ...]) -> None:
         with closing(self._connect()) as db:
@@ -303,7 +367,10 @@ class GovernanceCore:
             "details": details, "previous_hash": previous_hash,
         }
         event_hash = hashlib.sha256(
-            (previous_hash + json.dumps(body, sort_keys=True, separators=(",", ":"))).encode("utf-8")
+            (
+                previous_hash
+                + json.dumps(body, sort_keys=True, separators=(",", ":"))
+            ).encode("utf-8")
         ).hexdigest()
         event_id = uuid.uuid4().hex
         db.execute(
@@ -321,6 +388,9 @@ class GovernanceCore:
             "event_sequence": event_sequence,
             "event_hash": event_hash,
         }
+        payload_json = json.dumps(
+            outbox_payload, sort_keys=True, separators=(",", ":")
+        )
         db.execute(
             "INSERT INTO governance_outbox("
             "outbox_id, event_id, topic, payload_json, created_at, available_at"
@@ -329,7 +399,22 @@ class GovernanceCore:
                 uuid.uuid4().hex,
                 event_id,
                 "governance.event.v1",
-                json.dumps(outbox_payload, sort_keys=True, separators=(",", ":")),
+                payload_json,
+                now,
+                now,
+            ),
+        )
+        db.execute(
+            "INSERT INTO audit_exports("
+            "export_id, event_id, finding_id, event_sequence, payload_json, "
+            "created_at, available_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                uuid.uuid4().hex,
+                event_id,
+                finding_id,
+                event_sequence,
+                payload_json,
                 now,
                 now,
             ),
@@ -682,7 +767,12 @@ class GovernanceCore:
                 "auth_method": event["auth_method"], "occurred_at": event["occurred_at"],
                 "details": details, "previous_hash": previous,
             }
-            expected = hashlib.sha256((previous + json.dumps(body, sort_keys=True, separators=(",", ":"))).encode("utf-8")).hexdigest()
+            expected = hashlib.sha256(
+                (
+                    previous
+                    + json.dumps(body, sort_keys=True, separators=(",", ":"))
+                ).encode("utf-8")
+            ).hexdigest()
             if event["previous_hash"] != previous or event["event_hash"] != expected:
                 return False
             previous = event["event_hash"]

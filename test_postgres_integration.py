@@ -34,7 +34,7 @@ class PostgresIntegrationTests(unittest.TestCase):
             db.execute(
                 """
                 TRUNCATE TABLE
-                    governance_outbox, pipeline_jobs, connector_events,
+                    audit_exports, governance_outbox, pipeline_jobs, connector_events,
                     user_api_keys, users, closure_records,
                     verification_records, governance_evidence, action_items,
                     approval_records, risk_treatments, risk_records,
@@ -61,9 +61,38 @@ class PostgresIntegrationTests(unittest.TestCase):
                 "001_canonical_governance",
                 "002_runtime_delivery",
                 "003_evidence_objects",
+                "004_immutable_audit_exports",
             ],
         )
         self.assertEqual(len(status[0]["checksum"]), 64)
+        GovernanceCore(database=self.database).create_finding(
+            "PG-AUDIT-BACKFILL",
+            "CTRL-AUDIT",
+            "ASSET-AUDIT",
+            "Backfill existing event",
+            "owner-audit",
+            "high",
+            self.analyst,
+        )
+        with closing(self.database.connect()) as db:
+            db.execute("DROP TABLE audit_exports")
+            db.execute(
+                "DELETE FROM schema_migrations "
+                "WHERE migration_id = '004_immutable_audit_exports'"
+            )
+            db.commit()
+        self.assertEqual(
+            self.migrations.apply(),
+            ["004_immutable_audit_exports"],
+        )
+        with closing(self.database.connect()) as db:
+            count = db.execute(
+                "SELECT COUNT(*) AS count FROM audit_exports "
+                "WHERE event_id IN (SELECT event_id FROM governance_events "
+                "WHERE finding_id = 'PG-AUDIT-BACKFILL')"
+            ).fetchone()["count"]
+            db.rollback()
+        self.assertEqual(count, 1)
         with tempfile.TemporaryDirectory() as temp:
             changed = Path(temp) / "001_canonical_governance.sql"
             changed.write_text("SELECT 1;\n", encoding="utf-8")
@@ -86,6 +115,13 @@ class PostgresIntegrationTests(unittest.TestCase):
             def persist(self, content):
                 raise AssertionError("not used by runtime composition test")
 
+        class ReadyAuditArchive:
+            def ready(self):
+                return True
+
+            def persist_event(self, event):
+                raise AssertionError("not used by runtime composition test")
+
         with tempfile.TemporaryDirectory() as temp:
             settings = Settings(
                 environment="staging",
@@ -97,6 +133,9 @@ class PostgresIntegrationTests(unittest.TestCase):
                 oidc_tenant_id="00000000-0000-0000-0000-000000000001",
                 oidc_jwks_url="https://login.microsoftonline.com/tenant/keys",
                 evidence_store_url="https://account.blob.core.windows.net/evidence",
+                audit_archive_url=(
+                    "https://account.blob.core.windows.net/audit-archive"
+                ),
                 azure_managed_identity_client_id=(
                     "00000000-0000-0000-0000-000000000002"
                 ),
@@ -105,6 +144,7 @@ class PostgresIntegrationTests(unittest.TestCase):
                 settings,
                 ReadyVerifier(),
                 ReadyEvidenceStore(),
+                ReadyAuditArchive(),
             )
             try:
                 self.assertEqual(
