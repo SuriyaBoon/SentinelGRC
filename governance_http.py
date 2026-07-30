@@ -40,10 +40,13 @@ class GovernanceHttpApplication:
         known_post = path.startswith("/v1/governance/") or path.startswith("/findings/")
         if (method == "GET" and not known_get) or (method == "POST" and not known_post):
             return 404, {"error": "not_found"}
-        authorization = headers.get("Authorization", "")
+        normalized_headers = {
+            str(name).strip().lower(): str(value) for name, value in headers.items()
+        }
+        authorization = normalized_headers.get("authorization", "")
         if not authorization.startswith("Bearer "):
             return 401, {"error": "missing_bearer_token"}
-        key_id = headers.get("X-API-Key-ID", "")
+        key_id = normalized_headers.get("x-api-key-id", "")
         secret = authorization[7:]
         payload: dict[str, Any] = {}
         action = ""

@@ -18,8 +18,11 @@ class ProductionContractTests(unittest.TestCase):
         settings = Settings(environment="production", evidence_dir="missing")
         result = readiness(settings)
         self.assertEqual(result["status"], "not_ready")
-        self.assertIn("production requires PostgreSQL or another shared transactional database", result["errors"])
+        self.assertIn("production requires PostgreSQL", result["errors"])
+        self.assertIn("production identity storage requires PostgreSQL", result["errors"])
         self.assertIn("production requires SENTINEL_OIDC_ISSUER", result["errors"])
+        self.assertIn("production requires SENTINEL_OIDC_AUDIENCE", result["errors"])
+        self.assertIn("production requires SENTINEL_EVIDENCE_STORE_URL", result["errors"])
         self.assertIn("production requires SENTINEL_AUDIT_ARCHIVE_URL", result["errors"])
         self.assertIn("production requires SENTINEL_REQUIRE_TLS=true", result["errors"])
 
