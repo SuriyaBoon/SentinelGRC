@@ -1,8 +1,8 @@
 """WSGI runtime composition for the SentinelGRC modular monolith.
 
-SQLite supports local lab and staging runs. PostgreSQL supports the canonical
-governance and human-identity staging path. Production remains fail closed
-until verified OIDC, object storage, and immutable audit are implemented.
+SQLite supports local lab runs. PostgreSQL supports the canonical governance
+and human-identity staging path. Staging uses verified OIDC. Production remains
+fail closed until object storage and immutable audit adapters are implemented.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import json
 import threading
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import TYPE_CHECKING, Any, Callable, Iterable
 from urllib.parse import unquote, urlparse
 
 from governance_api import GovernanceApi
@@ -19,8 +19,12 @@ from governance_core import GovernanceCore
 from governance_http import GovernanceHttpApplication, MAX_REQUEST_BODY_BYTES
 from human_identity import HumanIdentityStore
 from migration_runner import PostgresMigrationRunner
+from oidc_contract import ROLE_MAP
 from persistence import Database
 from production_contract import Settings
+
+if TYPE_CHECKING:
+    from oidc_auth import EntraTokenVerifier
 
 
 STATUS_TEXT = {
@@ -50,14 +54,18 @@ def sqlite_path(database_url: str) -> str:
 
 
 class SentinelRuntime:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        oidc_verifier: EntraTokenVerifier | None = None,
+    ) -> None:
         errors = settings.validate()
         if errors:
             raise RuntimeError("invalid Sentinel configuration: " + "; ".join(errors))
         if settings.environment == "production":
             raise RuntimeError(
-                "production startup is blocked until verified OIDC, object-storage, "
-                "and immutable-audit adapters are implemented"
+                "production startup is blocked until object-storage and "
+                "immutable-audit adapters are implemented"
             )
         self.settings = settings
         self.governance_database = Database(settings.database_url)
@@ -84,11 +92,33 @@ class SentinelRuntime:
             or "postgresql"
         )
         Path(settings.evidence_dir).mkdir(parents=True, exist_ok=True)
+        if settings.environment != "lab" and oidc_verifier is None:
+            try:
+                from oidc_auth import EntraTokenVerifier, OidcVerifierConfig
+            except ModuleNotFoundError as error:
+                raise RuntimeError(
+                    "staging OIDC dependencies are not installed"
+                ) from error
+            oidc_verifier = EntraTokenVerifier(
+                OidcVerifierConfig(
+                    issuer=settings.oidc_issuer,
+                    audience=settings.oidc_audience,
+                    tenant_id=settings.oidc_tenant_id,
+                    jwks_url=settings.oidc_jwks_url,
+                    role_map=settings.oidc_role_map or dict(ROLE_MAP),
+                    group_role_map=settings.oidc_group_role_map,
+                )
+            )
+        self.oidc_verifier = oidc_verifier
         self.http = GovernanceHttpApplication(
             GovernanceApi(
                 GovernanceCore(database=self.governance_database),
                 HumanIdentityStore(database=self.identity_database),
-            )
+            ),
+            authentication_mode=(
+                "api_key" if settings.environment == "lab" else "oidc"
+            ),
+            oidc_verifier=oidc_verifier,
         )
 
     def readiness(self) -> dict[str, Any]:
@@ -101,6 +131,10 @@ class SentinelRuntime:
             ("identity_store", self.identity_database),
         ):
             checks[name] = database.ping()
+        if self.settings.environment != "lab":
+            checks["identity_provider"] = bool(
+                self.oidc_verifier and self.oidc_verifier.ready()
+            )
         return {
             "status": "ready" if all(checks.values()) else "not_ready",
             "checks": checks,
@@ -165,8 +199,13 @@ class SentinelWsgiApplication:
         return [encoded]
 
 
-def create_application(settings: Settings | None = None) -> SentinelWsgiApplication:
-    return SentinelWsgiApplication(SentinelRuntime(settings or Settings.from_env()))
+def create_application(
+    settings: Settings | None = None,
+    oidc_verifier: EntraTokenVerifier | None = None,
+) -> SentinelWsgiApplication:
+    return SentinelWsgiApplication(
+        SentinelRuntime(settings or Settings.from_env(), oidc_verifier)
+    )
 
 
 class LazyApplication:

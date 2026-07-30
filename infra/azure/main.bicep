@@ -48,13 +48,22 @@ param databaseAdministratorLogin string
 @minLength(16)
 param databaseAdministratorPassword string
 
-@description('Verified Microsoft Entra issuer expected by the future OIDC adapter.')
+@description('Microsoft Entra issuer that the runtime verifies exactly.')
 @minLength(8)
 param oidcIssuer string
 
-@description('Microsoft Entra application audience expected by the future OIDC adapter.')
+@description('Microsoft Entra application audience that the runtime verifies.')
 @minLength(1)
 param oidcAudience string
+
+@description('Microsoft Entra tenant GUID that the runtime verifies in the tid claim.')
+@minLength(36)
+@maxLength(36)
+param oidcTenantId string
+
+@description('HTTPS JWKS endpoint used to verify Microsoft Entra token signatures.')
+@minLength(8)
+param oidcJwksUrl string
 
 @minValue(7)
 @maxValue(35)
@@ -775,6 +784,14 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = if (deployAppli
             {
               name: 'SENTINEL_OIDC_AUDIENCE'
               value: oidcAudience
+            }
+            {
+              name: 'SENTINEL_OIDC_TENANT_ID'
+              value: oidcTenantId
+            }
+            {
+              name: 'SENTINEL_OIDC_JWKS_URL'
+              value: oidcJwksUrl
             }
             {
               name: 'SENTINEL_REQUIRE_TLS'

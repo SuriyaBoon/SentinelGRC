@@ -13,9 +13,14 @@ row locks for per-finding event sequencing, and readiness probes. CI exercises
 the lifecycle, identity, rollback, idempotency, and concurrency behavior
 against an ephemeral PostgreSQL 17 service.
 
-`SENTINEL_ENV=production` still fails startup because OIDC verification, object
-storage, and immutable audit export are not implemented. The PostgreSQL adapter
-is proof of a repository-level storage path, not proof of an Azure deployment.
+Staging now verifies bearer-token signatures against a configured HTTPS JWKS,
+allows only RS256, and validates issuer, audience, tenant, time claims, and key
+identity before creating an actor. Sentinel roles come only from configured
+Microsoft Entra app-role or group mappings. Local API keys remain lab-only.
+
+`SENTINEL_ENV=production` still fails startup because object-storage evidence
+persistence and immutable audit export are not implemented. The PostgreSQL and
+OIDC adapters prove repository-level paths, not an Azure deployment.
 
 ## Target Azure topology
 
@@ -39,9 +44,9 @@ flowchart LR
    monitor delivery lag, and retain dead-letter operations. Connector replay,
    fenced queue claims, and outbox state are repository-tested, but no external
    broker or publisher has been deployed.
-2. Verify Entra access-token signatures, issuer, audience, expiry, tenant, and
-   role/group mapping inside trusted middleware; `oidc_contract.py` only maps
-   claims that another component has already verified.
+2. Provision and validate the real Entra application registration, app roles,
+   assignments, Conditional Access/MFA policy, issuer, audience, tenant, and
+   JWKS values in the target staging tenant.
 3. Store evidence bytes in encrypted Blob Storage and keep only immutable
    metadata and hashes in PostgreSQL.
 4. Replace remaining legacy pipeline filesystem outputs with export-only

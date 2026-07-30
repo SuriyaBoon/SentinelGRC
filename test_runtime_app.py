@@ -15,7 +15,7 @@ class RuntimeApplicationTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         self.settings = Settings(
-            environment="staging",
+            environment="lab",
             database_url=f"sqlite:///{root / 'governance.db'}",
             identity_database_url=f"sqlite:///{root / 'identity.db'}",
             evidence_dir=str(root / "evidence"),
@@ -123,6 +123,8 @@ class RuntimeApplicationTests(unittest.TestCase):
             audit_archive_url="azblob://audit",
             oidc_issuer="https://login.microsoftonline.com/tenant/v2.0",
             oidc_audience="api://sentinel",
+            oidc_tenant_id="00000000-0000-0000-0000-000000000001",
+            oidc_jwks_url="https://login.microsoftonline.com/tenant/discovery/v2.0/keys",
             require_tls=True,
         )
         with self.assertRaisesRegex(RuntimeError, "production startup is blocked"):

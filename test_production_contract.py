@@ -22,6 +22,8 @@ class ProductionContractTests(unittest.TestCase):
         self.assertIn("production identity storage requires PostgreSQL", result["errors"])
         self.assertIn("production requires SENTINEL_OIDC_ISSUER", result["errors"])
         self.assertIn("production requires SENTINEL_OIDC_AUDIENCE", result["errors"])
+        self.assertIn("production requires SENTINEL_OIDC_TENANT_ID", result["errors"])
+        self.assertIn("production requires SENTINEL_OIDC_JWKS_URL", result["errors"])
         self.assertIn("production requires SENTINEL_EVIDENCE_STORE_URL", result["errors"])
         self.assertIn("production requires SENTINEL_AUDIT_ARCHIVE_URL", result["errors"])
         self.assertIn("production requires SENTINEL_REQUIRE_TLS=true", result["errors"])
@@ -30,9 +32,20 @@ class ProductionContractTests(unittest.TestCase):
         with patch.dict(os.environ, {
             "SENTINEL_ENV": "staging",
             "SENTINEL_DATABASE_URL": "postgresql://db/sentinel",
+            "SENTINEL_OIDC_TENANT_ID": "11111111-1111-1111-1111-111111111111",
+            "SENTINEL_OIDC_JWKS_URL": "https://login.microsoftonline.com/common/discovery/v2.0/keys",
             "SENTINEL_REQUIRE_TLS": "true",
         }, clear=False):
             settings = Settings.from_env()
         self.assertEqual(settings.environment, "staging")
         self.assertEqual(settings.database_url, "postgresql://db/sentinel")
+        self.assertEqual(
+            settings.oidc_tenant_id, "11111111-1111-1111-1111-111111111111"
+        )
         self.assertTrue(settings.require_tls)
+
+    def test_staging_requires_complete_oidc_trust_configuration(self):
+        errors = Settings(environment="staging").validate()
+        for name in ("ISSUER", "AUDIENCE", "TENANT_ID", "JWKS_URL"):
+            with self.subTest(name=name):
+                self.assertIn(f"staging requires SENTINEL_OIDC_{name}", errors)

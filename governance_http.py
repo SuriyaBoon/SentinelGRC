@@ -7,18 +7,35 @@ server, WAF, TLS termination and rate limiter in production.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Protocol
 
 from governance_api import GovernanceApi
+from governance_core import ActorContext
 from human_identity import AuthenticationError
 
 
 MAX_REQUEST_BODY_BYTES = 256 * 1024
 
 
+class OidcVerifier(Protocol):
+    def verify(self, token: str) -> ActorContext: ...
+
+
 class GovernanceHttpApplication:
-    def __init__(self, api: GovernanceApi) -> None:
+    def __init__(
+        self,
+        api: GovernanceApi,
+        *,
+        authentication_mode: str = "api_key",
+        oidc_verifier: OidcVerifier | None = None,
+    ) -> None:
+        if authentication_mode not in {"api_key", "oidc"}:
+            raise ValueError("unsupported authentication mode")
+        if authentication_mode == "oidc" and oidc_verifier is None:
+            raise ValueError("OIDC verifier is required")
         self.api = api
+        self.authentication_mode = authentication_mode
+        self.oidc_verifier = oidc_verifier
 
     def handle(self, method: str, path: str, headers: dict[str, str], body: bytes) -> tuple[int, dict[str, Any]]:
         if not isinstance(method, str) or not isinstance(path, str):
@@ -46,8 +63,7 @@ class GovernanceHttpApplication:
         authorization = normalized_headers.get("authorization", "")
         if not authorization.startswith("Bearer "):
             return 401, {"error": "missing_bearer_token"}
-        key_id = normalized_headers.get("x-api-key-id", "")
-        secret = authorization[7:]
+        bearer = authorization[7:]
         payload: dict[str, Any] = {}
         action = ""
         if method == "GET" and path == "/findings":
@@ -70,7 +86,12 @@ class GovernanceHttpApplication:
                 if not isinstance(parsed, dict):
                     return 400, {"error": "request body must be an object"}
                 payload.update(parsed)
-            result = self.api.dispatch(action, key_id, secret, payload)
+            if self.authentication_mode == "oidc":
+                actor = self.oidc_verifier.verify(bearer)  # type: ignore[union-attr]
+                result = self.api.dispatch_actor(action, actor, payload)
+            else:
+                key_id = normalized_headers.get("x-api-key-id", "")
+                result = self.api.dispatch(action, key_id, bearer, payload)
             return 200, result
         except AuthenticationError as error:
             return 401, {"error": str(error)}

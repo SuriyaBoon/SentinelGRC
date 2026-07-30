@@ -7,8 +7,9 @@ closed unless the required external controls are configured.
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,20 @@ def _read_bool(name: str, default: bool = False) -> bool:
     raise ValueError(f"{name} must be a boolean")
 
 
+def _read_mapping(name: str) -> dict[str, str]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return {}
+    value = json.loads(raw)
+    if (
+        not isinstance(value, dict)
+        or len(value) > 100
+        or not all(isinstance(key, str) and isinstance(role, str) for key, role in value.items())
+    ):
+        raise ValueError(f"{name} must be a string-to-string JSON object")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     environment: str = "lab"
@@ -35,6 +50,10 @@ class Settings:
     audit_archive_url: str = ""
     oidc_issuer: str = ""
     oidc_audience: str = ""
+    oidc_tenant_id: str = ""
+    oidc_jwks_url: str = ""
+    oidc_role_map: dict[str, str] = field(default_factory=dict)
+    oidc_group_role_map: dict[str, str] = field(default_factory=dict)
     require_tls: bool = False
 
     @classmethod
@@ -58,6 +77,10 @@ class Settings:
             ).strip(),
             oidc_issuer=os.getenv("SENTINEL_OIDC_ISSUER", "").strip(),
             oidc_audience=os.getenv("SENTINEL_OIDC_AUDIENCE", "").strip(),
+            oidc_tenant_id=os.getenv("SENTINEL_OIDC_TENANT_ID", "").strip(),
+            oidc_jwks_url=os.getenv("SENTINEL_OIDC_JWKS_URL", "").strip(),
+            oidc_role_map=_read_mapping("SENTINEL_OIDC_ROLE_MAP"),
+            oidc_group_role_map=_read_mapping("SENTINEL_OIDC_GROUP_ROLE_MAP"),
             require_tls=_read_bool("SENTINEL_REQUIRE_TLS"),
         )
 
@@ -71,6 +94,15 @@ class Settings:
             errors.append("SENTINEL_IDENTITY_DATABASE_URL is required")
         if not self.evidence_dir:
             errors.append("SENTINEL_EVIDENCE_DIR is required")
+        if self.environment in {"staging", "production"}:
+            if not self.oidc_issuer:
+                errors.append(f"{self.environment} requires SENTINEL_OIDC_ISSUER")
+            if not self.oidc_audience:
+                errors.append(f"{self.environment} requires SENTINEL_OIDC_AUDIENCE")
+            if not self.oidc_tenant_id:
+                errors.append(f"{self.environment} requires SENTINEL_OIDC_TENANT_ID")
+            if not self.oidc_jwks_url:
+                errors.append(f"{self.environment} requires SENTINEL_OIDC_JWKS_URL")
         if self.environment == "production":
             if not self.database_url.startswith(("postgresql://", "postgresql+psycopg://")):
                 errors.append("production requires PostgreSQL")
@@ -78,10 +110,6 @@ class Settings:
                 ("postgresql://", "postgresql+psycopg://")
             ):
                 errors.append("production identity storage requires PostgreSQL")
-            if not self.oidc_issuer:
-                errors.append("production requires SENTINEL_OIDC_ISSUER")
-            if not self.oidc_audience:
-                errors.append("production requires SENTINEL_OIDC_AUDIENCE")
             if not self.evidence_store_url:
                 errors.append("production requires SENTINEL_EVIDENCE_STORE_URL")
             if not self.audit_archive_url:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from governance_core import GovernanceCore
+from governance_core import ActorContext, GovernanceCore
 from human_identity import HumanIdentityStore
 
 
@@ -20,11 +20,16 @@ class GovernanceApi:
         self.identities = identities
 
     def dispatch(self, action: str, key_id: str, secret: str, body: dict[str, Any]) -> dict[str, Any]:
+        actor = self.identities.authenticate(key_id, secret)
+        return self.dispatch_actor(action, actor, body)
+
+    def dispatch_actor(
+        self, action: str, actor: ActorContext, body: dict[str, Any]
+    ) -> dict[str, Any]:
         if not isinstance(body, dict):
             raise ValueError("request body must be an object")
         if self.FORBIDDEN_ACTOR_FIELDS.intersection(body):
             raise ValueError("actor identity must come from authentication context")
-        actor = self.identities.authenticate(key_id, secret)
         finding_id = str(body.get("finding_id", ""))
         if action == "list":
             return {"findings": self.core.list_findings(body.get("status"))}

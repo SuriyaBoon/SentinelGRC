@@ -536,7 +536,7 @@ python -m unittest discover -v -p "test_*.py"
 Current local regression result without an external database:
 
 ```text
-Ran 128 tests
+Ran 138 tests
 OK (skipped=9 PostgreSQL integration tests)
 ```
 
@@ -544,15 +544,16 @@ The PostgreSQL tests run when `SENTINEL_TEST_POSTGRES_URL` is set. The complete
 suite was also validated against an isolated PostgreSQL 17 container:
 
 ```text
-Ran 128 tests
+Ran 138 tests
 OK
 ```
 
 Those tests cover transactional migrations, checksum mismatch rejection,
 human identity authentication, the full finding lifecycle, rollback,
-idempotent concurrent reassessment, ordered event chains, and runtime
-readiness. GitHub Actions runs the normal test discovery command, executes the
-nine PostgreSQL tests against an ephemeral database service, parses both
+idempotent concurrent reassessment, ordered event chains, strict OIDC token
+verification, server-derived OIDC actors, and runtime readiness. GitHub Actions
+installs the pinned runtime dependencies, runs normal test discovery, executes
+the nine PostgreSQL tests against an ephemeral database service, parses both
 PowerShell collectors, compiles the Azure Bicep with pinned tools, builds the
 non-root image, and checks that runtime artifacts are not tracked.
 
@@ -592,7 +593,8 @@ SentinelGRC makes that path visible: normalize the observation, create or reasse
 
 The following guardrails are implemented in code and covered by tests:
 
-- **Server-derived human actor:** `GovernanceApi` rejects actor fields in request bodies and resolves the actor through `HumanIdentityStore`.
+- **Server-derived human actor:** `GovernanceApi` rejects actor fields in request bodies. Lab mode resolves hashed API keys through `HumanIdentityStore`; staging verifies OIDC tokens before mapping claims to an actor.
+- **OIDC fail-closed verification:** staging accepts only RS256 bearer tokens with a trusted `kid`, valid signature, issuer, audience, tenant, time claims, and exactly one configured Sentinel role. JWKS retrieval is HTTPS-only, bounded, cached, and protected from unknown-key refresh flooding.
 - **Role-gated workflow:** only specified roles can assess, approve, verify, or close a finding; self-approval and self-verification are rejected in `GovernanceCore`.
 - **Agent authentication and replay protection:** `scripts/ingestion_api.py`, `scripts/agent_keys.py`, and `state_store.py` validate HMAC-backed agent identity, nonces, and payload hashes.
 - **Idempotent finding identity:** repeated LogWatcher alerts and bridged evidence reassess the same finding rather than creating duplicates.
@@ -607,7 +609,9 @@ SentinelGRC/
 ├── governance_core.py          # Finding-to-closure state machine
 ├── governance_api.py           # Authenticated workflow dispatcher
 ├── governance_http.py          # HTTP adapter and request limits
-├── human_identity.py           # Human identity and hashed API-key store
+├── oidc_auth.py                # JWT signature, trust, JWKS, and time verification
+├── oidc_contract.py            # Verified claim-to-role mapping
+├── human_identity.py           # Lab-only human identity and hashed API-key store
 ├── persistence.py              # SQLite/PostgreSQL adapter and pool
 ├── postgres_runtime_state.py   # PostgreSQL replay, queue, and outbox
 ├── runtime_app.py              # WSGI composition, readiness, and production gate
@@ -637,7 +641,7 @@ This repository is **not** a production deployment. Before even a limited intern
   monitoring, private endpoints, managed identity, and resource-scoped RBAC.
   The template compiles in CI but no Azure resource has been provisioned or
   validated by this repository.
-- Real OIDC or SSO with MFA, short-lived tokens, role/group mapping, and lifecycle-managed service identities; local hashed API keys are only the current concept mechanism.
+- A real Microsoft Entra tenant/app registration, role assignments, Conditional Access/MFA policy, and lifecycle-managed service identities. The staging code verifies OIDC signatures and trust claims; local hashed API keys are lab-only.
 - A secrets manager, TLS termination, network policy, rate limiting, and a hardened WSGI or ASGI server around the HTTP adapter.
 - Encrypted object storage with retention and immutable export for evidence; local JSON, JSONL, and SQLite files are not an evidence vault.
 - A managed durable queue and supervised workers; the current queue is SQLite polling with lease and retry logic.
@@ -647,7 +651,7 @@ This repository is **not** a production deployment. Before even a limited intern
 The PostgreSQL adapters are repository-tested for canonical governance, human
 identity, connector replay, fenced job claims, and transactional outbox state.
 Legacy pipeline stores remain SQLite-specific, and no external message broker
-or outbox destination has been deployed. OIDC, deployment, and observability
+or outbox destination has been deployed. Azure deployment and observability
 contracts are not proof that their external controls have been deployed.
 
 ## Planned integration

@@ -56,6 +56,19 @@ class AzureIacPolicyTests(unittest.TestCase):
         self.assertIn("@sha256:[a-f0-9]{64}", self.preflight)
         self.assertNotIn("az deployment", self.preflight.lower())
 
+    def test_complete_oidc_trust_boundary_is_wired_to_runtime(self):
+        for parameter, environment_name in (
+            ("oidcIssuer", "SENTINEL_OIDC_ISSUER"),
+            ("oidcAudience", "SENTINEL_OIDC_AUDIENCE"),
+            ("oidcTenantId", "SENTINEL_OIDC_TENANT_ID"),
+            ("oidcJwksUrl", "SENTINEL_OIDC_JWKS_URL"),
+        ):
+            with self.subTest(parameter=parameter):
+                self.assertIn(f"param {parameter} string", self.source)
+                self.assertIn(f"name: '{environment_name}'", self.source)
+        self.assertIn("[Guid]::TryParse($OidcTenantId", self.preflight)
+        self.assertIn("$jwks.Scheme -ne \"https\"", self.preflight)
+
     def test_managed_identity_and_resource_scoped_roles_are_used(self):
         self.assertIn("Microsoft.ManagedIdentity/userAssignedIdentities", self.source)
         for role_id in (
