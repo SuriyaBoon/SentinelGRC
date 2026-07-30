@@ -51,3 +51,42 @@ jobs:
             $forbidden | ForEach-Object { Write-Error "Forbidden runtime artifact tracked: $_" }
             exit 1
           }
+
+  container-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build runtime image
+        run: docker build --tag sentinelgrc:${{ github.sha }} .
+
+      - name: Start runtime as non-root
+        run: |
+          docker run --detach --rm \
+            --name sentinelgrc-smoke \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --mount type=tmpfs,destination=/app/runtime,tmpfs-size=67108864,tmpfs-mode=1777 \
+            --security-opt no-new-privileges \
+            --cap-drop ALL \
+            --publish 127.0.0.1:18080:8080 \
+            sentinelgrc:${{ github.sha }}
+
+      - name: Verify liveness and readiness
+        run: |
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent http://127.0.0.1:18080/healthz >/tmp/health.json &&
+               curl --fail --silent http://127.0.0.1:18080/ready >/tmp/ready.json; then
+              cat /tmp/health.json
+              cat /tmp/ready.json
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs sentinelgrc-smoke
+          exit 1
+
+      - name: Stop runtime
+        if: always()
+        run: docker stop sentinelgrc-smoke || true
