@@ -83,7 +83,7 @@ jobs:
       - name: Run PostgreSQL integration tests
         env:
           SENTINEL_TEST_POSTGRES_URL: postgresql://sentinel:sentinel-test-only@127.0.0.1:5432/sentinel_test
-        run: python -m unittest -v test_postgres_integration.py
+        run: python -m unittest discover -v -p "test_postgres*.py"
 
       - name: Build runtime image
         run: docker build --tag sentinelgrc:${{ github.sha }} .

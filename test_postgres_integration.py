@@ -34,6 +34,7 @@ class PostgresIntegrationTests(unittest.TestCase):
             db.execute(
                 """
                 TRUNCATE TABLE
+                    governance_outbox, pipeline_jobs, connector_events,
                     user_api_keys, users, closure_records,
                     verification_records, governance_evidence, action_items,
                     approval_records, risk_treatments, risk_records,
@@ -56,7 +57,7 @@ class PostgresIntegrationTests(unittest.TestCase):
         status = self.migrations.status()
         self.assertEqual(
             [row["migration_id"] for row in status],
-            ["001_canonical_governance"],
+            ["001_canonical_governance", "002_runtime_delivery"],
         )
         self.assertEqual(len(status[0]["checksum"]), 64)
         with tempfile.TemporaryDirectory() as temp:
