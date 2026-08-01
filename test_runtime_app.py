@@ -131,6 +131,10 @@ class RuntimeApplicationTests(unittest.TestCase):
             azure_managed_identity_client_id=(
                 "00000000-0000-0000-0000-000000000002"
             ),
+            service_bus_namespace=(
+                "sentinel-staging.servicebus.windows.net"
+            ),
+            service_bus_queue="governance-outbox",
             require_tls=True,
         )
         with self.assertRaisesRegex(RuntimeError, "retention and worker delivery"):

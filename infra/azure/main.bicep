@@ -122,11 +122,6 @@ var serviceBusSenderRoleId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39'
 )
-var serviceBusReceiverRoleId = subscriptionResourceId(
-  'Microsoft.Authorization/roleDefinitions',
-  '4f6c7262-78e4-46f8-bc3f-5e489807f7ba'
-)
-
 resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   name: vnetName
   location: location
@@ -512,7 +507,7 @@ resource governanceQueue 'Microsoft.ServiceBus/namespaces/queues@2024-01-01' = {
     maxDeliveryCount: 10
     maxSizeInMegabytes: 1024
     requiresDuplicateDetection: true
-    requiresSession: false
+    requiresSession: true
     status: 'Active'
   }
 }
@@ -719,16 +714,6 @@ resource serviceBusSender 'Microsoft.Authorization/roleAssignments@2022-04-01' =
   }
 }
 
-resource serviceBusReceiver 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(governanceQueue.id, appIdentity.id, serviceBusReceiverRoleId)
-  scope: governanceQueue
-  properties: {
-    principalId: appIdentity.properties.principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: serviceBusReceiverRoleId
-  }
-}
-
 resource containerApp 'Microsoft.App/containerApps@2025-01-01' = if (deployApplication && imageDigestPinned) {
   name: appName
   location: location
@@ -786,6 +771,10 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = if (deployAppli
             {
               name: 'SENTINEL_AUDIT_DIR'
               value: '/tmp/sentinel-audit'
+            }
+            {
+              name: 'SENTINEL_OUTBOX_DIR'
+              value: '/tmp/sentinel-outbox'
             }
             {
               name: 'SENTINEL_EVIDENCE_STORE_URL'
@@ -857,6 +846,49 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = if (deployAppli
             memory: '1Gi'
           }
         }
+        {
+          args: [
+            'outbox_worker.py'
+            '--run-forever'
+            '--poll-seconds'
+            '2'
+          ]
+          command: [
+            'python'
+          ]
+          env: [
+            {
+              name: 'SENTINEL_ENV'
+              value: 'staging'
+            }
+            {
+              name: 'SENTINEL_DATABASE_URL'
+              secretRef: 'database-url'
+            }
+            {
+              name: 'SENTINEL_OUTBOX_DIR'
+              value: '/tmp/sentinel-outbox'
+            }
+            {
+              name: 'SENTINEL_AZURE_CLIENT_ID'
+              value: appIdentity.properties.clientId
+            }
+            {
+              name: 'SENTINEL_SERVICE_BUS_NAMESPACE'
+              value: '${serviceBus.name}.servicebus.windows.net'
+            }
+            {
+              name: 'SENTINEL_SERVICE_BUS_QUEUE'
+              value: governanceQueue.name
+            }
+          ]
+          image: containerImage
+          name: 'outbox-publisher'
+          resources: {
+            cpu: json('0.25')
+            memory: '0.5Gi'
+          }
+        }
       ]
       scale: {
         maxReplicas: 2
@@ -883,7 +915,6 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = if (deployAppli
     blobPrivateDnsGroup
     keyVaultSecretsUser
     serviceBusPrivateDnsGroup
-    serviceBusReceiver
     serviceBusSender
     vaultPrivateDnsGroup
   ]

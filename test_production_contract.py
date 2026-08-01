@@ -27,6 +27,14 @@ class ProductionContractTests(unittest.TestCase):
         self.assertIn("production requires SENTINEL_EVIDENCE_STORE_URL", result["errors"])
         self.assertIn("production requires SENTINEL_AZURE_CLIENT_ID", result["errors"])
         self.assertIn("production requires SENTINEL_AUDIT_ARCHIVE_URL", result["errors"])
+        self.assertIn(
+            "production requires a valid SENTINEL_SERVICE_BUS_NAMESPACE",
+            result["errors"],
+        )
+        self.assertIn(
+            "production requires a valid SENTINEL_SERVICE_BUS_QUEUE",
+            result["errors"],
+        )
         self.assertIn("production requires SENTINEL_REQUIRE_TLS=true", result["errors"])
 
     def test_environment_configuration_is_read_from_process(self):
@@ -53,3 +61,34 @@ class ProductionContractTests(unittest.TestCase):
         self.assertIn("staging requires SENTINEL_EVIDENCE_STORE_URL", errors)
         self.assertIn("staging requires SENTINEL_AUDIT_ARCHIVE_URL", errors)
         self.assertIn("staging requires SENTINEL_AZURE_CLIENT_ID", errors)
+        self.assertIn(
+            "staging requires a valid SENTINEL_SERVICE_BUS_NAMESPACE", errors
+        )
+        self.assertIn(
+            "staging requires a valid SENTINEL_SERVICE_BUS_QUEUE", errors
+        )
+
+    def test_outbox_worker_contract_is_narrow_and_fail_closed(self):
+        lab = Settings(database_url="sqlite:///runtime/test.db")
+        self.assertEqual(lab.validate_outbox_worker(), [])
+        staging = Settings(
+            environment="staging",
+            database_url="postgresql://db/sentinel",
+            azure_managed_identity_client_id="managed-id",
+            service_bus_namespace="sentinel-staging.servicebus.windows.net",
+            service_bus_queue="governance-outbox",
+        )
+        self.assertEqual(staging.validate_outbox_worker(), [])
+        errors = Settings(environment="staging").validate_outbox_worker()
+        self.assertIn("staging outbox requires PostgreSQL", errors)
+        self.assertIn(
+            "staging requires a valid SENTINEL_SERVICE_BUS_NAMESPACE", errors
+        )
+
+    def test_outbox_runtime_limits_are_strict(self):
+        with patch.dict(
+            os.environ,
+            {"SENTINEL_OUTBOX_WORKER_MAX_AGE_SECONDS": "unbounded"},
+        ):
+            with self.assertRaisesRegex(ValueError, "must be an integer"):
+                Settings.from_env()

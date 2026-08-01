@@ -19,11 +19,13 @@ flowchart LR
     Operator["Human operator"] -->|"manual review and deployment"| ARM["Azure Resource Manager"]
     ARM --> VNet["Private virtual network"]
     VNet --> CAE["Internal Container Apps environment"]
-    CAE --> App["SentinelGRC staging revision"]
-    App -->|"managed identity"| KV["Key Vault"]
-    App -->|"TLS and private DNS"| PG["PostgreSQL Flexible Server"]
-    App -->|"managed identity"| Blob["Evidence and immutable audit containers"]
-    App -->|"managed identity"| SB["Service Bus queue and DLQ"]
+    CAE --> API["SentinelGRC API container"]
+    CAE --> Worker["Outbox publisher sidecar"]
+    API -->|"managed identity"| KV["Key Vault"]
+    API -->|"TLS and private DNS"| PG["PostgreSQL Flexible Server"]
+    API -->|"managed identity"| Blob["Evidence and immutable audit containers"]
+    Worker -->|"fenced claims and heartbeat"| PG
+    Worker -->|"sender-only managed identity"| SB["Session-enabled Service Bus queue and DLQ"]
     CAE --> Monitor["Azure Monitor and Log Analytics"]
     ACR["Existing Azure Container Registry"] -->|"digest-pinned image and AcrPull"| App
 ```
@@ -211,9 +213,11 @@ change only `deployApplication` to `true`, rerun the preflight and `what-if`,
 and then run the same deployment command.
 
 The Container App is internal-only and receives a user-assigned managed
-identity. It receives the database URL through a Key Vault reference. No ACR
-password, storage key, Service Bus connection string, or Key Vault access
-policy is embedded in the application.
+identity. The revision contains the API and a supervised outbox-publisher
+sidecar. Both receive the database URL through a Key Vault reference; only the
+sidecar has sender-scoped Service Bus access. No ACR password, storage key,
+Service Bus connection string, or Key Vault access policy is embedded in the
+application.
 
 ## 7. Validate
 
@@ -245,7 +249,16 @@ From an approved private-network execution point, validate:
 - `/ready` returns HTTP 200 and both PostgreSQL stores are reachable;
 - a synthetic finding completes the tested governance lifecycle;
 - replay does not create a duplicate finding;
-- outbox delivery and Service Bus dead-letter behavior are observed;
+- the outbox sidecar heartbeat makes `/ready` pass only while delivery is
+  current and no outbox dead letter exists;
+- one synthetic lifecycle produces ordered `governance.event.v1` messages
+  with the expected stable `MessageId`, finding-scoped `SessionId`, and
+  `payload_sha256` property;
+- stopping the sidecar makes readiness fail after the configured heartbeat
+  age, and restarting it recovers without duplicate logical delivery;
+- a forced send failure exercises PostgreSQL retry and exact-confirmation
+  dead-letter recovery; Service Bus DLQ behavior must be tested separately by
+  an authorised session-aware consumer;
 - evidence and audit objects are accessible only through managed identity;
 - `python audit_worker.py --max-items 100` drains synthetic audit exports in
   event order, replay creates no duplicate object, and retry/dead-letter

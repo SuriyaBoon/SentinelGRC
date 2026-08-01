@@ -78,7 +78,6 @@ class AzureIacPolicyTests(unittest.TestCase):
             "4633458b-17de-408a-b874-0445c86b69e6",
             "ba92f5b4-2d11-453d-a403-e96b0029c9fe",
             "69a216fc-b8fb-44d8-bc22-1f3c2cd27a39",
-            "4f6c7262-78e4-46f8-bc3f-5e489807f7ba",
         ):
             with self.subTest(role_id=role_id):
                 self.assertTrue(
@@ -92,6 +91,14 @@ class AzureIacPolicyTests(unittest.TestCase):
         self.assertIn("disableLocalAuth: true", self.source)
         self.assertIn("name: 'Premium'", self.source)
         self.assertNotIn("listKeys(", self.source)
+
+    def test_outbox_worker_is_sender_only_and_ordered(self):
+        self.assertIn("name: 'outbox-publisher'", self.source)
+        self.assertIn("'outbox_worker.py'", self.source)
+        self.assertIn("requiresDuplicateDetection: true", self.source)
+        self.assertIn("requiresSession: true", self.source)
+        self.assertIn("serviceBusSender", self.source)
+        self.assertNotIn("serviceBusReceiver", self.source)
 
     def test_stateful_services_are_private_and_encrypted(self):
         self.assertGreaterEqual(

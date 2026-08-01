@@ -8,7 +8,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     SENTINEL_DATABASE_URL=sqlite:////app/runtime/governance.db \
     SENTINEL_IDENTITY_DATABASE_URL=sqlite:////app/runtime/identity.db \
     SENTINEL_EVIDENCE_DIR=/app/runtime/evidence \
-    SENTINEL_AUDIT_DIR=/app/runtime/audit-archive
+    SENTINEL_AUDIT_DIR=/app/runtime/audit-archive \
+    SENTINEL_OUTBOX_DIR=/app/runtime/outbox
 
 WORKDIR /app
 
@@ -18,7 +19,7 @@ RUN python -m pip install --no-cache-dir -r requirements.txt \
     && adduser --system --uid 10001 --gid 10001 --home /nonexistent sentinel
 
 COPY . .
-RUN mkdir -p /app/runtime/evidence /app/runtime/audit-archive \
+RUN mkdir -p /app/runtime/evidence /app/runtime/audit-archive /app/runtime/outbox \
     && chown -R sentinel:sentinel /app/runtime
 
 USER 10001:10001

@@ -9,6 +9,7 @@ from contextlib import closing
 from typing import Any
 
 from persistence import Database
+from outbox_delivery import GovernanceOutboxQueue as GovernanceOutbox
 
 
 def _postgres(database: Database) -> None:
@@ -196,78 +197,3 @@ class PostgresJobQueue:
         result = {"pending": 0, "running": 0, "completed": 0, "dead": 0}
         result.update({row["status"]: int(row["count"]) for row in rows})
         return result
-
-
-class GovernanceOutbox:
-    def __init__(self, database: Database) -> None:
-        _postgres(database)
-        self.database = database
-
-    def claim(
-        self,
-        worker_id: str,
-        lease_seconds: int = 60,
-        now: float | None = None,
-    ) -> dict[str, Any] | None:
-        if not worker_id.strip() or lease_seconds <= 0:
-            raise ValueError("worker_id and lease_seconds are required")
-        current = time.time() if now is None else now
-        token = uuid.uuid4().hex
-        with closing(self.database.connect()) as db:
-            row = db.execute(
-                """
-                WITH candidate AS (
-                    SELECT outbox_id FROM governance_outbox
-                    WHERE delivered_at IS NULL AND available_at <= ?
-                      AND (locked_until IS NULL OR locked_until <= ?)
-                    ORDER BY created_at, outbox_id
-                    FOR UPDATE SKIP LOCKED
-                    LIMIT 1
-                )
-                UPDATE governance_outbox AS item
-                SET attempts = attempts + 1, locked_until = ?,
-                    worker_id = ?, lock_token = ?
-                FROM candidate
-                WHERE item.outbox_id = candidate.outbox_id
-                RETURNING item.*
-                """,
-                (
-                    current,
-                    current,
-                    current + lease_seconds,
-                    worker_id,
-                    token,
-                ),
-            ).fetchone()
-            db.commit()
-            return None if row is None else dict(row)
-
-    def acknowledge(
-        self,
-        outbox_id: str,
-        worker_id: str,
-        lock_token: str,
-        now: float | None = None,
-    ) -> bool:
-        current = time.time() if now is None else now
-        with closing(self.database.connect()) as db:
-            row = db.execute(
-                "SELECT delivered_at FROM governance_outbox "
-                "WHERE outbox_id = ? FOR UPDATE",
-                (outbox_id,),
-            ).fetchone()
-            if row is None:
-                db.rollback()
-                return False
-            if row["delivered_at"] is not None:
-                db.rollback()
-                return True
-            cursor = db.execute(
-                "UPDATE governance_outbox SET delivered_at = ?, "
-                "locked_until = NULL, worker_id = NULL, lock_token = NULL "
-                "WHERE outbox_id = ? AND worker_id = ? AND lock_token = ? "
-                "AND locked_until > ? AND delivered_at IS NULL",
-                (current, outbox_id, worker_id, lock_token, current),
-            )
-            db.commit()
-            return cursor.rowcount == 1

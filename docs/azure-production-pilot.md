@@ -30,6 +30,15 @@ adapter or a managed-identity Azure Blob adapter, verifies the stored bytes and
 metadata, and records success, retry, or dead-letter state. Crash replay is
 create-only and idempotent.
 
+The same governance transaction creates a broker-outbox record. A dedicated
+Container Apps sidecar claims PostgreSQL records with lease fencing and
+publishes canonical messages to a session-enabled Azure Service Bus queue. It
+uses a stable server-generated `MessageId`, finding-scoped session and
+partition keys, managed identity, bounded SDK retries/timeouts, heartbeat and
+delivery-lag readiness, retry/dead-letter state, and exact-confirmation
+operator recovery. A local create-only publisher supports lab validation. No
+message has been published to a real Azure namespace by repository tests.
+
 `SENTINEL_ENV=production` still fails startup until the real container
 retention policy, managed identity, worker supervision, delivery monitoring,
 and recovery procedure are validated. Repository tests do not prove an Azure
@@ -45,7 +54,9 @@ flowchart LR
     Edge --> App["Azure Container Apps"]
     App --> Pg["Azure Database for PostgreSQL"]
     App --> Blob["Blob evidence storage"]
-    App --> Queue["Durable queue"]
+    App --> Outbox["PostgreSQL transactional outbox"]
+    Outbox --> Worker["Fenced publisher sidecar"]
+    Worker --> Queue["Session-enabled Service Bus queue"]
     App --> Vault["Key Vault"]
     App --> Monitor["Azure Monitor"]
     App --> Worm["Immutable audit archive"]
@@ -53,10 +64,11 @@ flowchart LR
 
 ## Required before production startup can be enabled
 
-1. Connect the PostgreSQL transactional outbox to an Azure Service Bus worker,
-   monitor delivery lag, and retain dead-letter operations. Connector replay,
-   fenced queue claims, and outbox state are repository-tested, but no external
-   broker or publisher has been deployed.
+1. Deploy and validate the implemented PostgreSQL outbox publisher against the
+   private Service Bus queue. Prove managed-identity authentication, stable
+   message/session identity, crash-after-send replay, delivery-lag alerts,
+   dead-letter recovery, sidecar restart and downstream idempotency. No
+   external broker has been exercised by repository tests.
 2. Provision and validate the real Entra application registration, app roles,
    assignments, Conditional Access/MFA policy, issuer, audience, tenant, and
    JWKS values in the target staging tenant.

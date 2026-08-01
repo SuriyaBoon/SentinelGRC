@@ -163,6 +163,14 @@ retry or dead-letter review. The lab filesystem is not immutable; Azure
 retention becomes enforceable only after the operator validates and locks the
 container policy.
 
+Governance events also create a transactional broker-outbox record. A separate
+fenced worker publishes canonical `governance.event.v1` messages. Lab runs use
+create-only local files; staging is configured for Azure Service Bus with a
+user-assigned managed identity. The stable `outbox_id` is the broker
+`MessageId`, and the finding ID is both the session and partition key. This
+allows duplicate detection and preserves per-finding publish order without
+making Service Bus authoritative for governance state.
+
 ### Connected portfolio boundaries
 
 The repository has two narrow portfolio bridges. They feed SentinelGRC as evidence sources but do not import external code, operate external systems, or turn SentinelGRC into a response platform.
@@ -469,7 +477,9 @@ In short: LogWatcher and SOC-Homelab are detection concepts, SentinelGRC is the 
 
 ## Commands used
 
-The repository has no third-party Python package requirement for the concept workflow. Use a supported Python installation; GitHub Actions validates the code with Python 3.12.
+The lab workflow uses the standard library, while PostgreSQL and Azure adapters
+use the pinned packages in `requirements.txt`. GitHub Actions validates the
+code with Python 3.12.
 
 ### 1. Initialise a local runtime area
 
@@ -477,6 +487,7 @@ The repository has no third-party Python package requirement for the concept wor
 git clone https://github.com/SuriyaBoon/SentinelGRC.git
 cd SentinelGRC
 python --version
+python -m pip install --requirement requirements.txt
 New-Item -ItemType Directory -Force runtime | Out-Null
 ```
 
@@ -527,10 +538,18 @@ python -m unittest discover -v -p "test_*.py"
 
 python audit_worker.py --max-items 100
 
+# Publish governance events to create-only local lab files
+python outbox_worker.py --max-items 100
+
 # Explicit operator recovery for a reviewed dead-letter export
 python audit_worker.py `
   --requeue-export "<32-character-export-id>" `
   --confirm "REQUEUE <32-character-export-id>"
+
+# Exact operator recovery for a reviewed broker-outbox dead letter
+python outbox_worker.py `
+  --requeue-outbox "<32-character-outbox-id>" `
+  --confirm "REQUEUE OUTBOX <32-character-outbox-id>"
 
 Get-Content runtime/executive-report.json
 Get-Content runtime/remediation-queue.json
@@ -554,7 +573,7 @@ python -m unittest discover -v -p "test_*.py"
 Current local regression result without an external database:
 
 ```text
-Ran 159 tests
+Ran 169 tests
 OK (skipped=10 PostgreSQL integration tests)
 ```
 
@@ -562,7 +581,7 @@ The PostgreSQL tests run when `SENTINEL_TEST_POSTGRES_URL` is set. The complete
 suite was also validated against an isolated PostgreSQL 17 container:
 
 ```text
-Ran 159 tests
+Ran 169 tests
 OK
 ```
 
@@ -570,7 +589,8 @@ Those tests cover transactional migrations, checksum mismatch rejection,
 human identity authentication, the full finding lifecycle, rollback,
 idempotent concurrent reassessment, ordered event chains, strict OIDC token
 verification, server-derived OIDC actors, content-addressed evidence storage,
-bounded Azure retry/failure behavior, and runtime readiness. GitHub Actions
+bounded Azure retry/failure behavior, ordered Service Bus outbox delivery,
+worker fencing/heartbeat/dead-letter recovery, and runtime readiness. GitHub Actions
 installs the pinned runtime dependencies, runs normal test discovery, executes
 the ten PostgreSQL tests against an ephemeral database service, parses both
 PowerShell collectors, compiles the Azure Bicep with pinned tools, builds the
@@ -623,6 +643,13 @@ The following guardrails are implemented in code and covered by tests:
   audit-export record transactionally. A fenced worker archives canonical
   events in order with create-only writes, read-back verification, bounded
   retry, and explicit dead-letter state.
+- **Recoverable broker-outbox boundary:** a single queue implementation covers
+  SQLite lab and PostgreSQL staging. It validates canonical event metadata,
+  fences stale publishers, preserves per-finding order, retries transient
+  failures, dead-letters permanent failures, and requires exact operator
+  confirmation before requeue. Azure publishing uses managed identity only,
+  stable message/session IDs, TLS, bounded retries, and no connection-string
+  fallback.
 - **Bounded lab automation:** the repository collects and evaluates data. It does not automatically remediate endpoints or modify Active Directory.
 - **Worker lease fencing:** a stale queue worker cannot complete or fail a job after its lease is no longer valid.
 
@@ -640,8 +667,10 @@ SentinelGRC/
 ├── audit_archive.py            # Local and managed-identity audit archives
 ├── audit_delivery.py           # Ordered retry and dead-letter delivery state
 ├── audit_worker.py             # Bounded audit-export worker entry point
+├── outbox_delivery.py          # Fenced local/Azure broker delivery boundary
+├── outbox_worker.py            # Supervised transactional-outbox publisher
 ├── persistence.py              # SQLite/PostgreSQL adapter and pool
-├── postgres_runtime_state.py   # PostgreSQL replay, queue, and outbox
+├── postgres_runtime_state.py   # PostgreSQL replay and pipeline queue
 ├── runtime_app.py              # WSGI composition, readiness, and production gate
 ├── security_pack.py            # Control observation normalization
 ├── security_event_connector.py # Alert-to-finding mapping
@@ -678,14 +707,18 @@ This repository is **not** a production deployment. Before even a limited intern
   private audit container. The IaC declares an **unlocked** retention policy so
   it can be tested safely; an authorised operator must validate it, lock it,
   monitor delivery lag/dead letters, and retain proof.
-- A managed durable queue and supervised workers; the current queue is SQLite polling with lease and retry logic.
+- Validation of the implemented managed-identity Service Bus publisher and
+  supervised outbox sidecar against the real private queue. Repository tests
+  cover stable message IDs, sessions, duplicate-safe replay, fencing,
+  heartbeat/readiness, retry and dead-letter recovery, but no message has been
+  sent to an Azure tenant.
 - Centralized logging, metrics, tracing, alerting, backup/restore tests, disaster-recovery procedures, and security assessment.
 - A real connector test against an authorised Windows and SIEM environment, including failure recovery and access-control validation.
 
 The PostgreSQL adapters are repository-tested for canonical governance, human
-identity, connector replay, fenced job claims, and transactional outbox state.
-Legacy pipeline stores remain SQLite-specific, and no external message broker
-or outbox destination has been deployed. Azure deployment and observability
+identity, connector replay, fenced job claims, and transactional outbox
+delivery. Legacy pipeline stores remain SQLite-specific, and no external
+message broker or outbox destination has been deployed. Azure deployment and observability
 contracts are not proof that their external controls have been deployed.
 
 ## Planned integration
