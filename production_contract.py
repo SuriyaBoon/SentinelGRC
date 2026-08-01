@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import json
 import sqlite3
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,17 @@ def _read_mapping(name: str) -> dict[str, str]:
     return value
 
 
+def _read_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.getenv(name)
+    try:
+        value = default if raw is None else int(raw.strip())
+    except (AttributeError, ValueError) as error:
+        raise ValueError(f"{name} must be an integer") from error
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     environment: str = "lab"
@@ -47,6 +59,7 @@ class Settings:
     identity_database_url: str = "sqlite:///runtime/identity.db"
     evidence_dir: str = "runtime/evidence"
     audit_dir: str = "runtime/audit-archive"
+    outbox_dir: str = "runtime/outbox"
     evidence_store_url: str = ""
     audit_archive_url: str = ""
     oidc_issuer: str = ""
@@ -56,6 +69,10 @@ class Settings:
     oidc_role_map: dict[str, str] = field(default_factory=dict)
     oidc_group_role_map: dict[str, str] = field(default_factory=dict)
     azure_managed_identity_client_id: str = ""
+    service_bus_namespace: str = ""
+    service_bus_queue: str = ""
+    outbox_worker_max_age_seconds: int = 120
+    outbox_delivery_lag_max_seconds: int = 300
     require_tls: bool = False
 
     @classmethod
@@ -74,6 +91,9 @@ class Settings:
             audit_dir=os.getenv(
                 "SENTINEL_AUDIT_DIR", cls.audit_dir
             ).strip(),
+            outbox_dir=os.getenv(
+                "SENTINEL_OUTBOX_DIR", cls.outbox_dir
+            ).strip(),
             evidence_store_url=os.getenv(
                 "SENTINEL_EVIDENCE_STORE_URL", ""
             ).strip(),
@@ -89,6 +109,18 @@ class Settings:
             azure_managed_identity_client_id=os.getenv(
                 "SENTINEL_AZURE_CLIENT_ID", ""
             ).strip(),
+            service_bus_namespace=os.getenv(
+                "SENTINEL_SERVICE_BUS_NAMESPACE", ""
+            ).strip(),
+            service_bus_queue=os.getenv(
+                "SENTINEL_SERVICE_BUS_QUEUE", ""
+            ).strip(),
+            outbox_worker_max_age_seconds=_read_int(
+                "SENTINEL_OUTBOX_WORKER_MAX_AGE_SECONDS", 120, 10, 900
+            ),
+            outbox_delivery_lag_max_seconds=_read_int(
+                "SENTINEL_OUTBOX_DELIVERY_LAG_MAX_SECONDS", 300, 30, 86_400
+            ),
             require_tls=_read_bool("SENTINEL_REQUIRE_TLS"),
         )
 
@@ -104,6 +136,8 @@ class Settings:
             errors.append("SENTINEL_EVIDENCE_DIR is required")
         if not self.audit_dir:
             errors.append("SENTINEL_AUDIT_DIR is required")
+        if not self.outbox_dir:
+            errors.append("SENTINEL_OUTBOX_DIR is required")
         if self.environment in {"staging", "production"}:
             if not self.oidc_issuer:
                 errors.append(f"{self.environment} requires SENTINEL_OIDC_ISSUER")
@@ -125,6 +159,22 @@ class Settings:
                 errors.append(
                     f"{self.environment} requires SENTINEL_AZURE_CLIENT_ID"
                 )
+            if re.fullmatch(
+                r"[a-z0-9][a-z0-9-]{4,48}[a-z0-9]\.servicebus\.windows\.net",
+                self.service_bus_namespace,
+            ) is None:
+                errors.append(
+                    f"{self.environment} requires a valid "
+                    "SENTINEL_SERVICE_BUS_NAMESPACE"
+                )
+            if (
+                re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,259}", self.service_bus_queue)
+                is None
+                or "//" in self.service_bus_queue
+            ):
+                errors.append(
+                    f"{self.environment} requires a valid SENTINEL_SERVICE_BUS_QUEUE"
+                )
         if self.environment == "production":
             if not self.database_url.startswith(("postgresql://", "postgresql+psycopg://")):
                 errors.append("production requires PostgreSQL")
@@ -134,6 +184,41 @@ class Settings:
                 errors.append("production identity storage requires PostgreSQL")
             if not self.require_tls:
                 errors.append("production requires SENTINEL_REQUIRE_TLS=true")
+        return errors
+
+    def validate_outbox_worker(self) -> list[str]:
+        errors: list[str] = []
+        if self.environment not in {"lab", "staging", "production"}:
+            errors.append("SENTINEL_ENV must be lab, staging, or production")
+        if not self.database_url:
+            errors.append("SENTINEL_DATABASE_URL is required")
+        if not self.outbox_dir:
+            errors.append("SENTINEL_OUTBOX_DIR is required")
+        if self.environment in {"staging", "production"}:
+            if not self.database_url.startswith(
+                ("postgresql://", "postgresql+psycopg://")
+            ):
+                errors.append(f"{self.environment} outbox requires PostgreSQL")
+            if not self.azure_managed_identity_client_id:
+                errors.append(
+                    f"{self.environment} requires SENTINEL_AZURE_CLIENT_ID"
+                )
+            if re.fullmatch(
+                r"[a-z0-9][a-z0-9-]{4,48}[a-z0-9]\.servicebus\.windows\.net",
+                self.service_bus_namespace,
+            ) is None:
+                errors.append(
+                    f"{self.environment} requires a valid "
+                    "SENTINEL_SERVICE_BUS_NAMESPACE"
+                )
+            if (
+                re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,259}", self.service_bus_queue)
+                is None
+                or "//" in self.service_bus_queue
+            ):
+                errors.append(
+                    f"{self.environment} requires a valid SENTINEL_SERVICE_BUS_QUEUE"
+                )
         return errors
 
 

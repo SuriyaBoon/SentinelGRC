@@ -163,6 +163,8 @@ class GovernanceCore:
                 CREATE TABLE IF NOT EXISTS governance_outbox (
                     outbox_id TEXT PRIMARY KEY,
                     event_id TEXT NOT NULL UNIQUE REFERENCES governance_events(event_id),
+                    finding_id TEXT NOT NULL,
+                    event_sequence INTEGER NOT NULL,
                     topic TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
                     created_at REAL NOT NULL,
@@ -172,7 +174,15 @@ class GovernanceCore:
                     worker_id TEXT,
                     lock_token TEXT,
                     delivered_at REAL,
+                    dead_at REAL,
+                    broker_message_id TEXT,
+                    broker_accepted_at REAL,
                     last_error TEXT
+                );
+                CREATE TABLE IF NOT EXISTS outbox_worker_heartbeats (
+                    worker_id TEXT PRIMARY KEY,
+                    heartbeat_at REAL NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('running', 'degraded'))
                 );
                 CREATE TABLE IF NOT EXISTS audit_exports (
                     export_id TEXT PRIMARY KEY,
@@ -218,6 +228,36 @@ class GovernanceCore:
                         f"ALTER TABLE governance_evidence "
                         f"ADD COLUMN {name} {declaration}"
                     )
+            outbox_columns = {
+                row[1]
+                for row in db.execute(
+                    "PRAGMA table_info(governance_outbox)"
+                ).fetchall()
+            }
+            for name, declaration in (
+                ("finding_id", "TEXT"),
+                ("event_sequence", "INTEGER"),
+                ("dead_at", "REAL"),
+                ("broker_message_id", "TEXT"),
+                ("broker_accepted_at", "REAL"),
+            ):
+                if name not in outbox_columns:
+                    db.execute(
+                        f"ALTER TABLE governance_outbox ADD COLUMN {name} {declaration}"
+                    )
+            db.execute(
+                "UPDATE governance_outbox SET "
+                "finding_id = (SELECT finding_id FROM governance_events "
+                "WHERE governance_events.event_id = governance_outbox.event_id), "
+                "event_sequence = (SELECT event_sequence FROM governance_events "
+                "WHERE governance_events.event_id = governance_outbox.event_id) "
+                "WHERE finding_id IS NULL OR event_sequence IS NULL"
+            )
+            db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "idx_governance_outbox_finding_sequence "
+                "ON governance_outbox(finding_id, event_sequence)"
+            )
             self._backfill_event_sequences(db)
             self._backfill_audit_exports(db)
             db.commit()
@@ -393,11 +433,14 @@ class GovernanceCore:
         )
         db.execute(
             "INSERT INTO governance_outbox("
-            "outbox_id, event_id, topic, payload_json, created_at, available_at"
-            ") VALUES (?, ?, ?, ?, ?, ?)",
+            "outbox_id, event_id, finding_id, event_sequence, topic, "
+            "payload_json, created_at, available_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 uuid.uuid4().hex,
                 event_id,
+                finding_id,
+                event_sequence,
                 "governance.event.v1",
                 payload_json,
                 now,

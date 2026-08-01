@@ -31,6 +31,7 @@ from governance_http import GovernanceHttpApplication, MAX_REQUEST_BODY_BYTES
 from human_identity import HumanIdentityStore
 from migration_runner import PostgresMigrationRunner
 from oidc_contract import ROLE_MAP
+from outbox_delivery import GovernanceOutboxQueue
 from persistence import Database
 from production_contract import Settings
 
@@ -126,6 +127,7 @@ class SentinelRuntime:
                     ),
                 )
         self.audit_archive = audit_archive
+        self.outbox_queue = GovernanceOutboxQueue(self.governance_database)
         if settings.environment != "lab" and oidc_verifier is None:
             try:
                 from oidc_auth import EntraTokenVerifier, OidcVerifierConfig
@@ -172,6 +174,12 @@ class SentinelRuntime:
         if self.settings.environment != "lab":
             checks["identity_provider"] = bool(
                 self.oidc_verifier and self.oidc_verifier.ready()
+            )
+            checks["outbox_delivery"] = self.outbox_queue.ready(
+                heartbeat_max_age=self.settings.outbox_worker_max_age_seconds,
+                delivery_lag_max_age=(
+                    self.settings.outbox_delivery_lag_max_seconds
+                ),
             )
         return {
             "status": "ready" if all(checks.values()) else "not_ready",

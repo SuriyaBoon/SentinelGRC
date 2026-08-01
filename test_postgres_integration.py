@@ -62,6 +62,7 @@ class PostgresIntegrationTests(unittest.TestCase):
                 "002_runtime_delivery",
                 "003_evidence_objects",
                 "004_immutable_audit_exports",
+                "005_service_bus_outbox",
             ],
         )
         self.assertEqual(len(status[0]["checksum"]), 64)
@@ -139,6 +140,10 @@ class PostgresIntegrationTests(unittest.TestCase):
                 azure_managed_identity_client_id=(
                     "00000000-0000-0000-0000-000000000002"
                 ),
+                service_bus_namespace=(
+                    "sentinel-staging.servicebus.windows.net"
+                ),
+                service_bus_queue="governance-outbox",
             )
             runtime = SentinelRuntime(
                 settings,
@@ -154,6 +159,8 @@ class PostgresIntegrationTests(unittest.TestCase):
                     runtime.governance_database,
                     runtime.identity_database,
                 )
+                self.assertEqual(runtime.readiness()["status"], "not_ready")
+                runtime.outbox_queue.heartbeat("staging-worker")
                 self.assertEqual(runtime.readiness()["status"], "ready")
             finally:
                 runtime.governance_database.close()

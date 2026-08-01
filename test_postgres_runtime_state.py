@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from audit_archive import MemoryAuditArchive
 from audit_delivery import AuditExportQueue, AuditExportWorker
+from outbox_delivery import OutboxMessage, PublishReceipt
 from connectors import ingest_event, sign_event
 from governance_core import ActorContext, GovernanceCore
 from migration_runner import PostgresMigrationRunner
@@ -160,21 +161,10 @@ class PostgresRuntimeStateTests(unittest.TestCase):
         outbox = GovernanceOutbox(self.database)
         item = outbox.claim("publisher", lease_seconds=30, now=10**10)
         self.assertIsNotNone(item)
+        receipt = PublishReceipt(OutboxMessage.from_item(item).message_id)
+        self.assertTrue(outbox.acknowledge(item, receipt, now=10**10 + 1))
         self.assertTrue(
-            outbox.acknowledge(
-                item["outbox_id"],
-                "publisher",
-                item["lock_token"],
-                now=10**10 + 1,
-            )
-        )
-        self.assertTrue(
-            outbox.acknowledge(
-                item["outbox_id"],
-                "publisher",
-                item["lock_token"],
-                now=10**10 + 2,
-            )
+            outbox.acknowledge(item, receipt, now=10**10 + 2)
         )
 
     def test_governance_event_and_outbox_roll_back_atomically(self):
