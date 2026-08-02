@@ -7,6 +7,36 @@ from scripts.staging_logwatcher import run_logwatcher_staging
 
 
 class LogWatcherStagingTests(unittest.TestCase):
+    def test_canonical_contract_is_strict_and_replay_safe(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            alert = {
+                "schema_version": "security_alert.v1",
+                "source": "logwatcher",
+                "source_event_id": "LW-4625-STRICT-1",
+                "observed_at": "2026-07-03T02:14:25Z",
+                "asset_id": "WIN-DC01",
+                "kind": "brute_force",
+                "severity": "high",
+                "title": "Five failed logons from one source",
+                "risk_owner": "security-ops",
+                "event_code": 4625,
+                "source_ip": "203.0.113.45",
+                "target_user": "administrator",
+                "evidence_refs": ["sample://logwatcher/alerts/strict-1"],
+            }
+            path = root / "alerts.jsonl"
+            path.write_text(json.dumps(alert) + "\n", encoding="utf-8")
+            db = str(root / "governance.db")
+            first = run_logwatcher_staging(str(path), db, input_kind="contract")
+            changed = dict(alert, severity="critical", title="Updated triage")
+            path.write_text(json.dumps(changed) + "\n", encoding="utf-8")
+            replay = run_logwatcher_staging(str(path), db, input_kind="contract")
+            self.assertEqual(first["findings_created"], 1)
+            self.assertEqual(replay["findings_created"], 0)
+            self.assertEqual(replay["findings_reassessed"], 1)
+            self.assertEqual(first["finding_ids"], replay["finding_ids"])
+
     def test_native_logwatcher_jsonl_reaches_governance_core(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

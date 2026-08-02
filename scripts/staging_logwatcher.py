@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from governance_core import ActorContext, GovernanceCore
+from security_alert_contract import normalize_security_alert_v1
 from security_event_connector import normalize_logwatcher_alert, normalize_security_event
 
 
@@ -28,7 +29,11 @@ def run_logwatcher_staging(events_path: str, governance_db: str, input_kind: str
         result["events_read"] += 1
         try:
             raw = json.loads(line)
-            if input_kind == "alert" or (input_kind == "auto" and "kind" in raw):
+            if input_kind == "contract" or (
+                input_kind == "auto" and raw.get("schema_version") == "security_alert.v1"
+            ):
+                finding = normalize_security_alert_v1(raw)
+            elif input_kind == "alert" or (input_kind == "auto" and "kind" in raw):
                 finding = normalize_logwatcher_alert(raw)
             else:
                 finding = normalize_security_event(raw)
@@ -57,6 +62,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Validate LogWatcher JSONL into SentinelGRC staging.")
     parser.add_argument("--events", required=True)
     parser.add_argument("--governance-db", required=True)
-    parser.add_argument("--input-kind", choices={"auto", "event", "alert"}, default="auto")
+    parser.add_argument(
+        "--input-kind",
+        choices={"auto", "event", "alert", "contract"},
+        default="auto",
+    )
     args = parser.parse_args()
     print(json.dumps(run_logwatcher_staging(args.events, args.governance_db, args.input_kind), indent=2))

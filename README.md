@@ -560,6 +560,25 @@ Get-FileHash docs/evidence/concept-validation/*.png, docs/evidence/concept-valid
 
 Runtime databases, reports, queues, and ledgers are intentionally ignored by Git. They may contain local machine metadata and should not be committed.
 
+### 6. Run the offline staging-assurance package
+
+This command validates the strict `security_alert.v1` fixture, proves first
+ingestion and replay behavior, completes one synthetic governance lifecycle,
+and drains its transactional outbox to a create-only local publisher. It does
+not construct an Azure client or mutate cloud resources.
+
+```powershell
+python -m scripts.staging_assurance `
+  --policy config/staging-assurance.example.json `
+  --alerts docs/evidence/staging-readiness/logwatcher-security-alert.v1.jsonl `
+  --output runtime/staging-assurance/offline-report.json
+```
+
+Passing offline checks return `READY_FOR_MANUAL_AZURE_STAGING`, while live and
+production decisions remain `NO_GO`. See
+[`docs/staging-assurance.md`](docs/staging-assurance.md) for the four-track
+deployment, reliability, first-integration, and operations/security plan.
+
 ## Evidence that it works
 
 ### Automated verification
@@ -570,18 +589,18 @@ The current test command is:
 python -m unittest discover -v -p "test_*.py"
 ```
 
-Current local regression result without an external database:
+Current isolated regression result without external services:
 
 ```text
-Ran 169 tests
-OK (skipped=10 PostgreSQL integration tests)
+Ran 179 tests
+OK (skipped=17 environment-gated integration tests)
 ```
 
 The PostgreSQL tests run when `SENTINEL_TEST_POSTGRES_URL` is set. The complete
 suite was also validated against an isolated PostgreSQL 17 container:
 
 ```text
-Ran 169 tests
+Ran 179 tests
 OK
 ```
 
@@ -674,6 +693,8 @@ SentinelGRC/
 ├── runtime_app.py              # WSGI composition, readiness, and production gate
 ├── security_pack.py            # Control observation normalization
 ├── security_event_connector.py # Alert-to-finding mapping
+├── security_alert_contract.py  # Strict versioned external alert boundary
+├── staging_assurance.py        # Offline gates and live go/no-go evaluator
 ├── connectors.py               # Connector event identity and replay state
 ├── state_store.py              # Local nonce, payload, and pipeline state
 ├── job_queue.py                # Local queue lease, retry, and dead-letter state
@@ -683,7 +704,9 @@ SentinelGRC/
 ├── agent/                      # Read-only Windows and AD collectors
 ├── migrations/                 # SQLite contracts and PostgreSQL migrations
 ├── infra/azure/                # Manual Azure staging Bicep and parameter contract
-├── docs/evidence/              # Sanitized synthetic-lab proof package
+├── config/                     # Non-secret staging-assurance policy example
+├── schemas/                    # Posture and security-alert JSON contracts
+├── docs/evidence/              # Sanitized synthetic-lab proof fixtures
 ├── ui/                         # Static workflow UI shell
 └── test_*.py                   # Automated unit and integration tests
 ```
@@ -715,6 +738,13 @@ This repository is **not** a production deployment. Before even a limited intern
 - Centralized logging, metrics, tracing, alerting, backup/restore tests, disaster-recovery procedures, and security assessment.
 - A real connector test against an authorised Windows and SIEM environment, including failure recovery and access-control validation.
 
+The repository includes an offline staging-assurance package and explicit live
+go/no-go gates. Passing it means the reviewed code is prepared for a manual
+staging attempt; it is not evidence that Azure controls work. The threat model,
+monitoring signals, incident procedures, rollback criteria and required private
+evidence are documented in
+[`docs/staging-assurance.md`](docs/staging-assurance.md).
+
 The PostgreSQL adapters are repository-tested for canonical governance, human
 identity, connector replay, fenced job claims, and transactional outbox
 delivery. Legacy pipeline stores remain SQLite-specific, and no external
@@ -725,7 +755,7 @@ contracts are not proof that their external controls have been deployed.
 
 | Integration | Current status |
 | --- | --- |
-| LogWatcher | **Connected and validated at synthetic-lab level.** The tracked fixture demonstrates 20 source events, 3 alerts, and idempotent finding replay. |
+| LogWatcher | **Connected and validated at synthetic-lab level.** The tracked fixture demonstrates 20 source events, 3 alerts, and idempotent finding replay. A strict `security_alert.v1` staging contract and offline lifecycle rehearsal are also included; no live source transport has been validated. |
 | JML-Automation | **Implemented as a read-only portfolio bridge and covered by repository tests.** It requires closed requests with passing verification records. No live directory changes are made. |
 | Mini-SOAR | **Implemented as a synthetic-evidence bridge and covered by repository tests.** It accepts `synthetic-lab` evidence and requires independent verification by default. |
 | Windows, Elastic, SIEM, ITSM, Azure Blob, and SSO | **Adapters or contracts exist, but they have not been validated as live integrations in an organisation-owned environment.** |
