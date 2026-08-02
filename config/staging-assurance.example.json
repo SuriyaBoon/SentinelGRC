@@ -1,0 +1,30 @@
+{
+  "schema_version": "sentinel.staging_assurance.v1",
+  "environment": "staging",
+  "source_contract": "security_alert.v1",
+  "thresholds": {
+    "outbox_worker_max_age_seconds": 120,
+    "outbox_delivery_lag_max_seconds": 300,
+    "outbox_retrying_max": 0,
+    "outbox_dead_max": 0
+  },
+  "required_offline_gates": [
+    "contract_fixture_valid",
+    "first_ingestion_exact",
+    "replay_idempotent",
+    "governance_lifecycle_closed",
+    "event_chain_valid",
+    "local_outbox_drained",
+    "repository_boundary_offline"
+  ],
+  "required_live_gates": [
+    "managed_identity_authenticated",
+    "private_network_validated",
+    "service_bus_delivery_validated",
+    "sidecar_restart_recovered",
+    "dead_letter_recovery_rehearsed",
+    "backup_restore_rehearsed",
+    "monitoring_alerts_observed",
+    "rollback_rehearsed"
+  ]
+}

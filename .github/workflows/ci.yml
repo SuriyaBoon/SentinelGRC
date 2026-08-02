@@ -25,6 +25,12 @@ jobs:
       - name: Run unit tests
         run: python -m unittest discover -v -p "test_*.py"
 
+      - name: Run offline staging assurance
+        run: >-
+          python -m scripts.staging_assurance
+          --policy config/staging-assurance.example.json
+          --alerts docs/evidence/staging-readiness/logwatcher-security-alert.v1.jsonl
+
       - name: Parse PowerShell agents
         shell: pwsh
         run: |

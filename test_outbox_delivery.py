@@ -29,6 +29,16 @@ class FailingPublisher:
         return False
 
 
+class CountingPublisher(MemoryOutboxPublisher):
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def publish(self, message):
+        self.calls += 1
+        return super().publish(message)
+
+
 class FakeMessage:
     def __init__(self, body, **kwargs):
         self.body = body
@@ -111,6 +121,45 @@ class OutboxDeliveryTests(unittest.TestCase):
         worker = OutboxWorker(queue, publisher, "recovery")
         self.assertEqual(worker.run_once(lease_seconds=5, now=base + 6), "delivered")
         self.assertEqual(len(publisher.messages), 1)
+
+    def test_publisher_interruption_never_acknowledges_and_then_recovers(self):
+        self.create("OUTBOX-INTERRUPTED")
+        queue = GovernanceOutboxQueue(self.database)
+        base = time.time()
+        interrupted = OutboxWorker(
+            queue,
+            FailingPublisher(TransientOutboxError("publisher unavailable")),
+            "interrupted",
+        )
+        self.assertEqual(
+            interrupted.run_once(max_attempts=3, retry_delay=1, now=base),
+            "retry",
+        )
+        metrics = queue.metrics(now=base)
+        self.assertEqual(metrics["delivered"], 0)
+        self.assertEqual(metrics["pending"], 1)
+        self.assertEqual(metrics["retrying"], 1)
+        recovered_publisher = CountingPublisher()
+        recovered = OutboxWorker(queue, recovered_publisher, "recovered")
+        self.assertEqual(recovered.run_once(now=base + 1), "delivered")
+        self.assertEqual(recovered_publisher.calls, 1)
+        self.assertEqual(queue.metrics(now=base + 1)["delivered"], 1)
+
+    def test_database_claim_failure_cannot_publish_or_acknowledge(self):
+        self.create("OUTBOX-DB-DOWN")
+        queue = GovernanceOutboxQueue(self.database)
+        publisher = CountingPublisher()
+        worker = OutboxWorker(queue, publisher, "worker")
+        original_claim = queue.claim
+        queue.claim = lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("database unavailable")
+        )
+        with self.assertRaisesRegex(RuntimeError, "database unavailable"):
+            worker.run_once()
+        self.assertEqual(publisher.calls, 0)
+        queue.claim = original_claim
+        self.assertEqual(worker.run_once(), "delivered")
+        self.assertEqual(publisher.calls, 1)
 
     def test_fencing_ordering_retry_dead_letter_and_exact_requeue(self):
         self.create("OUTBOX-ORDER")
