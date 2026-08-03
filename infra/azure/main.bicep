@@ -502,7 +502,10 @@ resource governanceQueue 'Microsoft.ServiceBus/namespaces/queues@2024-01-01' = {
     duplicateDetectionHistoryTimeWindow: 'PT10M'
     enableBatchedOperations: true
     enableExpress: false
-    enablePartitioning: true
+    // Premium namespace partitioning is configured at namespace creation. Azure
+    // normalizes the child queue flag to false; matching that effective value
+    // keeps repeated ARM deployments idempotent because this flag is immutable.
+    enablePartitioning: false
     lockDuration: 'PT1M'
     maxDeliveryCount: 10
     maxSizeInMegabytes: 1024

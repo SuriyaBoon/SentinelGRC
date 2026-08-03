@@ -97,6 +97,8 @@ class AzureIacPolicyTests(unittest.TestCase):
         self.assertIn("'outbox_worker.py'", self.source)
         self.assertIn("requiresDuplicateDetection: true", self.source)
         self.assertIn("requiresSession: true", self.source)
+        self.assertIn("enablePartitioning: false", self.source)
+        self.assertNotIn("enablePartitioning: true", self.source)
         self.assertIn("serviceBusSender", self.source)
         self.assertNotIn("serviceBusReceiver", self.source)
 
