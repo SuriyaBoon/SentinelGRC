@@ -17,6 +17,13 @@ The template provisions:
   existing Azure Container Registry;
 - a user-assigned managed identity with resource-scoped RBAC.
 
+The Service Bus Premium namespace owns partitioning through
+`premiumMessagingPartitions`. The child queue explicitly keeps
+`enablePartitioning: false` because Azure reports that effective value after
+creation and queue partitioning is immutable. Do not change the child flag to
+`true`: an infrastructure-first deployment followed by an application-enabled
+redeployment would fail instead of converging idempotently.
+
 The application revision contains an API container and a supervised outbox
 publisher sidecar. The sidecar has sender-only Service Bus RBAC; consumers must
 use session-aware, idempotent processing and have their own receiver identity.
