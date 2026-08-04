@@ -52,8 +52,10 @@ if (-not [Uri]::TryCreate($OidcIssuer, [UriKind]::Absolute, [ref]$issuer) -or
     throw "OidcIssuer must be an absolute HTTPS URL."
 }
 
-if ([string]::IsNullOrWhiteSpace($OidcAudience)) {
-    throw "OidcAudience is required."
+$audienceGuid = [Guid]::Empty
+if (-not [Guid]::TryParse($OidcAudience, [ref]$audienceGuid) -or
+    $audienceGuid -eq [Guid]::Empty) {
+    throw "OidcAudience must be the non-empty application client ID GUID expected in an Entra v2 token aud claim."
 }
 
 $tenantGuid = [Guid]::Empty
@@ -73,7 +75,7 @@ if (-not [Uri]::TryCreate($OidcJwksUrl, [UriKind]::Absolute, [ref]$jwks) -or
     image_is_digest_pinned = $true
     registry = "$RegistryName.azurecr.io"
     oidc_issuer = $issuer.AbsoluteUri
-    oidc_audience = $OidcAudience
+    oidc_audience = $audienceGuid.ToString()
     oidc_tenant_id = $tenantGuid.ToString()
     oidc_jwks_url = $jwks.AbsoluteUri
     azure_mutation_performed = $false

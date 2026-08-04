@@ -118,6 +118,9 @@ class AzureStagingValidatorTests(unittest.TestCase):
     def test_configuration_fails_closed(self):
         bad = [
             {
+                "audience": "11111111-1111-4111-8111-111111111111",
+            },
+            {
                 "api_base_url": "http://sentinel.azurecontainerapps.io",
             },
             {

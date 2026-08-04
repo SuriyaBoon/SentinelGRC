@@ -67,7 +67,17 @@ class AzureIacPolicyTests(unittest.TestCase):
                 self.assertIn(f"param {parameter} string", self.source)
                 self.assertIn(f"name: '{environment_name}'", self.source)
         self.assertIn("[Guid]::TryParse($OidcTenantId", self.preflight)
+        self.assertIn("[Guid]::TryParse($OidcAudience", self.preflight)
         self.assertIn("$jwks.Scheme -ne \"https\"", self.preflight)
+        self.assertIn(
+            "param oidcAudience = 'REPLACE_SENTINEL_APP_ID'",
+            self.params,
+        )
+        self.assertNotIn(
+            "param oidcAudience = 'api://REPLACE_SENTINEL_APP_ID'",
+            self.params,
+        )
+        self.assertIn("@maxLength(36)", self.source)
         self.assertIn("name: 'SENTINEL_AZURE_CLIENT_ID'", self.source)
         self.assertIn("value: appIdentity.properties.clientId", self.source)
 

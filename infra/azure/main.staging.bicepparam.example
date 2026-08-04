@@ -17,6 +17,8 @@ param databaseAdministratorLogin = 'sentinelbootstrap'
 // private parameter source. Never put it in this file.
 
 param oidcIssuer = 'https://login.microsoftonline.com/REPLACE_TENANT_ID/v2.0'
-param oidcAudience = 'api://REPLACE_SENTINEL_APP_ID'
+// Entra v2 access tokens use the application client ID GUID in the aud claim.
+// Managed-identity callers request api://REPLACE_SENTINEL_APP_ID/.default.
+param oidcAudience = 'REPLACE_SENTINEL_APP_ID'
 param oidcTenantId = 'REPLACE_TENANT_ID'
 param oidcJwksUrl = 'https://login.microsoftonline.com/REPLACE_TENANT_ID/discovery/v2.0/keys'

@@ -40,10 +40,15 @@ Run the existing Azure input preflight without mutation:
   -RegistryResourceGroup "<resource-group>" `
   -RegistryName "<registry-name>" `
   -OidcIssuer "https://login.microsoftonline.com/<tenant-guid>/v2.0" `
-  -OidcAudience "api://<application-guid>" `
+  -OidcAudience "<application-guid>" `
   -OidcTenantId "<tenant-guid>" `
   -OidcJwksUrl "https://login.microsoftonline.com/<tenant-guid>/discovery/v2.0/keys"
 ```
+
+For the Entra v2 deployment path, `OidcAudience` is the bare application client
+ID GUID verified against the token `aud` claim. Managed-identity clients still
+request `api://<application-guid>/.default`; the request scope and verified
+claim value are separate parts of the contract.
 
 Run the repository-only staging package:
 
