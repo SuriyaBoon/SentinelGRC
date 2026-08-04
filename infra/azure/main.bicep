@@ -52,8 +52,9 @@ param databaseAdministratorPassword string
 @minLength(8)
 param oidcIssuer string
 
-@description('Microsoft Entra application audience that the runtime verifies.')
-@minLength(1)
+@description('Application client ID GUID expected in the aud claim of Microsoft Entra v2 access tokens. This is not the api:// token-request scope.')
+@minLength(36)
+@maxLength(36)
 param oidcAudience string
 
 @description('Microsoft Entra tenant GUID that the runtime verifies in the tid claim.')

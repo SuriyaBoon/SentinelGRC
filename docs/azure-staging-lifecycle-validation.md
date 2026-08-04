@@ -31,7 +31,11 @@ SENTINEL_VALIDATION_APPROVER_CLIENT_ID
 ```
 
 The API URL must be a root HTTPS `.azurecontainerapps.io` URL. The two client
-IDs must be different GUIDs.
+IDs must be different GUIDs. `SENTINEL_VALIDATION_AUDIENCE` is the
+`api://<application-client-id>` resource URI used to request
+`api://<application-client-id>/.default`. The API runtime separately verifies
+the bare application client ID GUID carried in the `aud` claim of the returned
+Entra v2 access token.
 
 Run the validator from the digest-pinned validation image:
 

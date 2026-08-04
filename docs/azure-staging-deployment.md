@@ -124,10 +124,15 @@ Run the repository preflight. It performs no Azure mutation:
   -RegistryResourceGroup "<acr-resource-group>" `
   -RegistryName "<acr-name>" `
   -OidcIssuer "https://login.microsoftonline.com/<tenant-id>/v2.0" `
-  -OidcAudience "api://<sentinel-application-id>" `
+  -OidcAudience "<sentinel-application-id>" `
   -OidcTenantId "<tenant-id>" `
   -OidcJwksUrl "https://login.microsoftonline.com/<tenant-id>/discovery/v2.0/keys"
 ```
+
+`OidcAudience` is the application client ID GUID that the API expects in the
+`aud` claim of an Entra v2 access token. It is deliberately different from the
+managed-identity token request scope, which remains
+`api://<sentinel-application-id>/.default`.
 
 Expected result:
 
