@@ -13,8 +13,9 @@ from typing import Any, Callable, Protocol
 from urllib.parse import urlparse
 from uuid import UUID
 
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from cryptography.hazmat.primitives.asymmetric import rsa
+
+from crypto_agility import CryptoPolicy, RS256SignatureVerifier
 
 from governance_core import ActorContext, ROLES
 from human_identity import AuthenticationError
@@ -207,10 +208,14 @@ class EntraTokenVerifier:
         key_client: SigningKeyClient | None = None,
         *,
         clock: Callable[[], float] = time.time,
+        crypto_policy: CryptoPolicy | None = None,
+        signature_verifier: RS256SignatureVerifier | None = None,
     ) -> None:
         config.validate()
         self.config = config
         self.clock = clock
+        self.crypto_policy = crypto_policy or CryptoPolicy()
+        self.signature_verifier = signature_verifier or RS256SignatureVerifier(self.crypto_policy)
         self.key_client = key_client or JwksClient(
             config.jwks_url,
             timeout_seconds=config.timeout_seconds,
@@ -227,16 +232,15 @@ class EntraTokenVerifier:
             header = _json_object(_b64url(parts[0]))
             if (
                 not isinstance(header, dict)
-                or header.get("alg") != "RS256"
+                or not isinstance(header.get("alg"), str)
                 or not isinstance(header.get("kid"), str)
             ):
                 raise ValueError("invalid token header")
+            self.crypto_policy.require_signature_algorithm(header["alg"])
             key = self.key_client.get_signing_key(header["kid"])
-            key.verify(
-                _b64url(parts[2]),
+            self.signature_verifier.verify(
+                header["alg"], key, _b64url(parts[2]),
                 f"{parts[0]}.{parts[1]}".encode("ascii"),
-                padding.PKCS1v15(),
-                hashes.SHA256(),
             )
             claims = _json_object(_b64url(parts[1]))
             required = {"aud", "exp", "iat", "iss", "nbf", "sub", "tid"}
