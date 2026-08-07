@@ -15,7 +15,10 @@ The template provisions:
 - Log Analytics and Application Insights;
 - private endpoints and private DNS for Blob, Key Vault, Service Bus, and the
   existing Azure Container Registry;
-- a user-assigned managed identity with resource-scoped RBAC.
+- a user-assigned application identity with resource-scoped RBAC;
+- opt-in analyst and approver validation jobs with isolated role identities;
+- a separate validation image-pull identity with `AcrPull` only;
+- opt-in availability and outbox-health alerts with automatic resolution.
 
 The Service Bus Premium namespace owns partitioning through
 `premiumMessagingPartitions`. The child queue explicitly keeps
@@ -34,3 +37,10 @@ deployment time.
 
 See [the deployment runbook](../../docs/azure-staging-deployment.md) before
 running any Azure mutation.
+
+The analyst and approver jobs never share a role-bearing identity. Each job
+also attaches an image-pull identity that has no Sentinel API application role.
+The canonical governance state is the handoff between four manually triggered
+phases; `SENTINEL_VALIDATION_RUN_ID` and `SENTINEL_VALIDATION_PHASE` must be
+overridden for every execution. Entra API role assignment remains an explicit
+tenant-operator step.

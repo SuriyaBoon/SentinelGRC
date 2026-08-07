@@ -1,8 +1,8 @@
-"""Staging-only authenticated lifecycle validator for private Azure deployments.
+"""Role-isolated staging lifecycle validation for private Azure deployments.
 
-The validator obtains short-lived tokens from separate managed identities and
-prints a sanitized proof report. It is not part of the SentinelGRC server
-runtime and is not a production-readiness claim.
+Each invocation uses exactly one role-bearing managed identity and executes one
+bounded lifecycle phase. The canonical governance state is the handoff between
+phases; no process can request both analyst and approver tokens.
 """
 
 from __future__ import annotations
@@ -15,15 +15,28 @@ import os
 import sys
 import urllib.error
 import urllib.request
-import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 from urllib.parse import urlparse
 from uuid import UUID
 
 
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_TOKEN_BYTES = 16384
+ROLE_PHASES = {
+    "analyst": {"analyst_prepare", "analyst_remediate"},
+    "approver": {"approver_approve", "approver_close"},
+}
+NEXT_PHASE = {
+    "analyst_prepare": "approver_approve",
+    "approver_approve": "analyst_remediate",
+    "analyst_remediate": "approver_close",
+    "approver_close": None,
+}
+LEGACY_DUAL_IDENTITY_SETTINGS = {
+    "SENTINEL_VALIDATION_ANALYST_CLIENT_ID",
+    "SENTINEL_VALIDATION_APPROVER_CLIENT_ID",
+}
 
 
 class ValidationFailure(RuntimeError):
@@ -49,8 +62,10 @@ class HttpTransport(Protocol):
 class ValidatorConfig:
     api_base_url: str
     audience: str
-    analyst_client_id: str
-    approver_client_id: str
+    client_id: str
+    role: str
+    phase: str
+    run_id: str
 
     def validate(self) -> None:
         parsed = urlparse(self.api_base_url)
@@ -74,31 +89,31 @@ class ValidatorConfig:
             or len(self.audience) > 256
         ):
             raise ValueError("audience must be a bounded api:// URI")
-        for name, value in (
-            ("analyst_client_id", self.analyst_client_id),
-            ("approver_client_id", self.approver_client_id),
+        try:
+            UUID(self.client_id)
+        except (ValueError, AttributeError) as error:
+            raise ValueError("client_id must be a GUID") from error
+        if self.role not in ROLE_PHASES:
+            raise ValueError("validation role is unsupported")
+        if self.phase not in ROLE_PHASES[self.role]:
+            raise ValueError("validation phase is not allowed for this role")
+        if (
+            not isinstance(self.run_id, str)
+            or not 1 <= len(self.run_id) <= 24
+            or not self.run_id.replace("-", "").isalnum()
         ):
-            try:
-                UUID(value)
-            except (ValueError, AttributeError) as error:
-                raise ValueError(f"{name} must be a GUID") from error
-        if self.analyst_client_id == self.approver_client_id:
-            raise ValueError("analyst and approver identities must be separate")
+            raise ValueError("run_id must be bounded alphanumeric text")
 
 
 class ManagedIdentityTokenProvider:
-    def __init__(self) -> None:
-        self._credentials: dict[str, Any] = {}
-
     def get_token(self, client_id: str, audience: str) -> str:
         try:
             from azure.identity import ManagedIdentityCredential
         except ModuleNotFoundError as error:
-            raise ValidationFailure("managed identity dependency is unavailable") from error
-        credential = self._credentials.get(client_id)
-        if credential is None:
-            credential = ManagedIdentityCredential(client_id=client_id)
-            self._credentials[client_id] = credential
+            raise ValidationFailure(
+                "managed identity dependency is unavailable"
+            ) from error
+        credential = ManagedIdentityCredential(client_id=client_id)
         token = credential.get_token(f"{audience}/.default").token
         if not isinstance(token, str) or not 0 < len(token) <= MAX_TOKEN_BYTES:
             raise ValidationFailure("managed identity returned an invalid token")
@@ -133,7 +148,7 @@ class UrllibTransport:
     ) -> tuple[int, dict[str, Any]]:
         headers = {
             "Accept": "application/json",
-            "User-Agent": "SentinelGRC-Azure-Staging-Validator/1.0",
+            "User-Agent": "SentinelGRC-Azure-Staging-Validator/2.0",
         }
         data = None
         if token is not None:
@@ -182,14 +197,11 @@ class AzureStagingLifecycleValidator:
         config: ValidatorConfig,
         token_provider: TokenProvider,
         transport: HttpTransport,
-        *,
-        run_id_factory: Callable[[], str] | None = None,
     ) -> None:
         config.validate()
         self.config = config
         self.token_provider = token_provider
         self.transport = transport
-        self.run_id_factory = run_id_factory or (lambda: uuid.uuid4().hex[:12])
         self.gates: list[dict[str, Any]] = []
 
     def _expect(
@@ -201,7 +213,7 @@ class AzureStagingLifecycleValidator:
         *,
         token: str | None = None,
         body: dict[str, Any] | None = None,
-        predicate: Callable[[dict[str, Any]], bool] | None = None,
+        predicate: Any = None,
     ) -> dict[str, Any]:
         status, payload = self.transport.request(
             method,
@@ -237,7 +249,10 @@ class AzureStagingLifecycleValidator:
     ) -> dict[str, Any]:
         predicate = None
         if expected_finding_status is not None:
-            predicate = lambda payload: payload.get("status") == expected_finding_status
+            predicate = (
+                lambda payload: payload.get("status")
+                == expected_finding_status
+            )
         return self._expect(
             name,
             "POST",
@@ -248,16 +263,19 @@ class AzureStagingLifecycleValidator:
             predicate=predicate,
         )
 
-    def run(self) -> dict[str, Any]:
-        run_id = self.run_id_factory()
-        if (
-            not isinstance(run_id, str)
-            or not run_id
-            or len(run_id) > 32
-            or not run_id.replace("-", "").isalnum()
-        ):
-            raise ValidationFailure("run identifier was invalid")
+    def _read_state(
+        self, name: str, finding_id: str, token: str, expected: str
+    ) -> None:
+        self._expect(
+            name,
+            "GET",
+            f"/findings/{finding_id}",
+            200,
+            token=token,
+            predicate=lambda payload: payload.get("status") == expected,
+        )
 
+    def _health(self) -> None:
         self._expect(
             "healthz",
             "GET",
@@ -276,95 +294,37 @@ class AzureStagingLifecycleValidator:
             and all(value is True for value in payload["checks"].values()),
         )
 
-        analyst_token = self.token_provider.get_token(
-            self.config.analyst_client_id, self.config.audience
-        )
-        approver_token = self.token_provider.get_token(
-            self.config.approver_client_id, self.config.audience
-        )
-        analyst_subject = _token_subject(analyst_token)
-        approver_subject = _token_subject(approver_token)
-        if analyst_subject == approver_subject:
-            raise ValidationFailure("managed identities did not produce separate actors")
-
+    def _analyst_prepare(
+        self, finding_id: str, token: str, subject: str
+    ) -> str:
         self._expect(
             "missing_auth_rejected",
             "GET",
             "/findings",
             401,
-            predicate=lambda payload: payload.get("error") == "missing_bearer_token",
+            predicate=lambda payload: payload.get("error")
+            == "missing_bearer_token",
         )
-
-        spoof_id = f"AZ-{run_id}-SPOOF"
         self._post(
             "actor_spoof_rejected",
             "create",
-            spoof_id,
+            finding_id,
             400,
-            analyst_token,
+            token,
             {
                 "control_id": "AZ-STAGING-AUTH",
                 "asset_id": "azure-staging",
                 "title": "Actor spoof validation",
-                "risk_owner": analyst_subject,
+                "risk_owner": subject,
                 "severity": "high",
                 "actor_id": "caller-controlled",
             },
         )
-
-        self_approval_id = f"AZ-{run_id}-SOD"
-        self._post(
-            "self_approval_finding_created",
-            "create",
-            self_approval_id,
-            200,
-            analyst_token,
-            {
-                "control_id": "AZ-STAGING-SOD",
-                "asset_id": "azure-staging",
-                "title": "Self approval rejection validation",
-                "risk_owner": approver_subject,
-                "severity": "high",
-            },
-            expected_finding_status="open",
-        )
-        self._post(
-            "self_approval_risk_assessed",
-            "assess",
-            self_approval_id,
-            200,
-            analyst_token,
-            {"likelihood": "high", "impact": "high"},
-            expected_finding_status="risk_assessed",
-        )
-        self._post(
-            "self_approval_treatment_proposed",
-            "propose",
-            self_approval_id,
-            200,
-            analyst_token,
-            {
-                "treatment_type": "mitigate",
-                "reason": "Validate server-side self-approval rejection",
-                "action_owner": analyst_subject,
-            },
-            expected_finding_status="pending_approval",
-        )
-        self._post(
-            "risk_owner_self_approval_rejected",
-            "approve",
-            self_approval_id,
-            403,
-            approver_token,
-            {"decision": "approved", "reason": "must be rejected"},
-        )
-
-        finding_id = f"AZ-{run_id}-E2E"
         create_body = {
             "control_id": "AZ-STAGING-E2E",
             "asset_id": "azure-staging",
-            "title": "Authenticated Azure staging lifecycle validation",
-            "risk_owner": analyst_subject,
+            "title": "Role-isolated Azure staging lifecycle validation",
+            "risk_owner": subject,
             "severity": "critical",
         }
         self._post(
@@ -372,7 +332,7 @@ class AzureStagingLifecycleValidator:
             "create",
             finding_id,
             200,
-            analyst_token,
+            token,
             create_body,
             expected_finding_status="open",
         )
@@ -381,7 +341,7 @@ class AzureStagingLifecycleValidator:
             "create",
             finding_id,
             400,
-            analyst_token,
+            token,
             create_body,
         )
         self._post(
@@ -389,7 +349,7 @@ class AzureStagingLifecycleValidator:
             "assess",
             finding_id,
             200,
-            analyst_token,
+            token,
             {"likelihood": "high", "impact": "critical"},
             expected_finding_status="risk_assessed",
         )
@@ -398,20 +358,32 @@ class AzureStagingLifecycleValidator:
             "propose",
             finding_id,
             200,
-            analyst_token,
+            token,
             {
                 "treatment_type": "mitigate",
                 "reason": "Validate the private staging lifecycle",
-                "action_owner": analyst_subject,
+                "action_owner": subject,
             },
             expected_finding_status="pending_approval",
+        )
+        return "pending_approval"
+
+    def _approver_approve(
+        self, finding_id: str, token: str, subject: str
+    ) -> str:
+        del subject
+        self._read_state(
+            "pending_approval_handoff_verified",
+            finding_id,
+            token,
+            "pending_approval",
         )
         self._post(
             "premature_close_rejected",
             "close",
             finding_id,
             400,
-            approver_token,
+            token,
             {"reason": "must not close before verification"},
         )
         self._post(
@@ -419,29 +391,36 @@ class AzureStagingLifecycleValidator:
             "approve",
             finding_id,
             200,
-            approver_token,
+            token,
             {"decision": "approved", "reason": "staging validation"},
             expected_finding_status="approved",
+        )
+        return "approved"
+
+    def _analyst_remediate(
+        self, finding_id: str, token: str, subject: str
+    ) -> str:
+        self._read_state(
+            "approved_handoff_verified", finding_id, token, "approved"
         )
         self._post(
             "action_started",
             "start",
             finding_id,
             200,
-            analyst_token,
-            {"implementer": analyst_subject},
+            token,
+            {"implementer": subject},
             expected_finding_status="in_progress",
         )
-        evidence_content = f"sentinelgrc-azure-staging-validation:{run_id}"
-        evidence_sha256 = hashlib.sha256(
-            evidence_content.encode("utf-8")
-        ).hexdigest()
+        evidence_content = (
+            f"sentinelgrc-azure-staging-validation:{self.config.run_id}"
+        )
         self._post(
             "evidence_submitted",
             "evidence",
             finding_id,
             200,
-            analyst_token,
+            token,
             {
                 "source": "azure-staging-validator",
                 "content": evidence_content,
@@ -453,15 +432,27 @@ class AzureStagingLifecycleValidator:
             "verify",
             finding_id,
             403,
-            analyst_token,
+            token,
             {"passed": True, "notes": "must be independently verified"},
+        )
+        return "pending_verification"
+
+    def _approver_close(
+        self, finding_id: str, token: str, subject: str
+    ) -> str:
+        del subject
+        self._read_state(
+            "pending_verification_handoff_verified",
+            finding_id,
+            token,
+            "pending_verification",
         )
         self._post(
             "independent_verification_passed",
             "verify",
             finding_id,
             200,
-            approver_token,
+            token,
             {"passed": True, "notes": "validated in private Azure staging"},
             expected_finding_status="verified",
         )
@@ -470,53 +461,75 @@ class AzureStagingLifecycleValidator:
             "close",
             finding_id,
             200,
-            approver_token,
-            {"reason": "authenticated staging lifecycle completed"},
+            token,
+            {"reason": "role-isolated staging lifecycle completed"},
             expected_finding_status="closed",
         )
-        self._expect(
-            "closed_finding_readback",
-            "GET",
-            f"/findings/{finding_id}",
-            200,
-            token=analyst_token,
-            predicate=lambda payload: payload.get("status") == "closed",
+        self._read_state(
+            "closed_finding_readback", finding_id, token, "closed"
         )
+        return "closed"
 
+    def run(self) -> dict[str, Any]:
+        self._health()
+        token = self.token_provider.get_token(
+            self.config.client_id, self.config.audience
+        )
+        subject = _token_subject(token)
+        finding_id = f"AZ-{self.config.run_id}-E2E"
+        handlers = {
+            "analyst_prepare": self._analyst_prepare,
+            "approver_approve": self._approver_approve,
+            "analyst_remediate": self._analyst_remediate,
+            "approver_close": self._approver_close,
+        }
+        final_status = handlers[self.config.phase](
+            finding_id, token, subject
+        )
+        next_phase = NEXT_PHASE[self.config.phase]
+        state_material = "|".join(
+            (
+                self.config.run_id,
+                finding_id,
+                final_status,
+                next_phase or "complete",
+            )
+        )
         report = {
-            "schema_version": "1.0.0",
+            "schema_version": "2.0.0",
             "scope": "azure_staging_validation",
             "status": "passed",
-            "run_id": run_id,
-            "finding_ids": {
-                "segregation_of_duties": self_approval_id,
-                "complete_lifecycle": finding_id,
-            },
-            "actor_fingerprints": {
-                "analyst": hashlib.sha256(
-                    analyst_subject.encode("utf-8")
-                ).hexdigest(),
-                "approver": hashlib.sha256(
-                    approver_subject.encode("utf-8")
-                ).hexdigest(),
-            },
-            "evidence_sha256": evidence_sha256,
-            "final_finding_status": "closed",
+            "run_id": self.config.run_id,
+            "phase": self.config.phase,
+            "role": self.config.role,
+            "finding_id": finding_id,
+            "actor_fingerprint": hashlib.sha256(
+                subject.encode("utf-8")
+            ).hexdigest(),
+            "state_sha256": hashlib.sha256(
+                state_material.encode("utf-8")
+            ).hexdigest(),
+            "final_finding_status": final_status,
+            "next_phase": next_phase,
             "gates": self.gates,
             "production_ready": False,
         }
         serialized = json.dumps(report, sort_keys=True)
-        if analyst_token in serialized or approver_token in serialized:
-            raise ValidationFailure("sanitized report contained a bearer token")
+        if token in serialized or subject in serialized:
+            raise ValidationFailure("sanitized report contained identity material")
         return report
 
 
 def _config_from_environment() -> ValidatorConfig:
+    if any(os.environ.get(name, "").strip() for name in LEGACY_DUAL_IDENTITY_SETTINGS):
+        raise ValueError("legacy dual-identity validation settings are forbidden")
     names = {
         "api_base_url": "SENTINEL_VALIDATION_API_URL",
         "audience": "SENTINEL_VALIDATION_AUDIENCE",
-        "analyst_client_id": "SENTINEL_VALIDATION_ANALYST_CLIENT_ID",
-        "approver_client_id": "SENTINEL_VALIDATION_APPROVER_CLIENT_ID",
+        "client_id": "SENTINEL_VALIDATION_CLIENT_ID",
+        "role": "SENTINEL_VALIDATION_ROLE",
+        "phase": "SENTINEL_VALIDATION_PHASE",
+        "run_id": "SENTINEL_VALIDATION_RUN_ID",
     }
     values: dict[str, str] = {}
     for field, environment_name in names.items():
@@ -524,12 +537,14 @@ def _config_from_environment() -> ValidatorConfig:
         if not value:
             raise ValueError(f"missing required setting: {environment_name}")
         values[field] = value
-    return ValidatorConfig(**values)
+    config = ValidatorConfig(**values)
+    config.validate()
+    return config
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Run the staging-only SentinelGRC Azure lifecycle validation."
+        description="Run one role-isolated SentinelGRC staging validation phase."
     )
     parser.add_argument(
         "--pretty", action="store_true", help="Indent the sanitized JSON report."
@@ -553,7 +568,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "schema_version": "1.0.0",
+                    "schema_version": "2.0.0",
                     "scope": "azure_staging_validation",
                     "status": "failed",
                     "error": "validation_failed",

@@ -20,6 +20,7 @@ class AzureIacPolicyTests(unittest.TestCase):
         required_types = {
             "Microsoft.App/managedEnvironments",
             "Microsoft.App/containerApps",
+            "Microsoft.App/jobs",
             "Microsoft.DBforPostgreSQL/flexibleServers",
             "Microsoft.KeyVault/vaults",
             "Microsoft.Storage/storageAccounts",
@@ -111,6 +112,56 @@ class AzureIacPolicyTests(unittest.TestCase):
         self.assertNotIn("enablePartitioning: true", self.source)
         self.assertIn("serviceBusSender", self.source)
         self.assertNotIn("serviceBusReceiver", self.source)
+
+    def test_validation_jobs_isolate_role_bearing_identities(self):
+        self.assertIn("param deployValidationJobs bool = false", self.source)
+        analyst_job = self.source.split(
+            "resource validationAnalystJob", 1
+        )[1].split("resource validationApproverJob", 1)[0]
+        approver_job = self.source.split(
+            "resource validationApproverJob", 1
+        )[1].split("resource availabilityAlert", 1)[0]
+        self.assertIn("validationImagePullIdentity.id", analyst_job)
+        self.assertIn("validationAnalystIdentity.id", analyst_job)
+        self.assertNotIn("validationApproverIdentity.id", analyst_job)
+        self.assertIn("value: 'analyst'", analyst_job)
+        self.assertIn("validationImagePullIdentity.id", approver_job)
+        self.assertIn("validationApproverIdentity.id", approver_job)
+        self.assertNotIn("validationAnalystIdentity.id", approver_job)
+        self.assertIn("value: 'approver'", approver_job)
+        self.assertEqual(
+            self.source.count("name: 'SENTINEL_VALIDATION_CLIENT_ID'"), 2
+        )
+        self.assertNotIn(
+            "SENTINEL_VALIDATION_ANALYST_CLIENT_ID", self.source
+        )
+        self.assertNotIn(
+            "SENTINEL_VALIDATION_APPROVER_CLIENT_ID", self.source
+        )
+        self.assertIn(
+            "principalId: validationImagePullIdentity!.properties.principalId",
+            self.source,
+        )
+        self.assertIn("value: 'REQUIRED_AT_START'", analyst_job)
+        self.assertIn("value: 'REQUIRED_AT_START'", approver_job)
+        self.assertNotIn("external: true", self.source)
+
+    def test_live_monitoring_has_log_source_and_auto_resolution(self):
+        self.assertIn("param deployMonitoringAlerts bool = false", self.source)
+        self.assertIn("Microsoft.Insights/diagnosticSettings", self.source)
+        self.assertIn("category: 'ContainerAppConsoleLogs'", self.source)
+        self.assertIn("category: 'ContainerAppSystemLogs'", self.source)
+        self.assertIn("workspaceId: logAnalytics.id", self.source)
+        self.assertIn("Microsoft.Insights/metricAlerts", self.source)
+        self.assertIn("metricName: 'Replicas'", self.source)
+        self.assertIn("Microsoft.Insights/scheduledQueryRules", self.source)
+        self.assertIn("ContainerAppConsoleLogs_CL", self.source)
+        self.assertIn('ContainerName_s == "outbox-publisher"', self.source)
+        self.assertIn("toint(payload.dead) > 0", self.source)
+        self.assertEqual(self.source.count("autoMitigate: true"), 2)
+        self.assertNotIn("autoMitigate: false", self.source)
+        self.assertIn("monitoringActionGroupResourceId", self.source)
+        self.assertIn("param deployMonitoringAlerts = false", self.params)
 
     def test_stateful_services_are_private_and_encrypted(self):
         self.assertGreaterEqual(
