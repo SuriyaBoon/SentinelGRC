@@ -21,6 +21,45 @@ The validation container must run inside an approved private-network execution
 point that can resolve the internal Container App FQDN. Do not enable public
 ingress to run this test.
 
+## Provisioned validation boundary
+
+The reviewed Azure template keeps this boundary opt-in. Set both
+`deployApplication = true` and `deployValidationJob = true` to create two
+separate user-assigned identities and a manual-trigger Container Apps Job in
+the same internal managed environment. The analyst identity alone receives
+`AcrPull`; neither validation identity receives storage, database, Service Bus,
+or Key Vault RBAC from the template.
+
+Azure Resource Manager cannot assign a Microsoft Entra application role to a
+managed identity through these resource-scoped Bicep declarations. A tenant
+operator must therefore assign exactly one API role to each identity after
+review. Use object IDs returned by the deployment; never paste access tokens:
+
+```powershell
+$api = az ad sp show --id "<sentinel-application-client-id>" | ConvertFrom-Json
+$analyst = az identity show -g "<resource-group>" -n "<validation-analyst-identity>" | ConvertFrom-Json
+$approver = az identity show -g "<resource-group>" -n "<validation-approver-identity>" | ConvertFrom-Json
+
+$analystRole = $api.appRoles | Where-Object value -eq "sentinel-analyst"
+$approverRole = $api.appRoles | Where-Object value -eq "sentinel-approver"
+
+az ad sp app-role assignment create `
+  --assignee-object-id $analyst.principalId `
+  --assignee-principal-type ServicePrincipal `
+  --resource-object-id $api.id `
+  --app-role-id $analystRole.id
+
+az ad sp app-role assignment create `
+  --assignee-object-id $approver.principalId `
+  --assignee-principal-type ServicePrincipal `
+  --resource-object-id $api.id `
+  --app-role-id $approverRole.id
+```
+
+Fail the change if the client IDs or principal IDs are equal, either identity
+has both roles, or either identity has resource-plane RBAC other than the
+analyst identity's image-pull role.
+
 ## Required settings
 
 ```text
@@ -37,11 +76,21 @@ IDs must be different GUIDs. `SENTINEL_VALIDATION_AUDIENCE` is the
 the bare application client ID GUID carried in the `aud` claim of the returned
 Entra v2 access token.
 
-Run the validator from the digest-pinned validation image:
+Start the digest-pinned private validation job manually:
 
 ```powershell
-python -m scripts.azure_staging_validator --pretty
+az containerapp job start `
+  --name "<validation-job-name>" `
+  --resource-group "<resource-group>"
+
+az containerapp job execution list `
+  --name "<validation-job-name>" `
+  --resource-group "<resource-group>" `
+  --output table
 ```
+
+For a local fixture-only check, the same module remains runnable as
+`python -m scripts.azure_staging_validator --pretty`.
 
 Store the JSON output in the approved private evidence location. Do not commit
 live reports, tokens, tenant identifiers, subscription identifiers, resource
@@ -63,3 +112,22 @@ The report contains only finding IDs, hashed actor fingerprints, the submitted
 evidence SHA-256, HTTP gate statuses, and the final state. A passing report does
 not prove backup restore, disaster recovery, sustained load, alert delivery,
 external SIEM/ITSM integration, or production readiness.
+
+## Monitoring validation
+
+Set `deployMonitoringAlerts = true` to create two staging alerts: a
+`Replicas < 1` metric alert on the internal Container App and a Log Analytics
+query alert when the outbox publisher emits a positive `dead`, `retry`, or
+`stale` count. `monitoringActionGroupResourceId` is optional so no personal or
+secret notification address is stored in the template. The same opt-in switch
+creates a diagnostic setting that routes `ContainerAppConsoleLogs` and
+`ContainerAppSystemLogs` from the managed environment to the declared Log
+Analytics workspace; without that route, the outbox query alert has no evidence
+source and must not be counted as deployed successfully.
+
+The `monitoring_alerts_observed` live gate requires an approved rehearsal:
+record the alert rule resource ID and pre-test state, trigger a bounded staging
+condition, observe Azure set the alert to fired, restore the healthy condition,
+observe resolution, and retain sanitized timestamps plus operator/reviewer
+identity in the private evidence location. Merely provisioning a rule is not a
+passing result.

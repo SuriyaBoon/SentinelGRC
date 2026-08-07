@@ -15,7 +15,9 @@ The template provisions:
 - Log Analytics and Application Insights;
 - private endpoints and private DNS for Blob, Key Vault, Service Bus, and the
   existing Azure Container Registry;
-- a user-assigned managed identity with resource-scoped RBAC.
+- a user-assigned application identity with resource-scoped RBAC;
+- opt-in, separate analyst and approver identities plus a manual private validation job;
+- opt-in availability and outbox-health alerts with an external Action Group boundary.
 
 The Service Bus Premium namespace owns partitioning through
 `premiumMessagingPartitions`. The child queue explicitly keeps
@@ -34,3 +36,9 @@ deployment time.
 
 See [the deployment runbook](../../docs/azure-staging-deployment.md) before
 running any Azure mutation.
+
+Validation identities are not application identities. The template gives only
+the analyst validation identity `AcrPull` so the manual job can start; Entra API
+role assignments remain an explicit tenant-operator step. The approver identity
+has no Azure resource-plane role in this template. Alert rules are observable
+without notifications when `monitoringActionGroupResourceId` is empty.

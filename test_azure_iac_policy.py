@@ -20,6 +20,7 @@ class AzureIacPolicyTests(unittest.TestCase):
         required_types = {
             "Microsoft.App/managedEnvironments",
             "Microsoft.App/containerApps",
+            "Microsoft.App/jobs",
             "Microsoft.DBforPostgreSQL/flexibleServers",
             "Microsoft.KeyVault/vaults",
             "Microsoft.Storage/storageAccounts",
@@ -111,6 +112,39 @@ class AzureIacPolicyTests(unittest.TestCase):
         self.assertNotIn("enablePartitioning: true", self.source)
         self.assertIn("serviceBusSender", self.source)
         self.assertNotIn("serviceBusReceiver", self.source)
+
+    def test_live_validation_job_is_separated_and_private(self):
+        self.assertIn("param deployValidationJob bool = false", self.source)
+        self.assertIn("param deployMonitoringAlerts bool = false", self.source)
+        self.assertIn("validationAnalystIdentity", self.source)
+        self.assertIn("validationApproverIdentity", self.source)
+        self.assertIn("SENTINEL_VALIDATION_ANALYST_CLIENT_ID", self.source)
+        self.assertIn("SENTINEL_VALIDATION_APPROVER_CLIENT_ID", self.source)
+        self.assertIn("scripts.azure_staging_validator", self.source)
+        self.assertIn("triggerType: 'Manual'", self.source)
+        self.assertIn("replicaRetryLimit: 0", self.source)
+        self.assertIn(
+            "value: 'https://${containerApp!.properties.configuration.ingress.fqdn}'",
+            self.source,
+        )
+        self.assertNotIn("external: true", self.source)
+        self.assertIn("image: containerImage", self.source)
+        self.assertIn("validationAcrPull", self.source)
+
+    def test_live_monitoring_alerts_are_explicit_and_opt_in(self):
+        self.assertIn("Microsoft.Insights/diagnosticSettings", self.source)
+        self.assertIn("category: 'ContainerAppConsoleLogs'", self.source)
+        self.assertIn("category: 'ContainerAppSystemLogs'", self.source)
+        self.assertIn("workspaceId: logAnalytics.id", self.source)
+        self.assertIn("Microsoft.Insights/metricAlerts", self.source)
+        self.assertIn("metricName: 'Replicas'", self.source)
+        self.assertIn("Microsoft.Insights/scheduledQueryRules", self.source)
+        self.assertIn("ContainerAppConsoleLogs_CL", self.source)
+        self.assertIn('ContainerName_s == "outbox-publisher"', self.source)
+        self.assertIn("toint(payload.dead) > 0", self.source)
+        self.assertIn("monitoringActionGroupResourceId", self.source)
+        self.assertIn("containerEnvironmentDiagnostics", self.source)
+        self.assertIn("param deployMonitoringAlerts = false", self.params)
 
     def test_stateful_services_are_private_and_encrypted(self):
         self.assertGreaterEqual(

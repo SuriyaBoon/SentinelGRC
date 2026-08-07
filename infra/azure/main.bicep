@@ -30,6 +30,15 @@ param containerImage string
 @description('Deploy the Container App only after the digest-pinned image exists in ACR.')
 param deployApplication bool = false
 
+@description('Deploy a manual staging validator only after the private application exists.')
+param deployValidationJob bool = false
+
+@description('Deploy staging availability and outbox-health alert rules.')
+param deployMonitoringAlerts bool = false
+
+@description('Optional existing Azure Monitor Action Group resource ID. Empty keeps alerts observable without notifications.')
+param monitoringActionGroupResourceId string = ''
+
 @description('Subscription containing the existing Azure Container Registry.')
 param containerRegistrySubscriptionId string
 
@@ -97,6 +106,11 @@ var containerSubnetName = 'container-apps'
 var databaseSubnetName = 'postgresql'
 var privateEndpointSubnetName = 'private-endpoints'
 var identityName = '${baseName}-app-id'
+var validationAnalystIdentityName = '${baseName}-validation-analyst-id'
+var validationApproverIdentityName = '${baseName}-validation-approver-id'
+var validationJobName = '${baseName}-lifecycle-validation'
+var availabilityAlertName = '${baseName}-no-replicas'
+var outboxHealthAlertName = '${baseName}-outbox-health'
 var workspaceName = '${baseName}-logs'
 var appInsightsName = '${baseName}-appi'
 var environmentResourceName = '${baseName}-cae'
@@ -285,6 +299,24 @@ resource appIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-3
   tags: tags
 }
 
+resource validationAnalystIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (deployApplication && deployValidationJob && imageDigestPinned) {
+  name: validationAnalystIdentityName
+  location: location
+  tags: union(tags, {
+    purpose: 'staging-lifecycle-validation'
+    sentinelRole: 'analyst'
+  })
+}
+
+resource validationApproverIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (deployApplication && deployValidationJob && imageDigestPinned) {
+  name: validationApproverIdentityName
+  location: location
+  tags: union(tags, {
+    purpose: 'staging-lifecycle-validation'
+    sentinelRole: 'approver'
+  })
+}
+
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: workspaceName
   location: location
@@ -331,6 +363,24 @@ resource containerEnvironment 'Microsoft.App/managedEnvironments@2025-07-01' = {
       infrastructureSubnetId: containerSubnet.id
       internal: true
     }
+  }
+}
+
+resource containerEnvironmentDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (deployApplication && deployMonitoringAlerts && imageDigestPinned) {
+  name: 'sentinelgrc-staging-logs'
+  scope: containerEnvironment
+  properties: {
+    logs: [
+      {
+        category: 'ContainerAppConsoleLogs'
+        enabled: true
+      }
+      {
+        category: 'ContainerAppSystemLogs'
+        enabled: true
+      }
+    ]
+    workspaceId: logAnalytics.id
   }
 }
 
@@ -678,6 +728,15 @@ module acrPull 'acr-pull-role.bicep' = {
   }
 }
 
+module validationAcrPull 'acr-pull-role.bicep' = if (deployApplication && deployValidationJob && imageDigestPinned) {
+  name: '${deployment().name}-validation-acr-pull'
+  scope: resourceGroup(containerRegistrySubscriptionId, containerRegistryResourceGroup)
+  params: {
+    principalId: validationAnalystIdentity!.properties.principalId
+    registryName: containerRegistryName
+  }
+}
+
 resource keyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(keyVault.id, appIdentity.id, keyVaultSecretsUserRoleId)
   scope: keyVault
@@ -924,10 +983,178 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = if (deployAppli
   ]
 }
 
+resource validationJob 'Microsoft.App/jobs@2025-01-01' = if (deployApplication && deployValidationJob && imageDigestPinned) {
+  name: validationJobName
+  location: location
+  tags: union(tags, {
+    purpose: 'staging-lifecycle-validation'
+  })
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${validationAnalystIdentity.id}': {}
+      '${validationApproverIdentity.id}': {}
+    }
+  }
+  properties: {
+    configuration: {
+      manualTriggerConfig: {
+        parallelism: 1
+        replicaCompletionCount: 1
+      }
+      registries: [
+        {
+          identity: validationAnalystIdentity.id
+          server: registry.properties.loginServer
+        }
+      ]
+      replicaRetryLimit: 0
+      replicaTimeout: 900
+      triggerType: 'Manual'
+    }
+    environmentId: containerEnvironment.id
+    template: {
+      containers: [
+        {
+          args: [
+            '-m'
+            'scripts.azure_staging_validator'
+            '--pretty'
+          ]
+          command: [
+            'python'
+          ]
+          env: [
+            {
+              name: 'SENTINEL_VALIDATION_API_URL'
+              value: 'https://${containerApp!.properties.configuration.ingress.fqdn}'
+            }
+            {
+              name: 'SENTINEL_VALIDATION_AUDIENCE'
+              value: 'api://${oidcAudience}'
+            }
+            {
+              name: 'SENTINEL_VALIDATION_ANALYST_CLIENT_ID'
+              value: validationAnalystIdentity!.properties.clientId
+            }
+            {
+              name: 'SENTINEL_VALIDATION_APPROVER_CLIENT_ID'
+              value: validationApproverIdentity!.properties.clientId
+            }
+          ]
+          image: containerImage
+          name: 'staging-lifecycle-validator'
+          resources: {
+            cpu: json('0.5')
+            memory: '1Gi'
+          }
+        }
+      ]
+    }
+    workloadProfileName: 'Consumption'
+  }
+  dependsOn: [
+    acrPrivateDnsGroup
+    validationAcrPull
+  ]
+}
+
+resource availabilityAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = if (deployApplication && deployMonitoringAlerts && imageDigestPinned) {
+  name: availabilityAlertName
+  location: 'global'
+  tags: tags
+  properties: {
+    actions: empty(monitoringActionGroupResourceId) ? [] : [
+      {
+        actionGroupId: monitoringActionGroupResourceId
+      }
+    ]
+    autoMitigate: true
+    criteria: {
+      'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
+      allOf: [
+        {
+          criterionType: 'StaticThresholdCriterion'
+          metricName: 'Replicas'
+          metricNamespace: 'Microsoft.App/containerApps'
+          name: 'NoRunningReplicas'
+          operator: 'LessThan'
+          threshold: 1
+          timeAggregation: 'Average'
+        }
+      ]
+    }
+    description: 'SentinelGRC staging has no running Container Apps replicas.'
+    enabled: true
+    evaluationFrequency: 'PT1M'
+    scopes: [
+      containerApp.id
+    ]
+    severity: 0
+    targetResourceRegion: location
+    targetResourceType: 'Microsoft.App/containerApps'
+    windowSize: 'PT5M'
+  }
+}
+
+resource outboxHealthAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if (deployApplication && deployMonitoringAlerts && imageDigestPinned) {
+  name: outboxHealthAlertName
+  location: location
+  tags: tags
+  properties: {
+    actions: {
+      actionGroups: empty(monitoringActionGroupResourceId) ? [] : [
+        monitoringActionGroupResourceId
+      ]
+    }
+    autoMitigate: false
+    checkWorkspaceAlertsStorageConfigured: false
+    criteria: {
+      allOf: [
+        {
+          dimensions: []
+          failingPeriods: {
+            minFailingPeriodsToAlert: 1
+            numberOfEvaluationPeriods: 1
+          }
+          operator: 'GreaterThan'
+          query: '''
+ContainerAppConsoleLogs_CL
+| where ContainerAppName_s == "${appName}"
+| where ContainerName_s == "outbox-publisher"
+| extend payload = parse_json(Log_s)
+| where toint(payload.dead) > 0 or toint(payload.retry) > 0 or toint(payload.stale) > 0
+'''
+          threshold: 0
+          timeAggregation: 'Count'
+        }
+      ]
+    }
+    description: 'SentinelGRC outbox publisher reported dead, retrying, or stale delivery work.'
+    displayName: 'SentinelGRC staging outbox delivery health'
+    enabled: true
+    evaluationFrequency: 'PT5M'
+    scopes: [
+      logAnalytics.id
+    ]
+    severity: 1
+    skipQueryValidation: false
+    windowSize: 'PT5M'
+  }
+  dependsOn: [
+    containerEnvironmentDiagnostics
+  ]
+}
+
 output deploymentMode string = deployApplication
   ? (imageDigestPinned ? 'infrastructure-and-application' : 'application-blocked-invalid-image')
   : 'infrastructure-only'
 output managedIdentityResourceId string = appIdentity.id
+output validationAnalystIdentityResourceId string = deployApplication && deployValidationJob && imageDigestPinned ? validationAnalystIdentity.id : ''
+output validationApproverIdentityResourceId string = deployApplication && deployValidationJob && imageDigestPinned ? validationApproverIdentity.id : ''
+output validationJobResourceId string = deployApplication && deployValidationJob && imageDigestPinned ? validationJob.id : ''
+output availabilityAlertResourceId string = deployApplication && deployMonitoringAlerts && imageDigestPinned ? availabilityAlert.id : ''
+output outboxHealthAlertResourceId string = deployApplication && deployMonitoringAlerts && imageDigestPinned ? outboxHealthAlert.id : ''
 output containerAppResourceId string = deployApplication && imageDigestPinned ? containerApp.id : ''
 output containerEnvironmentResourceId string = containerEnvironment.id
 output postgresServerName string = postgres.name
