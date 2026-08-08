@@ -11,10 +11,22 @@ from pathlib import Path
 from typing import Any
 
 from scripts import governance, workflow
+from scripts.path_policy import load_json_under_root, require_exact_output, resolve_under_root
 from audit_log import AuditLog
 from governance_core import ActorContext, GovernanceCore
-from sentinelgrc import append_evidence_atomic, build_evidence, canonical_json, evaluate_control, find_ledger_record, load_json
-from state_store import SQLiteStateStore
+from sentinelgrc import append_evidence_atomic, build_evidence, canonical_json, evaluate_control, find_ledger_record
+from state_store import DEFAULT_STATE_DB, SQLiteStateStore
+
+
+PIPELINE_PATHS = {
+    "ledger": "runtime/evidence-ledger.jsonl",
+    "remediation": "runtime/remediation-queue.json",
+    "tickets": "runtime/tickets.json",
+    "report": "runtime/executive-report.json",
+    "state_db": DEFAULT_STATE_DB,
+    "audit_log": "runtime/audit-log.jsonl",
+    "governance_db": "runtime/governance.db",
+}
 
 
 def _write_json(path: str, value: dict[str, Any]) -> None:
@@ -145,11 +157,28 @@ def run_pipeline(
 
 
 def run_from_files(args: argparse.Namespace) -> int:
-    access_review = load_json(args.access_review) if args.access_review else None
+    root = Path.cwd()
+    access_review = load_json_under_root(args.access_review, root, purpose="access review path") if args.access_review else None
+    for argument, key, purpose in (
+        (args.ledger, "ledger", "ledger path"),
+        (args.remediation, "remediation", "remediation path"),
+        (args.tickets, "tickets", "tickets path"),
+        (args.report, "report", "report path"),
+        (args.state_db, "state_db", "state database path"),
+        (args.audit_log, "audit_log", "audit log path"),
+    ):
+        require_exact_output(argument, PIPELINE_PATHS[key], purpose=purpose)
+    if args.governance_db:
+        require_exact_output(args.governance_db, PIPELINE_PATHS["governance_db"], purpose="governance database path")
     result = run_pipeline(
-        load_json(args.posture), load_json(args.controls), load_json(args.assets),
-        args.ledger, args.remediation, args.tickets, args.report, args.state_db,
-        access_review, audit_path=args.audit_log, governance_db=args.governance_db,
+        load_json_under_root(args.posture, root, purpose="posture path"),
+        load_json_under_root(args.controls, root, purpose="controls path"),
+        load_json_under_root(args.assets, root, purpose="assets path"),
+        PIPELINE_PATHS["ledger"], PIPELINE_PATHS["remediation"],
+        PIPELINE_PATHS["tickets"], PIPELINE_PATHS["report"],
+        PIPELINE_PATHS["state_db"], access_review,
+        audit_path=PIPELINE_PATHS["audit_log"],
+        governance_db=PIPELINE_PATHS["governance_db"] if args.governance_db else None,
     )
     print(json.dumps(result, indent=2))
     return 0
@@ -163,12 +192,12 @@ def main() -> int:
     run.add_argument("--controls", required=True)
     run.add_argument("--assets", required=True)
     run.add_argument("--access-review")
-    run.add_argument("--ledger", default="evidence-ledger.jsonl")
-    run.add_argument("--remediation", default="remediation-queue.json")
-    run.add_argument("--tickets", default="tickets.json")
-    run.add_argument("--report", default="executive-report.json")
-    run.add_argument("--state-db", default="sentinelgrc-state.db")
-    run.add_argument("--audit-log", default="runtime/audit-log.jsonl")
+    run.add_argument("--ledger", default=PIPELINE_PATHS["ledger"])
+    run.add_argument("--remediation", default=PIPELINE_PATHS["remediation"])
+    run.add_argument("--tickets", default=PIPELINE_PATHS["tickets"])
+    run.add_argument("--report", default=PIPELINE_PATHS["report"])
+    run.add_argument("--state-db", default=PIPELINE_PATHS["state_db"])
+    run.add_argument("--audit-log", default=PIPELINE_PATHS["audit_log"])
     run.add_argument("--governance-db")
     args = parser.parse_args()
     return run_from_files(args)

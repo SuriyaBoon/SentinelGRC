@@ -513,7 +513,7 @@ python -m scripts.pipeline run `
   --remediation runtime/remediation-queue.json `
   --tickets runtime/tickets.json `
   --report runtime/executive-report.json `
-  --state-db runtime/sentinel-state.db `
+  --state-db sentinelgrc-state.db `
   --audit-log runtime/audit-log.jsonl `
   --governance-db runtime/governance.db
 ```

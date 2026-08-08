@@ -15,6 +15,8 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
+from state_store import DEFAULT_STATE_DB
+
 
 KEY_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
@@ -24,7 +26,7 @@ def utc_now() -> str:
 
 
 class AgentKeyRegistry:
-    def __init__(self, path: str = "sentinelgrc-state.db"):
+    def __init__(self, path: str = DEFAULT_STATE_DB):
         self.path = str(Path(path))
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(self.path)) as connection:
@@ -77,7 +79,7 @@ class AgentKeyRegistry:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Manage SentinelGRC agent key metadata.")
-    parser.add_argument("--db", default="sentinelgrc-state.db")
+    parser.add_argument("--db", default=DEFAULT_STATE_DB)
     subparsers = parser.add_subparsers(dest="command", required=True)
     register = subparsers.add_parser("register")
     register.add_argument("--agent-id", required=True)

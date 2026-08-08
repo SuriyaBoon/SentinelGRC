@@ -5,8 +5,15 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-
+from scripts.path_policy import (
+    read_text_under_root,
+    require_exact_output,
+    resolve_under_root,
+)
 from staging_assurance import run_offline_assurance
+
+
+STAGING_OUTPUT = "runtime/staging-assurance/offline-report.json"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -23,13 +30,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output")
     args = parser.parse_args(argv)
     try:
+        root = Path.cwd()
+        policy = resolve_under_root(args.policy, root, purpose="policy path")
+        alerts = resolve_under_root(args.alerts, root, purpose="alerts path")
         live = None
         if args.live_evidence:
-            live = json.loads(Path(args.live_evidence).read_text(encoding="utf-8"))
-        report = run_offline_assurance(args.policy, args.alerts, live_evidence=live)
+            live = json.loads(
+                read_text_under_root(
+                    args.live_evidence,
+                    root,
+                    purpose="live evidence path",
+                )
+            )
+        report = run_offline_assurance(str(policy), str(alerts), live_evidence=live)
         rendered = json.dumps(report, indent=2, sort_keys=True) + "\n"
         if args.output:
-            output = Path(args.output)
+            require_exact_output(args.output, STAGING_OUTPUT, purpose="assurance output path")
+            output = Path(STAGING_OUTPUT)
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(rendered, encoding="utf-8")
         print(rendered, end="")
