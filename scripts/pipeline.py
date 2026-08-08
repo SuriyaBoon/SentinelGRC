@@ -11,9 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from scripts import governance, workflow
+from scripts.path_policy import load_json_under_root, resolve_under_root
 from audit_log import AuditLog
 from governance_core import ActorContext, GovernanceCore
-from sentinelgrc import append_evidence_atomic, build_evidence, canonical_json, evaluate_control, find_ledger_record, load_json
+from sentinelgrc import append_evidence_atomic, build_evidence, canonical_json, evaluate_control, find_ledger_record
 from state_store import SQLiteStateStore
 
 
@@ -145,11 +146,32 @@ def run_pipeline(
 
 
 def run_from_files(args: argparse.Namespace) -> int:
-    access_review = load_json(args.access_review) if args.access_review else None
+    root = args.runtime_root
+    access_review = (
+        load_json_under_root(args.access_review, root, purpose="access review path")
+        if args.access_review
+        else None
+    )
     result = run_pipeline(
-        load_json(args.posture), load_json(args.controls), load_json(args.assets),
-        args.ledger, args.remediation, args.tickets, args.report, args.state_db,
-        access_review, audit_path=args.audit_log, governance_db=args.governance_db,
+        load_json_under_root(args.posture, root, purpose="posture path"),
+        load_json_under_root(args.controls, root, purpose="controls path"),
+        load_json_under_root(args.assets, root, purpose="assets path"),
+        str(resolve_under_root(args.ledger, root, purpose="ledger path")),
+        str(resolve_under_root(args.remediation, root, purpose="remediation path")),
+        str(resolve_under_root(args.tickets, root, purpose="tickets path")),
+        str(resolve_under_root(args.report, root, purpose="report path")),
+        str(resolve_under_root(args.state_db, root, purpose="state database path")),
+        access_review,
+        audit_path=(
+            str(resolve_under_root(args.audit_log, root, purpose="audit log path"))
+            if args.audit_log
+            else None
+        ),
+        governance_db=(
+            str(resolve_under_root(args.governance_db, root, purpose="governance database path"))
+            if args.governance_db
+            else None
+        ),
     )
     print(json.dumps(result, indent=2))
     return 0
@@ -170,6 +192,11 @@ def main() -> int:
     run.add_argument("--state-db", default="sentinelgrc-state.db")
     run.add_argument("--audit-log", default="runtime/audit-log.jsonl")
     run.add_argument("--governance-db")
+    run.add_argument(
+        "--runtime-root",
+        default=".",
+        help="Trusted filesystem boundary for all CLI paths.",
+    )
     args = parser.parse_args()
     return run_from_files(args)
 

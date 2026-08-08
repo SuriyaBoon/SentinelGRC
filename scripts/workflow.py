@@ -6,8 +6,9 @@ import argparse
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
+
+from scripts.path_policy import load_json_under_root, write_text_under_root
 
 SLA = {
     "critical": {"response_minutes": 15, "resolution_hours": 4},
@@ -117,12 +118,20 @@ def main() -> int:
     parser.add_argument("--remediation", required=True)
     parser.add_argument("--access-review", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--runtime-root", default=".")
     args = parser.parse_args()
     result = generate_tickets(
-        json.loads(Path(args.remediation).read_text(encoding="utf-8")),
-        json.loads(Path(args.access_review).read_text(encoding="utf-8")),
+        load_json_under_root(args.remediation, args.runtime_root, purpose="remediation path"),
+        load_json_under_root(
+            args.access_review, args.runtime_root, purpose="access review path"
+        ),
     )
-    Path(args.output).write_text(json.dumps(result, indent=2), encoding="utf-8")
+    write_text_under_root(
+        args.output,
+        args.runtime_root,
+        json.dumps(result, indent=2),
+        purpose="ticket output path",
+    )
     print(json.dumps(result, indent=2))
     return 0
 

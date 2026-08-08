@@ -5,10 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 from datetime import date
-from pathlib import Path
 from typing import Any
 
-from sentinelgrc import evaluate_control, load_json
+from scripts.path_policy import load_json_under_root, write_text_under_root
+from sentinelgrc import evaluate_control
 
 
 def index_assets(assets: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -91,9 +91,16 @@ def expire_exceptions(queue: dict[str, Any], today: date | None = None) -> dict[
 
 def assess(args: argparse.Namespace) -> int:
     queue = build_remediation_queue(
-        load_json(args.controls), load_json(args.posture), load_json(args.assets)
+        load_json_under_root(args.controls, args.runtime_root, purpose="controls path"),
+        load_json_under_root(args.posture, args.runtime_root, purpose="posture path"),
+        load_json_under_root(args.assets, args.runtime_root, purpose="assets path"),
     )
-    Path(args.output).write_text(json.dumps(queue, indent=2), encoding="utf-8")
+    write_text_under_root(
+        args.output,
+        args.runtime_root,
+        json.dumps(queue, indent=2),
+        purpose="assessment output path",
+    )
     print(json.dumps(queue, indent=2))
     return 1 if any(item["status"] == "open" for item in queue["findings"]) else 0
 
@@ -108,16 +115,22 @@ def main() -> int:
     assess_parser.add_argument("--posture", required=True)
     assess_parser.add_argument("--assets", required=True)
     assess_parser.add_argument("--output", required=True)
+    assess_parser.add_argument("--runtime-root", default=".")
     expire_parser = subparsers.add_parser("expire")
     expire_parser.add_argument("--queue", required=True)
     expire_parser.add_argument("--output", required=True)
+    expire_parser.add_argument("--runtime-root", default=".")
     args = parser.parse_args()
     if args.command == "assess":
         return assess(args)
-    queue = load_json(args.queue)
+    queue = load_json_under_root(args.queue, args.runtime_root, purpose="queue path")
     updated = expire_exceptions(queue)
-    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.output).write_text(json.dumps(updated, indent=2) + "\n", encoding="utf-8")
+    write_text_under_root(
+        args.output,
+        args.runtime_root,
+        json.dumps(updated, indent=2) + "\n",
+        purpose="expired queue output path",
+    )
     print(json.dumps(updated, indent=2))
     return 0
 
