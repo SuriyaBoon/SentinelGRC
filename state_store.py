@@ -11,8 +11,11 @@ from pathlib import Path
 from typing import Any
 
 
+DEFAULT_STATE_DB = "sentinelgrc-state.db"
+
+
 class SQLiteStateStore:
-    def __init__(self, path: str = "sentinelgrc-state.db"):
+    def __init__(self, path: str = DEFAULT_STATE_DB):
         self.path = str(Path(path))
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()

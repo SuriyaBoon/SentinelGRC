@@ -13,6 +13,7 @@ from typing import Any
 from scripts import pipeline
 from job_queue import SQLiteJobQueue
 from sentinelgrc import load_json
+from state_store import DEFAULT_STATE_DB
 
 
 def process_inbox_once(
@@ -82,7 +83,7 @@ def add_worker_arguments(worker: argparse.ArgumentParser, command: str) -> None:
     worker.add_argument("--assets", required=True)
     worker.add_argument("--access-review")
     worker.add_argument("--ledger", default="evidence-ledger.jsonl")
-    worker.add_argument("--state-db", default="sentinelgrc-state.db")
+    worker.add_argument("--state-db", default=DEFAULT_STATE_DB)
     worker.add_argument("--remediation-dir", default="runtime/remediation")
     worker.add_argument("--tickets-dir", default="runtime/tickets")
     worker.add_argument("--reports-dir", default="runtime/reports")

@@ -8,9 +8,11 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from state_store import DEFAULT_STATE_DB
+
 
 class SQLiteJobQueue:
-    def __init__(self, path: str = "sentinelgrc-state.db"):
+    def __init__(self, path: str = DEFAULT_STATE_DB):
         self.path = str(Path(path))
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(self.path)) as connection:

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts.agent_keys import AgentKeyRegistry
-from state_store import SQLiteStateStore
+from state_store import DEFAULT_STATE_DB, SQLiteStateStore
 
 MAX_BODY_BYTES = 64 * 1024
 MAX_CLOCK_SKEW_SECONDS = 300
@@ -239,7 +239,7 @@ def main() -> int:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8080)
     serve.add_argument("--output-dir", default="evidence-inbox")
-    serve.add_argument("--state-db", default="sentinelgrc-state.db")
+    serve.add_argument("--state-db", default=DEFAULT_STATE_DB)
     serve.add_argument("--keys-env", default="SENTINELGRC_AGENT_KEYS_JSON")
     serve.add_argument("--allow-insecure-network", action="store_true")
     args = parser.parse_args()
