@@ -9,6 +9,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from scripts.path_policy import load_json_under_root, require_exact_output
+
+TICKET_OUTPUT = "runtime/tickets.json"
+
+
 SLA = {
     "critical": {"response_minutes": 15, "resolution_hours": 4},
     "high": {"response_minutes": 30, "resolution_hours": 8},
@@ -118,11 +123,15 @@ def main() -> int:
     parser.add_argument("--access-review", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
+    root = Path.cwd()
     result = generate_tickets(
-        json.loads(Path(args.remediation).read_text(encoding="utf-8")),
-        json.loads(Path(args.access_review).read_text(encoding="utf-8")),
+        load_json_under_root(args.remediation, root, purpose="remediation path"),
+        load_json_under_root(args.access_review, root, purpose="access review path"),
     )
-    Path(args.output).write_text(json.dumps(result, indent=2), encoding="utf-8")
+    require_exact_output(args.output, TICKET_OUTPUT, purpose="ticket output path")
+    destination = Path(TICKET_OUTPUT)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(result, indent=2), encoding="utf-8")
     print(json.dumps(result, indent=2))
     return 0
 
