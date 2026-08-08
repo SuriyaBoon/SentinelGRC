@@ -36,13 +36,33 @@ class EnterpriseSafetyTests(unittest.TestCase):
             posture = json.loads(Path("sample_posture.json").read_text(encoding="utf-8"))
             controls = json.loads(Path("controls.json").read_text(encoding="utf-8"))
             assets = json.loads(Path("assets.json").read_text(encoding="utf-8"))
-            bad_report = root / "report-dir"
+            bad_report = root / "report.json"
             bad_report.mkdir()
             with self.assertRaises(OSError):
                 pipeline.run_pipeline(posture, controls, assets, str(root / "ledger.jsonl"), str(root / "remediation.json"), str(root / "tickets.json"), str(bad_report), str(root / "state.db"))
+            bad_report.rmdir()
             result = pipeline.run_pipeline(posture, controls, assets, str(root / "ledger.jsonl"), str(root / "remediation.json"), str(root / "tickets.json"), str(root / "report.json"), str(root / "state.db"), created_at=datetime(2026, 7, 16, 12, 0, tzinfo=timezone.utc))
             self.assertEqual(result["status"], "accepted")
             self.assertEqual(len((root / "ledger.jsonl").read_text(encoding="utf-8").splitlines()), 1)
+
+    def test_pipeline_rejects_output_outside_declared_runtime_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            outside = Path(directory) / "escaped-report.json"
+            with self.assertRaisesRegex(ValueError, "must remain under"):
+                pipeline.run_pipeline(
+                    {"asset_id": "APP-1", "hostname": "host"},
+                    [],
+                    [],
+                    str(root / "ledger.jsonl"),
+                    str(root / "remediation.json"),
+                    str(root / "tickets.json"),
+                    str(outside),
+                    str(root / "state.db"),
+                    options=pipeline.PipelineRunOptions(runtime_root=root),
+                )
+            self.assertFalse(outside.exists())
 
     def test_sample_posture_matches_ingestion_contract(self):
         validate_posture(json.loads(Path("sample_posture.json").read_text(encoding="utf-8")))
