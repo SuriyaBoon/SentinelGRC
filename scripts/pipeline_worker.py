@@ -23,7 +23,8 @@ def process_inbox_once(
     max_attempts: int = 3, retry_delay: int = 60, audit_path: str | None = None,
     lease_seconds: int = 300,
 ) -> list[dict[str, Any]]:
-    inbox_path = Path(inbox)
+    inbox_path = Path(inbox).expanduser().resolve(strict=False)
+    runtime_root = inbox_path.parent
     inbox_path.mkdir(parents=True, exist_ok=True)
     queue = SQLiteJobQueue(state_db)
     for posture_path in sorted(inbox_path.glob("*.json")):
@@ -52,6 +53,7 @@ def process_inbox_once(
                 str(Path(reports_dir) / f"{stem}.json"),
                 state_db, access_review, audit_path=audit_path,
                 run_lease_seconds=lease_seconds,
+                runtime_root=runtime_root,
             )
             if not queue.complete(int(job["job_id"]), worker_id):
                 results.append({"file": str(posture_path), "status": "lease_lost"})

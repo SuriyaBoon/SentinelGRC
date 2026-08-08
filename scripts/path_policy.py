@@ -49,6 +49,22 @@ def load_json_under_root(
     return json.loads(read_text_under_root(value, root, purpose=purpose))
 
 
+def write_text_under_root(
+    value: str | Path,
+    root: str | Path,
+    content: str,
+    *,
+    purpose: str = "output path",
+) -> Path:
+    """Write text only after resolving the destination inside a trusted root."""
+    if not isinstance(content, str):
+        raise TypeError("output content must be text")
+    path = resolve_under_root(value, root, purpose=purpose)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
 def require_exact_output(value: str, expected: str, *, purpose: str) -> None:
     """Require a CLI output argument to match its documented fixed path."""
     normalized = value.replace("\\", "/")

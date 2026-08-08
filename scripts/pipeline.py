@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts import governance, workflow
-from scripts.path_policy import load_json_under_root, require_exact_output, resolve_under_root
+from scripts.path_policy import load_json_under_root, require_exact_output, resolve_under_root, write_text_under_root
 from audit_log import AuditLog
 from governance_core import ActorContext, GovernanceCore
 from sentinelgrc import append_evidence_atomic, build_evidence, canonical_json, evaluate_control, find_ledger_record
@@ -29,11 +29,13 @@ PIPELINE_PATHS = {
 }
 
 
-def _write_json(path: str, value: dict[str, Any]) -> None:
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
-
+def _write_json(path: str, value: dict[str, Any], root: Path) -> None:
+    write_text_under_root(
+        path,
+        root,
+        json.dumps(value, indent=2) + "\n",
+        purpose="pipeline output path",
+    )
 
 def _input_hash(inputs: dict[str, Any]) -> str:
     return hashlib.sha256(canonical_json(inputs).encode("utf-8")).hexdigest()
@@ -53,6 +55,8 @@ def run_pipeline(
     audit_path: str | None = None,
     run_lease_seconds: int = 900,
     governance_db: str | None = None,
+    *,
+    runtime_root: str | Path | None = None,
 ) -> dict[str, Any]:
     storage_mode = os.getenv("SENTINEL_STORAGE", "legacy").lower()
     if storage_mode not in {"legacy", "governance"}:
@@ -60,6 +64,20 @@ def run_pipeline(
     governance_db = governance_db or os.getenv("SENTINEL_GOVERNANCE_DB")
     if storage_mode == "governance" and not governance_db:
         governance_db = "runtime/governance.db"
+    output_root = (
+        Path(runtime_root).expanduser().resolve(strict=False)
+        if runtime_root is not None
+        else Path(state_db).expanduser().resolve(strict=False).parent
+    )
+    ledger_path = str(resolve_under_root(ledger_path, output_root, purpose="ledger path"))
+    remediation_path = str(resolve_under_root(remediation_path, output_root, purpose="remediation path"))
+    tickets_path = str(resolve_under_root(tickets_path, output_root, purpose="tickets path"))
+    report_path = str(resolve_under_root(report_path, output_root, purpose="report path"))
+    state_db = str(resolve_under_root(state_db, output_root, purpose="state database path"))
+    if audit_path:
+        audit_path = str(resolve_under_root(audit_path, output_root, purpose="audit log path"))
+    if governance_db:
+        governance_db = str(resolve_under_root(governance_db, output_root, purpose="governance database path"))
     if not isinstance(posture, dict) or not posture.get("asset_id") or not posture.get("hostname"):
         raise ValueError("Posture must contain asset_id and hostname.")
     if not isinstance(controls, list) or not isinstance(assets, list):
@@ -112,8 +130,8 @@ def run_pipeline(
 
         created = created_at or datetime.now(timezone.utc)
         tickets = workflow.generate_tickets(remediation, review, created)
-        _write_json(remediation_path, remediation)
-        _write_json(tickets_path, tickets)
+        _write_json(remediation_path, remediation, output_root)
+        _write_json(tickets_path, tickets, output_root)
         failed = [result for result in results if not result["passed"]]
         report = {
             "schema_version": "1.0",
@@ -133,7 +151,7 @@ def run_pipeline(
             "evidence_hash": record["record_hash"],
             "access_review_included": bool(access_review),
         }
-        _write_json(report_path, report)
+        _write_json(report_path, report, output_root)
         store.complete_pipeline_run(input_hash, record["record_hash"], remediation_path, tickets_path, report_path)
         if audit_path:
             AuditLog(audit_path).append(
@@ -179,6 +197,7 @@ def run_from_files(args: argparse.Namespace) -> int:
         PIPELINE_PATHS["state_db"], access_review,
         audit_path=PIPELINE_PATHS["audit_log"],
         governance_db=PIPELINE_PATHS["governance_db"] if args.governance_db else None,
+        runtime_root=root,
     )
     print(json.dumps(result, indent=2))
     return 0

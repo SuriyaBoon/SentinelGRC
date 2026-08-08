@@ -6,7 +6,7 @@ from pathlib import Path
 
 from job_queue import SQLiteJobQueue
 from scripts import agent_keys, ingestion_api, pipeline, pipeline_worker
-from scripts.path_policy import load_json_under_root, require_exact_output, resolve_under_root
+from scripts.path_policy import load_json_under_root, require_exact_output, resolve_under_root, write_text_under_root
 from state_store import DEFAULT_STATE_DB, SQLiteStateStore
 
 
@@ -41,6 +41,26 @@ class RuntimePathPolicyTests(unittest.TestCase):
             root = Path(directory); source = root / "input.json"
             source.write_text(json.dumps({"status": "ok"}), encoding="utf-8")
             self.assertEqual(load_json_under_root(source, root), {"status": "ok"})
+
+    def test_write_text_is_confined_to_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            written = write_text_under_root("reports/result.json", root, "{}\n")
+            self.assertEqual(written.read_text(encoding="utf-8"), "{}\n")
+            with self.assertRaisesRegex(ValueError, "must remain under"):
+                write_text_under_root("../escaped.json", root, "forbidden")
+            self.assertFalse((Path(directory) / "escaped.json").exists())
+
+    def test_write_text_rejects_symlink_escape_when_supported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, outside = Path(directory) / "runtime", Path(directory) / "outside"
+            root.mkdir(); outside.mkdir()
+            link = root / "escape"
+            try: link.symlink_to(outside, target_is_directory=True)
+            except OSError as error: self.skipTest(f"symlinks are unavailable: {error}")
+            with self.assertRaisesRegex(ValueError, "must remain under"):
+                write_text_under_root(link / "result.json", root, "forbidden")
 
     def test_output_argument_must_match_constant_allowlist_value(self):
         require_exact_output("runtime/report.json", "runtime/report.json", purpose="report path")
