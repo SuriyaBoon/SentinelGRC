@@ -4,6 +4,10 @@ param namePrefix = 'sgrc'
 param environmentName = 'staging'
 param location = 'southeastasia'
 param deployApplication = false
+param deployValidationJobs = false
+param deployMonitoringAlerts = false
+// Optional. Keep empty until an approved Action Group exists.
+param monitoringActionGroupResourceId = ''
 
 // Required even for the infrastructure-only pass so the reviewed deployment
 // contract cannot silently fall back to a mutable image tag.
