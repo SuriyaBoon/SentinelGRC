@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts import pipeline
+from scripts.path_policy import resolve_under_root, resolve_worker_output_directory
 from job_queue import SQLiteJobQueue
 from sentinelgrc import load_json
 from state_store import DEFAULT_STATE_DB
@@ -21,9 +22,33 @@ def process_inbox_once(
     ledger: str, state_db: str, remediation_dir: str, tickets_dir: str,
     reports_dir: str, access_review: dict[str, Any] | None = None,
     max_attempts: int = 3, retry_delay: int = 60, audit_path: str | None = None,
-    lease_seconds: int = 300,
+    lease_seconds: int = 300, runtime_root: str | Path | None = None,
+    governance_db: str | None = None,
 ) -> list[dict[str, Any]]:
-    inbox_path = Path(inbox)
+    inbox_path = Path(inbox).expanduser().resolve(strict=False)
+    storage_root = (
+        Path(runtime_root).expanduser().resolve(strict=False)
+        if runtime_root is not None
+        else inbox_path.parent
+    )
+    ledger = str(resolve_under_root(ledger, storage_root, purpose="ledger path"))
+    state_db = str(resolve_under_root(state_db, storage_root, purpose="state database path"))
+    remediation_dir = str(resolve_worker_output_directory(
+        remediation_dir, storage_root, "remediation", purpose="remediation directory"
+    ))
+    tickets_dir = str(resolve_worker_output_directory(
+        tickets_dir, storage_root, "tickets", purpose="tickets directory"
+    ))
+    reports_dir = str(resolve_worker_output_directory(
+        reports_dir, storage_root, "reports", purpose="reports directory"
+    ))
+    if audit_path is not None:
+        audit_path = str(resolve_under_root(audit_path, storage_root, purpose="audit log path"))
+    governance_db = pipeline.configured_governance_database(governance_db)
+    if governance_db is not None:
+        governance_db = str(resolve_under_root(
+            governance_db, storage_root, purpose="governance database path"
+        ))
     inbox_path.mkdir(parents=True, exist_ok=True)
     queue = SQLiteJobQueue(state_db)
     for posture_path in sorted(inbox_path.glob("*.json")):
@@ -51,7 +76,11 @@ def process_inbox_once(
                 str(Path(tickets_dir) / f"{stem}.json"),
                 str(Path(reports_dir) / f"{stem}.json"),
                 state_db, access_review, audit_path=audit_path,
-                run_lease_seconds=lease_seconds,
+                governance_db=governance_db,
+                options=pipeline.PipelineRunOptions(
+                    run_lease_seconds=lease_seconds,
+                    runtime_root=storage_root,
+                ),
             )
             if not queue.complete(int(job["job_id"]), worker_id):
                 results.append({"file": str(posture_path), "status": "lease_lost"})
@@ -71,7 +100,12 @@ def serve(args: argparse.Namespace) -> int:
     assets = load_json(args.assets)
     access_review = load_json(args.access_review) if args.access_review else None
     while True:
-        results = process_inbox_once(args.inbox, controls, assets, args.ledger, args.state_db, args.remediation_dir, args.tickets_dir, args.reports_dir, access_review, args.max_attempts, args.retry_delay, args.audit_log, args.lease_seconds)
+        results = process_inbox_once(
+            args.inbox, controls, assets, args.ledger, args.state_db,
+            args.remediation_dir, args.tickets_dir, args.reports_dir,
+            access_review, args.max_attempts, args.retry_delay, args.audit_log,
+            args.lease_seconds, args.runtime_root, args.governance_db,
+        )
         for result in results:
             print(json.dumps(result, separators=(",", ":")))
         time.sleep(args.interval)
@@ -79,6 +113,7 @@ def serve(args: argparse.Namespace) -> int:
 
 def add_worker_arguments(worker: argparse.ArgumentParser, command: str) -> None:
     worker.add_argument("--inbox", default="evidence-inbox")
+    worker.add_argument("--runtime-root", default=".")
     worker.add_argument("--controls", required=True)
     worker.add_argument("--assets", required=True)
     worker.add_argument("--access-review")
@@ -90,6 +125,7 @@ def add_worker_arguments(worker: argparse.ArgumentParser, command: str) -> None:
     worker.add_argument("--max-attempts", type=int, default=3)
     worker.add_argument("--retry-delay", type=int, default=60)
     worker.add_argument("--audit-log", default="runtime/audit-log.jsonl")
+    worker.add_argument("--governance-db")
     worker.add_argument("--lease-seconds", type=int, default=300)
     if command == "serve":
         worker.add_argument("--interval", type=int, default=30)
@@ -107,7 +143,12 @@ def main() -> int:
     assets = load_json(args.assets)
     access_review = load_json(args.access_review) if args.access_review else None
     if args.command == "once":
-        results = process_inbox_once(args.inbox, controls, assets, args.ledger, args.state_db, args.remediation_dir, args.tickets_dir, args.reports_dir, access_review, args.max_attempts, args.retry_delay, args.audit_log, args.lease_seconds)
+        results = process_inbox_once(
+            args.inbox, controls, assets, args.ledger, args.state_db,
+            args.remediation_dir, args.tickets_dir, args.reports_dir,
+            access_review, args.max_attempts, args.retry_delay, args.audit_log,
+            args.lease_seconds, args.runtime_root, args.governance_db,
+        )
         print(json.dumps(results, indent=2))
         return 0 if all(item["status"] != "error" for item in results) else 1
     return serve(args)

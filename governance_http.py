@@ -97,8 +97,7 @@ class GovernanceHttpApplication:
             return 401, {"error": str(error)}
         except PermissionError as error:
             return 403, {"error": str(error)}
-        except (ValueError, KeyError) as error:
-            status = 400
-            return status, {"error": str(error)}
         except (json.JSONDecodeError, UnicodeDecodeError):
             return 400, {"error": "invalid_json"}
+        except (ValueError, KeyError) as error:
+            return 400, {"error": str(error)}
