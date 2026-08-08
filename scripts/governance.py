@@ -8,7 +8,12 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from sentinelgrc import evaluate_control, load_json
+from scripts.path_policy import load_json_under_root, require_exact_output
+from sentinelgrc import evaluate_control
+
+
+ASSESSMENT_OUTPUT = "runtime/control-assessment.json"
+EXPIRED_QUEUE_OUTPUT = "runtime/remediation-queue.json"
 
 
 def index_assets(assets: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -90,10 +95,16 @@ def expire_exceptions(queue: dict[str, Any], today: date | None = None) -> dict[
     return queue
 
 def assess(args: argparse.Namespace) -> int:
+    root = Path.cwd()
     queue = build_remediation_queue(
-        load_json(args.controls), load_json(args.posture), load_json(args.assets)
+        load_json_under_root(args.controls, root, purpose="controls path"),
+        load_json_under_root(args.posture, root, purpose="posture path"),
+        load_json_under_root(args.assets, root, purpose="assets path"),
     )
-    Path(args.output).write_text(json.dumps(queue, indent=2), encoding="utf-8")
+    require_exact_output(args.output, ASSESSMENT_OUTPUT, purpose="assessment output path")
+    destination = Path("runtime/control-assessment.json")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(queue, indent=2), encoding="utf-8")
     print(json.dumps(queue, indent=2))
     return 1 if any(item["status"] == "open" for item in queue["findings"]) else 0
 
@@ -114,10 +125,13 @@ def main() -> int:
     args = parser.parse_args()
     if args.command == "assess":
         return assess(args)
-    queue = load_json(args.queue)
+    root = Path.cwd()
+    queue = load_json_under_root(args.queue, root, purpose="queue path")
     updated = expire_exceptions(queue)
-    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.output).write_text(json.dumps(updated, indent=2) + "\n", encoding="utf-8")
+    require_exact_output(args.output, EXPIRED_QUEUE_OUTPUT, purpose="expired queue output path")
+    destination = Path("runtime/remediation-queue.json")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(updated, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(updated, indent=2))
     return 0
 
