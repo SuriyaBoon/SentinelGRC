@@ -38,6 +38,8 @@ class AzureIacPolicyTests(unittest.TestCase):
             r"@allowed\(\[\s*'staging'\s*\]\)[\s\S]*?param environmentName",
         )
         self.assertIn("param deployApplication bool = false", self.source)
+        self.assertIn("param validationContainerImage string", self.source)
+        self.assertIn("validationImageDigestPinned", self.source)
         self.assertIn(
             "if (deployApplication && imageDigestPinned)",
             self.source,
@@ -55,6 +57,9 @@ class AzureIacPolicyTests(unittest.TestCase):
             r"param\s+databaseAdministratorPassword\s*=",
         )
         self.assertIn("@sha256:[a-f0-9]{64}", self.preflight)
+        self.assertIn("ValidationContainerImage", self.preflight)
+        self.assertIn("validation_image_is_digest_pinned", self.preflight)
+        self.assertIn("param validationContainerImage", self.params)
         self.assertNotIn("az deployment", self.preflight.lower())
 
     def test_complete_oidc_trust_boundary_is_wired_to_runtime(self):
@@ -115,6 +120,11 @@ class AzureIacPolicyTests(unittest.TestCase):
 
     def test_validation_jobs_isolate_role_bearing_identities(self):
         self.assertIn("param deployValidationJobs bool = false", self.source)
+        self.assertEqual(self.source.count("image: validationContainerImage"), 2)
+        self.assertNotIn(
+            "image: containerImage\n          name: 'sentinel-validation'",
+            self.source,
+        )
         analyst_job = self.source.split(
             "resource validationAnalystJob", 1
         )[1].split("resource validationApproverJob", 1)[0]

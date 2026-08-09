@@ -57,9 +57,14 @@ class GovernanceHttpTests(unittest.TestCase):
 
     def test_invalid_json_and_oversized_requests_are_rejected(self):
         headers = {"X-API-Key-ID": "alice-v1", "Authorization": f"Bearer {self.secret}"}
-        self.assertEqual(
-            self.app.handle("POST", "/v1/governance/create", headers, b"\xff")[0], 400
+        status, result = self.app.handle(
+            "POST", "/v1/governance/create", headers, b"\xff"
         )
+        self.assertEqual((status, result), (400, {"error": "invalid_json"}))
+        status, result = self.app.handle(
+            "POST", "/v1/governance/create", headers, b"{"
+        )
+        self.assertEqual((status, result), (400, {"error": "invalid_json"}))
         self.assertEqual(
             self.app.handle("POST", "/v1/governance/create", headers, b"x" * (256 * 1024 + 1))[0], 413
         )

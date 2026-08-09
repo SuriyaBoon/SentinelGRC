@@ -9,6 +9,7 @@ from scripts.path_policy import (
     read_text_under_root,
     require_exact_output,
     resolve_under_root,
+    write_text_under_root,
 )
 from staging_assurance import run_offline_assurance
 
@@ -46,9 +47,12 @@ def main(argv: list[str] | None = None) -> int:
         rendered = json.dumps(report, indent=2, sort_keys=True) + "\n"
         if args.output:
             require_exact_output(args.output, STAGING_OUTPUT, purpose="assurance output path")
-            output = Path(STAGING_OUTPUT)
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text(rendered, encoding="utf-8")
+            write_text_under_root(
+                STAGING_OUTPUT,
+                root,
+                rendered,
+                purpose="assurance output path",
+            )
         print(rendered, end="")
         return 0 if report["offline_decision"] == "READY_FOR_MANUAL_AZURE_STAGING" else 1
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:

@@ -17,6 +17,8 @@ The template provisions:
   existing Azure Container Registry;
 - a user-assigned application identity with resource-scoped RBAC;
 - opt-in analyst and approver validation jobs with isolated role identities;
+- a digest-pinned assurance image for validation jobs, separate from the
+  production runtime image;
 - a separate validation image-pull identity with `AcrPull` only;
 - a dedicated outbox-query identity with `Log Analytics Reader` on only the
   deployment workspace;

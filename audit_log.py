@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,7 +45,7 @@ def normalize(value: Any) -> Any:
     if isinstance(value, (str, int, bool)) or value is None:
         return value
     if isinstance(value, float):
-        if not __import__("math").isfinite(value):
+        if not math.isfinite(value):
             raise ValueError("non-finite numbers are not permitted in audit records")
         return value
     raise TypeError(f"unsupported audit value: {type(value).__name__}")

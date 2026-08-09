@@ -4,6 +4,9 @@ param(
     [string]$ContainerImage,
 
     [Parameter(Mandatory = $true)]
+    [string]$ValidationContainerImage,
+
+    [Parameter(Mandatory = $true)]
     [string]$RegistrySubscriptionId,
 
     [Parameter(Mandatory = $true)]
@@ -29,6 +32,10 @@ $ErrorActionPreference = "Stop"
 
 if ($ContainerImage -notmatch '^[a-z0-9][a-z0-9.-]+(?::[0-9]+)?/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$') {
     throw "ContainerImage must be a registry image pinned by a 64-character sha256 digest."
+}
+
+if ($ValidationContainerImage -notmatch '^[a-z0-9][a-z0-9.-]+(?::[0-9]+)?/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$') {
+    throw "ValidationContainerImage must be a registry image pinned by a 64-character sha256 digest."
 }
 
 $subscriptionGuid = [Guid]::Empty
@@ -73,6 +80,7 @@ if (-not [Uri]::TryCreate($OidcJwksUrl, [UriKind]::Absolute, [ref]$jwks) -or
 [pscustomobject]@{
     status = "valid"
     image_is_digest_pinned = $true
+    validation_image_is_digest_pinned = $true
     registry = "$RegistryName.azurecr.io"
     oidc_issuer = $issuer.AbsoluteUri
     oidc_audience = $audienceGuid.ToString()

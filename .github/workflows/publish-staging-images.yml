@@ -1,0 +1,75 @@
+name: Publish reviewed staging images
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: staging-image-publish
+    steps:
+      - name: Checkout reviewed main commit
+        uses: actions/checkout@v4
+
+      - name: Azure login with repository OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Authenticate Docker to ACR
+        run: az acr login --name "${{ vars.ACR_NAME }}"
+
+      - name: Build runtime image once
+        run: |
+          docker buildx build --load \
+            --iidfile /tmp/sentinelgrc-runtime.id \
+            --tag sentinelgrc:release .
+
+      - name: Build assurance overlay from tested runtime
+        run: |
+          docker buildx build --load \
+            --file Dockerfile.assurance \
+            --build-arg RUNTIME_IMAGE=sentinelgrc:release \
+            --tag sentinelgrc-assurance:release .
+
+      - name: Verify image import boundaries
+        run: |
+          docker run --rm --entrypoint python sentinelgrc:release -c \
+            "import importlib.util, pathlib, runtime_app; assert importlib.util.find_spec('staging_assurance') is None; assert not pathlib.Path('/app/scripts/azure_staging_validator.py').exists()"
+          docker run --rm --entrypoint python sentinelgrc-assurance:release -c \
+            "import scripts.azure_staging_validator"
+
+      - name: Push the exact tested image layers
+        env:
+          LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}
+        run: |
+          docker tag sentinelgrc:release "$LOGIN_SERVER/sentinelgrc:${GITHUB_SHA}"
+          docker tag sentinelgrc-assurance:release "$LOGIN_SERVER/sentinelgrc-assurance:${GITHUB_SHA}"
+          docker push "$LOGIN_SERVER/sentinelgrc:${GITHUB_SHA}"
+          docker push "$LOGIN_SERVER/sentinelgrc-assurance:${GITHUB_SHA}"
+
+      - name: Resolve immutable ACR manifest digests
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}
+        run: |
+          runtime_digest=$(az acr repository show --name "$ACR_NAME" --image "sentinelgrc:${GITHUB_SHA}" --query digest --output tsv)
+          assurance_digest=$(az acr repository show --name "$ACR_NAME" --image "sentinelgrc-assurance:${GITHUB_SHA}" --query digest --output tsv)
+          [[ "$runtime_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          [[ "$assurance_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          printf 'runtime_image=%s/sentinelgrc@%s\n' "$LOGIN_SERVER" "$runtime_digest" > image-digests.txt
+          printf 'validation_image=%s/sentinelgrc-assurance@%s\n' "$LOGIN_SERVER" "$assurance_digest" >> image-digests.txt
+
+      - name: Upload digest evidence without deploying
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-image-digests-${{ github.sha }}
+          path: image-digests.txt
+          if-no-files-found: error
