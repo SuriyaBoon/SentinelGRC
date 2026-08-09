@@ -27,6 +27,10 @@ param databaseServerName string = toLower(replace(
 @minLength(80)
 param containerImage string
 
+@description('Immutable staging-validation image reference. A separate digest is required so validation utilities do not ship in the runtime image.')
+@minLength(80)
+param validationContainerImage string
+
 @description('Deploy the Container App only after the digest-pinned image exists in ACR.')
 param deployApplication bool = false
 
@@ -127,6 +131,7 @@ var evidenceContainerName = 'evidence'
 var auditContainerName = 'audit-archive'
 var databaseSecretName = 'sentinel-database-url'
 var imageDigestPinned = contains(containerImage, '@sha256:') && length(last(split(containerImage, '@sha256:'))) == 64
+var validationImageDigestPinned = contains(validationContainerImage, '@sha256:') && length(last(split(validationContainerImage, '@sha256:'))) == 64
 
 var keyVaultSecretsUserRoleId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
@@ -1016,7 +1021,7 @@ resource monitoringQueryReader 'Microsoft.Authorization/roleAssignments@2022-04-
   }
 }
 
-resource validationAnalystJob 'Microsoft.App/jobs@2025-01-01' = if (deployApplication && deployValidationJobs && imageDigestPinned) {
+resource validationAnalystJob 'Microsoft.App/jobs@2025-01-01' = if (deployApplication && deployValidationJobs && imageDigestPinned && validationImageDigestPinned) {
   name: validationAnalystJobName
   location: location
   identity: {
@@ -1088,7 +1093,7 @@ resource validationAnalystJob 'Microsoft.App/jobs@2025-01-01' = if (deployApplic
               value: validationApproverIdentity!.properties.principalId
             }
           ]
-          image: containerImage
+          image: validationContainerImage
           name: 'analyst-validator'
           resources: {
             cpu: json('0.5')
@@ -1109,7 +1114,7 @@ resource validationAnalystJob 'Microsoft.App/jobs@2025-01-01' = if (deployApplic
   ]
 }
 
-resource validationApproverJob 'Microsoft.App/jobs@2025-01-01' = if (deployApplication && deployValidationJobs && imageDigestPinned) {
+resource validationApproverJob 'Microsoft.App/jobs@2025-01-01' = if (deployApplication && deployValidationJobs && imageDigestPinned && validationImageDigestPinned) {
   name: validationApproverJobName
   location: location
   identity: {
@@ -1181,7 +1186,7 @@ resource validationApproverJob 'Microsoft.App/jobs@2025-01-01' = if (deployAppli
               value: validationAnalystIdentity!.properties.principalId
             }
           ]
-          image: containerImage
+          image: validationContainerImage
           name: 'approver-validator'
           resources: {
             cpu: json('0.5')

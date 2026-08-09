@@ -113,6 +113,14 @@ $digest = az acr repository show `
   --output tsv
 
 $image = "<acr-name>.azurecr.io/sentinelgrc@$digest"
+
+$validationDigest = az acr repository show `
+  --name "<acr-name>" `
+  --image "sentinelgrc-assurance:<reviewed-tag>" `
+  --query digest `
+  --output tsv
+
+$validationImage = "<acr-name>.azurecr.io/sentinelgrc-assurance@$validationDigest"
 ```
 
 Run the repository preflight. It performs no Azure mutation:
@@ -120,6 +128,7 @@ Run the repository preflight. It performs no Azure mutation:
 ```powershell
 .\scripts\Test-AzureStagingInputs.ps1 `
   -ContainerImage $image `
+  -ValidationContainerImage $validationImage `
   -RegistrySubscriptionId "<acr-subscription-id>" `
   -RegistryResourceGroup "<acr-resource-group>" `
   -RegistryName "<acr-name>" `
