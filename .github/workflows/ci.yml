@@ -20,7 +20,10 @@ jobs:
           python-version: "3.12"
 
       - name: Install runtime dependencies
-        run: python -m pip install --requirement requirements.txt
+        run: python -m pip install --require-hashes --requirement requirements-hashed.txt
+
+      - name: Verify production image closure policy
+        run: python -m unittest test_production_image_closure -v
 
       - name: Run unit tests
         run: python -m unittest discover -v -p "test_*.py"
@@ -87,7 +90,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install PostgreSQL test dependencies
-        run: python -m pip install --requirement requirements.txt
+        run: python -m pip install --require-hashes --requirement requirements-hashed.txt
 
       - name: Run PostgreSQL integration tests
         env:
@@ -102,34 +105,98 @@ jobs:
             mcr.microsoft.com/azure-cli@sha256:23b520868509add054d385d90dc3fc5268f10a2f58947a994e30babe938e31ae \
             -c "az bicep install --version v0.45.15 && az bicep build --file /src/infra/azure/main.bicep --outfile /tmp/main.json"
 
-      - name: Build runtime image
-        run: docker build --tag sentinelgrc:${{ github.sha }} .
+      - name: Build runtime image once
+        run: |
+          docker buildx build --load \
+            --iidfile /tmp/sentinelgrc-runtime.id \
+            --tag sentinelgrc:${{ github.sha }} .
 
-      - name: Start runtime as non-root
+      - name: Build isolated assurance image
+        run: |
+          docker buildx build --load \
+            --file Dockerfile.assurance \
+            --build-arg RUNTIME_IMAGE=sentinelgrc:${{ github.sha }} \
+            --tag sentinelgrc-assurance:${{ github.sha }} .
+
+      - name: Verify runtime and assurance import boundaries
+        run: |
+          docker run --rm --entrypoint python sentinelgrc:${{ github.sha }} -c \
+            "import importlib.util, pathlib, runtime_app; assert importlib.util.find_spec('staging_assurance') is None; assert not pathlib.Path('/app/scripts/azure_staging_validator.py').exists()"
+          docker run --rm --entrypoint python sentinelgrc-assurance:${{ github.sha }} -c \
+            "import scripts.azure_staging_validator"
+
+      - name: Reject unreachable PostgreSQL at application construction
+        run: |
+          set +e
+          timeout 20s docker run --rm --entrypoint python \
+            -e SENTINEL_ENV=lab \
+            -e SENTINEL_DATABASE_URL=postgresql://sentinel:sentinel-test-only@127.0.0.1:1/unreachable \
+            -e SENTINEL_IDENTITY_DATABASE_URL=postgresql://sentinel:sentinel-test-only@127.0.0.1:1/unreachable \
+            sentinelgrc:${{ github.sha }} \
+            -c "from runtime_app import create_application; create_application()"
+          exit_code=$?
+          set -e
+          test "$exit_code" -ne 0
+
+      - name: Start PostgreSQL-backed runtime as non-root
         run: |
           docker run --detach --rm \
             --name sentinelgrc-smoke \
+            --network host \
             --read-only \
             --tmpfs /tmp:rw,noexec,nosuid,size=64m \
-            --mount type=tmpfs,destination=/app/runtime,tmpfs-size=67108864,tmpfs-mode=1777 \
+            --tmpfs /app/runtime:rw,noexec,nosuid,uid=10001,gid=10001,mode=0700,size=64m \
             --security-opt no-new-privileges \
             --cap-drop ALL \
-            --publish 127.0.0.1:18080:8080 \
+            -e SENTINEL_ENV=lab \
+            -e SENTINEL_DATABASE_URL=postgresql://sentinel:sentinel-test-only@127.0.0.1:5432/sentinel_test \
+            -e SENTINEL_IDENTITY_DATABASE_URL=postgresql://sentinel:sentinel-test-only@127.0.0.1:5432/sentinel_test \
             sentinelgrc:${{ github.sha }}
 
-      - name: Verify liveness and readiness
+      - name: Verify positive PostgreSQL readiness
         run: |
           for attempt in $(seq 1 20); do
-            if curl --fail --silent http://127.0.0.1:18080/healthz >/tmp/health.json &&
-               curl --fail --silent http://127.0.0.1:18080/ready >/tmp/ready.json; then
-              cat /tmp/health.json
-              cat /tmp/ready.json
+            if curl --fail --silent --max-time 5 http://127.0.0.1:8080/healthz >/tmp/health.json &&
+               curl --fail --silent --max-time 10 http://127.0.0.1:8080/ready >/tmp/ready.json &&
+               jq -e '.status == "ready" and .checks.governance_store == true and .checks.identity_store == true' /tmp/ready.json; then
               exit 0
             fi
             sleep 1
           done
           docker logs sentinelgrc-smoke
           exit 1
+
+      - name: Verify dependency-loss readiness is fail closed
+        run: |
+          docker stop "${{ job.services.postgres.id }}"
+          curl --fail --silent --max-time 5 http://127.0.0.1:8080/healthz >/tmp/health-after-db-loss.json
+          status=$(curl --silent --max-time 15 --output /tmp/ready-after-db-loss.json --write-out '%{http_code}' http://127.0.0.1:8080/ready)
+          test "$status" = "503"
+          jq -e '.status == "not_ready" and .checks.governance_store == false and .checks.identity_store == false' /tmp/ready-after-db-loss.json
+
+      - name: Verify production startup remains explicitly blocked
+        run: |
+          set +e
+          output=$(docker run --rm --entrypoint python \
+            -e SENTINEL_ENV=production \
+            -e SENTINEL_DATABASE_URL=postgresql://sentinel:sentinel-test-only@127.0.0.1:1/blocked \
+            -e SENTINEL_IDENTITY_DATABASE_URL=postgresql://sentinel:sentinel-test-only@127.0.0.1:1/blocked \
+            -e SENTINEL_OIDC_ISSUER=https://login.microsoftonline.com/00000000-0000-0000-0000-000000000001/v2.0 \
+            -e SENTINEL_OIDC_AUDIENCE=00000000-0000-0000-0000-000000000002 \
+            -e SENTINEL_OIDC_TENANT_ID=00000000-0000-0000-0000-000000000001 \
+            -e SENTINEL_OIDC_JWKS_URL=https://login.microsoftonline.com/00000000-0000-0000-0000-000000000001/discovery/v2.0/keys \
+            -e SENTINEL_EVIDENCE_STORE_URL=https://example.blob.core.windows.net/evidence \
+            -e SENTINEL_AUDIT_ARCHIVE_URL=https://example.blob.core.windows.net/audit \
+            -e SENTINEL_AZURE_CLIENT_ID=00000000-0000-0000-0000-000000000003 \
+            -e SENTINEL_SERVICE_BUS_NAMESPACE=sentinel-ci.servicebus.windows.net \
+            -e SENTINEL_SERVICE_BUS_QUEUE=governance-events \
+            -e SENTINEL_REQUIRE_TLS=true \
+            sentinelgrc:${{ github.sha }} \
+            -c "from runtime_app import create_application; create_application()" 2>&1)
+          exit_code=$?
+          set -e
+          test "$exit_code" -ne 0
+          grep -F "production startup is blocked" <<<"$output"
 
       - name: Stop runtime
         if: always()
