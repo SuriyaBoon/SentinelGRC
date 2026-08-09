@@ -1,0 +1,9 @@
+ARG RUNTIME_IMAGE=sentinelgrc:runtime-image-required
+FROM ${RUNTIME_IMAGE}
+
+USER root
+COPY --chown=0:0 scripts/__init__.py scripts/azure_staging_validator.py /app/scripts/
+RUN chmod 0555 /app/scripts \
+    && chmod 0444 /app/scripts/__init__.py /app/scripts/azure_staging_validator.py
+
+USER 10001:10001

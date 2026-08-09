@@ -27,6 +27,10 @@ param databaseServerName string = toLower(replace(
 @minLength(80)
 param containerImage string
 
+@description('Immutable staging-validation image reference. A separate digest is required so validation utilities do not ship in the runtime image.')
+@minLength(80)
+param validationContainerImage string
+
 @description('Deploy the Container App only after the digest-pinned image exists in ACR.')
 param deployApplication bool = false
 
@@ -126,7 +130,59 @@ var serviceBusQueueName = 'governance-outbox'
 var evidenceContainerName = 'evidence'
 var auditContainerName = 'audit-archive'
 var databaseSecretName = 'sentinel-database-url'
-var imageDigestPinned = contains(containerImage, '@sha256:') && length(last(split(containerImage, '@sha256:'))) == 64
+var hexCharacters = [
+  '0'
+  '1'
+  '2'
+  '3'
+  '4'
+  '5'
+  '6'
+  '7'
+  '8'
+  '9'
+  'a'
+  'b'
+  'c'
+  'd'
+  'e'
+  'f'
+]
+var containerImageParts = split(containerImage, '@sha256:')
+var containerImageRepository = length(containerImageParts) == 2 ? containerImageParts[0] : ''
+var containerImageDigest = length(containerImageParts) == 2 ? containerImageParts[1] : ''
+var containerImageInvalidDigestCharacters = reduce(
+  hexCharacters,
+  containerImageDigest,
+  (remaining, character) => replace(remaining, character, '')
+)
+var imageDigestPinned = length(containerImageParts) == 2 && contains(containerImageRepository, '.azurecr.io/') && length(containerImageDigest) == 64 && empty(containerImageInvalidDigestCharacters)
+var validationImageParts = split(validationContainerImage, '@sha256:')
+var validationImageRepository = length(validationImageParts) == 2 ? validationImageParts[0] : ''
+var validationImageDigest = length(validationImageParts) == 2 ? validationImageParts[1] : ''
+var validationImageInvalidDigestCharacters = reduce(
+  hexCharacters,
+  validationImageDigest,
+  (remaining, character) => replace(remaining, character, '')
+)
+var validationImageDigestPinned = length(validationImageParts) == 2 && contains(validationImageRepository, '.azurecr.io/') && length(validationImageDigest) == 64 && empty(validationImageInvalidDigestCharacters)
+var deployValidatedApplication = !deployApplication
+  ? false
+  : imageDigestPinned
+    ? true
+    : fail('deployApplication requires a lowercase digest-pinned Azure Container Registry runtime image')
+var deployValidatedJobs = !deployValidationJobs
+  ? false
+  : !deployValidatedApplication
+    ? fail('deployValidationJobs requires deployApplication=true with a valid runtime image')
+    : validationImageDigestPinned
+      ? true
+      : fail('deployValidationJobs requires a lowercase digest-pinned Azure Container Registry validation image')
+var deployValidatedMonitoring = !deployMonitoringAlerts
+  ? false
+  : deployValidatedApplication
+    ? true
+    : fail('deployMonitoringAlerts requires deployApplication=true with a valid runtime image')
 
 var keyVaultSecretsUserRoleId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
@@ -306,7 +362,7 @@ resource appIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-3
   tags: tags
 }
 
-resource validationImagePullIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (deployApplication && deployValidationJobs && imageDigestPinned) {
+resource validationImagePullIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (deployValidatedJobs) {
   name: validationImagePullIdentityName
   location: location
   tags: union(tags, {
@@ -314,7 +370,7 @@ resource validationImagePullIdentity 'Microsoft.ManagedIdentity/userAssignedIden
   })
 }
 
-resource validationAnalystIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (deployApplication && deployValidationJobs && imageDigestPinned) {
+resource validationAnalystIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (deployValidatedJobs) {
   name: validationAnalystIdentityName
   location: location
   tags: union(tags, {
@@ -323,7 +379,7 @@ resource validationAnalystIdentity 'Microsoft.ManagedIdentity/userAssignedIdenti
   })
 }
 
-resource validationApproverIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (deployApplication && deployValidationJobs && imageDigestPinned) {
+resource validationApproverIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (deployValidatedJobs) {
   name: validationApproverIdentityName
   location: location
   tags: union(tags, {
@@ -332,7 +388,7 @@ resource validationApproverIdentity 'Microsoft.ManagedIdentity/userAssignedIdent
   })
 }
 
-resource monitoringQueryIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (deployApplication && deployMonitoringAlerts && imageDigestPinned) {
+resource monitoringQueryIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (deployValidatedMonitoring) {
   name: monitoringQueryIdentityName
   location: location
   tags: union(tags, {
@@ -389,7 +445,7 @@ resource containerEnvironment 'Microsoft.App/managedEnvironments@2025-07-01' = {
   }
 }
 
-resource containerEnvironmentDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (deployApplication && deployMonitoringAlerts && imageDigestPinned) {
+resource containerEnvironmentDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = if (deployValidatedMonitoring) {
   scope: containerEnvironment
   name: 'sentinelgrc-staging-logs'
   properties: {
@@ -751,7 +807,7 @@ module acrPull 'acr-pull-role.bicep' = {
   }
 }
 
-module validationAcrPull 'acr-pull-role.bicep' = if (deployApplication && deployValidationJobs && imageDigestPinned) {
+module validationAcrPull 'acr-pull-role.bicep' = if (deployValidatedJobs) {
   name: '${deployment().name}-validation-acr-pull'
   scope: resourceGroup(containerRegistrySubscriptionId, containerRegistryResourceGroup)
   params: {
@@ -800,7 +856,7 @@ resource serviceBusSender 'Microsoft.Authorization/roleAssignments@2022-04-01' =
   }
 }
 
-resource containerApp 'Microsoft.App/containerApps@2025-01-01' = if (deployApplication && imageDigestPinned) {
+resource containerApp 'Microsoft.App/containerApps@2025-01-01' = if (deployValidatedApplication) {
   name: appName
   location: location
   tags: tags
@@ -1006,7 +1062,7 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = if (deployAppli
   ]
 }
 
-resource monitoringQueryReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployApplication && deployMonitoringAlerts && imageDigestPinned) {
+resource monitoringQueryReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployValidatedMonitoring) {
   name: guid(logAnalytics.id, monitoringQueryIdentity!.id, logAnalyticsReaderRoleId)
   scope: logAnalytics
   properties: {
@@ -1016,7 +1072,7 @@ resource monitoringQueryReader 'Microsoft.Authorization/roleAssignments@2022-04-
   }
 }
 
-resource validationAnalystJob 'Microsoft.App/jobs@2025-01-01' = if (deployApplication && deployValidationJobs && imageDigestPinned) {
+resource validationAnalystJob 'Microsoft.App/jobs@2025-01-01' = if (deployValidatedJobs) {
   name: validationAnalystJobName
   location: location
   identity: {
@@ -1088,7 +1144,7 @@ resource validationAnalystJob 'Microsoft.App/jobs@2025-01-01' = if (deployApplic
               value: validationApproverIdentity!.properties.principalId
             }
           ]
-          image: containerImage
+          image: validationContainerImage
           name: 'analyst-validator'
           resources: {
             cpu: json('0.5')
@@ -1109,7 +1165,7 @@ resource validationAnalystJob 'Microsoft.App/jobs@2025-01-01' = if (deployApplic
   ]
 }
 
-resource validationApproverJob 'Microsoft.App/jobs@2025-01-01' = if (deployApplication && deployValidationJobs && imageDigestPinned) {
+resource validationApproverJob 'Microsoft.App/jobs@2025-01-01' = if (deployValidatedJobs) {
   name: validationApproverJobName
   location: location
   identity: {
@@ -1181,7 +1237,7 @@ resource validationApproverJob 'Microsoft.App/jobs@2025-01-01' = if (deployAppli
               value: validationAnalystIdentity!.properties.principalId
             }
           ]
-          image: containerImage
+          image: validationContainerImage
           name: 'approver-validator'
           resources: {
             cpu: json('0.5')
@@ -1202,7 +1258,7 @@ resource validationApproverJob 'Microsoft.App/jobs@2025-01-01' = if (deployAppli
   ]
 }
 
-resource availabilityAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = if (deployApplication && deployMonitoringAlerts && imageDigestPinned) {
+resource availabilityAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = if (deployValidatedMonitoring) {
   name: availabilityAlertName
   location: 'global'
   tags: tags
@@ -1240,7 +1296,7 @@ resource availabilityAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = if (de
   }
 }
 
-resource outboxHealthAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if (deployApplication && deployMonitoringAlerts && imageDigestPinned) {
+resource outboxHealthAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if (deployValidatedMonitoring) {
   name: outboxHealthAlertName
   location: location
   identity: {
@@ -1296,19 +1352,17 @@ ContainerAppConsoleLogs_CL
   ]
 }
 
-output deploymentMode string = deployApplication
-  ? (imageDigestPinned ? 'infrastructure-and-application' : 'application-blocked-invalid-image')
-  : 'infrastructure-only'
+output deploymentMode string = deployValidatedApplication ? 'infrastructure-and-application' : 'infrastructure-only'
 output managedIdentityResourceId string = appIdentity.id
-output validationImagePullIdentityResourceId string = deployApplication && deployValidationJobs && imageDigestPinned ? validationImagePullIdentity.id : ''
-output validationAnalystIdentityResourceId string = deployApplication && deployValidationJobs && imageDigestPinned ? validationAnalystIdentity.id : ''
-output validationApproverIdentityResourceId string = deployApplication && deployValidationJobs && imageDigestPinned ? validationApproverIdentity.id : ''
-output validationAnalystJobResourceId string = deployApplication && deployValidationJobs && imageDigestPinned ? validationAnalystJob.id : ''
-output validationApproverJobResourceId string = deployApplication && deployValidationJobs && imageDigestPinned ? validationApproverJob.id : ''
-output monitoringQueryIdentityResourceId string = deployApplication && deployMonitoringAlerts && imageDigestPinned ? monitoringQueryIdentity.id : ''
-output availabilityAlertResourceId string = deployApplication && deployMonitoringAlerts && imageDigestPinned ? availabilityAlert.id : ''
-output outboxHealthAlertResourceId string = deployApplication && deployMonitoringAlerts && imageDigestPinned ? outboxHealthAlert.id : ''
-output containerAppResourceId string = deployApplication && imageDigestPinned ? containerApp.id : ''
+output validationImagePullIdentityResourceId string = deployValidatedJobs ? validationImagePullIdentity.id : ''
+output validationAnalystIdentityResourceId string = deployValidatedJobs ? validationAnalystIdentity.id : ''
+output validationApproverIdentityResourceId string = deployValidatedJobs ? validationApproverIdentity.id : ''
+output validationAnalystJobResourceId string = deployValidatedJobs ? validationAnalystJob.id : ''
+output validationApproverJobResourceId string = deployValidatedJobs ? validationApproverJob.id : ''
+output monitoringQueryIdentityResourceId string = deployValidatedMonitoring ? monitoringQueryIdentity.id : ''
+output availabilityAlertResourceId string = deployValidatedMonitoring ? availabilityAlert.id : ''
+output outboxHealthAlertResourceId string = deployValidatedMonitoring ? outboxHealthAlert.id : ''
+output containerAppResourceId string = deployValidatedApplication ? containerApp.id : ''
 output containerEnvironmentResourceId string = containerEnvironment.id
 output postgresServerName string = postgres.name
 output evidenceStorageAccountName string = storage.name

@@ -38,11 +38,14 @@ class AzureIacPolicyTests(unittest.TestCase):
             r"@allowed\(\[\s*'staging'\s*\]\)[\s\S]*?param environmentName",
         )
         self.assertIn("param deployApplication bool = false", self.source)
+        self.assertIn("param validationContainerImage string", self.source)
+        self.assertIn("validationImageDigestPinned", self.source)
         self.assertIn(
-            "if (deployApplication && imageDigestPinned)",
+            "if (deployValidatedApplication)",
             self.source,
         )
-        self.assertIn("application-blocked-invalid-image", self.source)
+        self.assertNotIn("application-blocked-invalid-image", self.source)
+        self.assertIn("deployApplication requires a lowercase digest-pinned", self.source)
         self.assertIn("value: 'staging'", self.source)
 
     def test_secret_and_image_inputs_fail_closed(self):
@@ -55,7 +58,32 @@ class AzureIacPolicyTests(unittest.TestCase):
             r"param\s+databaseAdministratorPassword\s*=",
         )
         self.assertIn("@sha256:[a-f0-9]{64}", self.preflight)
+        self.assertIn("ValidationContainerImage", self.preflight)
+        self.assertIn("validation_image_is_digest_pinned", self.preflight)
+        self.assertIn("param validationContainerImage", self.params)
         self.assertNotIn("az deployment", self.preflight.lower())
+        self.assertIn("length(containerImageParts) == 2", self.source)
+        self.assertIn("length(validationImageParts) == 2", self.source)
+        self.assertIn("empty(containerImageInvalidDigestCharacters)", self.source)
+        self.assertIn("empty(validationImageInvalidDigestCharacters)", self.source)
+
+    def test_requested_application_jobs_and_monitoring_fail_instead_of_omitting(self):
+        for contract in (
+            "var deployValidatedApplication = !deployApplication",
+            "var deployValidatedJobs = !deployValidationJobs",
+            "var deployValidatedMonitoring = !deployMonitoringAlerts",
+            "deployValidationJobs requires deployApplication=true",
+            "deployValidationJobs requires a lowercase digest-pinned",
+            "deployMonitoringAlerts requires deployApplication=true",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, self.source)
+        self.assertEqual(self.source.count("= if (deployValidatedJobs)"), 6)
+        self.assertEqual(self.source.count("= if (deployValidatedMonitoring)"), 5)
+        self.assertEqual(self.source.count("= if (deployValidatedApplication)"), 1)
+        self.assertNotIn("deployApplication && deployValidationJobs", self.source)
+        self.assertNotIn("deployApplication && deployMonitoringAlerts", self.source)
+        self.assertNotIn("deployApplication && imageDigestPinned", self.source)
 
     def test_complete_oidc_trust_boundary_is_wired_to_runtime(self):
         for parameter, environment_name in (
@@ -115,6 +143,11 @@ class AzureIacPolicyTests(unittest.TestCase):
 
     def test_validation_jobs_isolate_role_bearing_identities(self):
         self.assertIn("param deployValidationJobs bool = false", self.source)
+        self.assertEqual(self.source.count("image: validationContainerImage"), 2)
+        self.assertNotIn(
+            "image: containerImage\n          name: 'sentinel-validation'",
+            self.source,
+        )
         analyst_job = self.source.split(
             "resource validationAnalystJob", 1
         )[1].split("resource validationApproverJob", 1)[0]

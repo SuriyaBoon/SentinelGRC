@@ -1,0 +1,179 @@
+name: Qualify and publish reviewed staging images
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  qualify:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+        env:
+          POSTGRES_DB: sentinel_test
+          POSTGRES_USER: sentinel
+          POSTGRES_PASSWORD: sentinel-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sentinel -d sentinel_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    outputs:
+      bundle_sha256: ${{ steps.bundle.outputs.bundle_sha256 }}
+      runtime_image_id: ${{ steps.bundle.outputs.runtime_image_id }}
+      assurance_image_id: ${{ steps.bundle.outputs.assurance_image_id }}
+    steps:
+      - name: Checkout reviewed main commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Run hermetic gates and package exact images
+        id: bundle
+        run: |
+          set -euo pipefail
+          trap 'docker rm -f sentinelgrc-release-smoke 2>/dev/null || true' EXIT
+          docker buildx build --load --iidfile /tmp/runtime.id --tag sentinelgrc:release .
+          docker buildx build --load --file Dockerfile.assurance \
+            --build-arg RUNTIME_IMAGE=sentinelgrc:release \
+            --tag sentinelgrc-assurance:release .
+          docker run --rm --entrypoint python sentinelgrc:release -c \
+            "import pathlib, runtime_app; assert not pathlib.Path('/app/scripts').exists()"
+          docker run --rm --entrypoint python sentinelgrc-assurance:release -c \
+            "import pathlib, scripts.azure_staging_validator; p=[pathlib.Path('/app/scripts/__init__.py'),pathlib.Path('/app/scripts/azure_staging_validator.py')]; assert all(x.stat().st_uid == 0 and (x.stat().st_mode & 0o222) == 0 for x in p)"
+          docker run --rm --network host \
+            --mount "type=bind,source=$PWD,target=/src,readonly" --workdir /src \
+            --entrypoint python \
+            -e SENTINEL_TEST_POSTGRES_URL=postgresql://sentinel:sentinel-test-only@127.0.0.1:5432/sentinel_test \
+            sentinelgrc:release -m unittest discover -v -p "test_*.py"
+          docker run --rm --mount "type=bind,source=$PWD,target=/src,readonly" \
+            --entrypoint /bin/sh \
+            mcr.microsoft.com/azure-cli@sha256:23b520868509add054d385d90dc3fc5268f10a2f58947a994e30babe938e31ae \
+            -c "az bicep install --version v0.45.15 && az bicep build --file /src/infra/azure/main.bicep --outfile /tmp/main.json"
+          docker run --detach --rm --name sentinelgrc-release-smoke --network host \
+            --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+            --tmpfs /app/runtime:rw,noexec,nosuid,uid=10001,gid=10001,mode=0700,size=64m \
+            --security-opt no-new-privileges --cap-drop ALL \
+            -e SENTINEL_ENV=lab \
+            -e SENTINEL_DATABASE_URL=postgresql://sentinel:sentinel-test-only@127.0.0.1:5432/sentinel_test \
+            -e SENTINEL_IDENTITY_DATABASE_URL=postgresql://sentinel:sentinel-test-only@127.0.0.1:5432/sentinel_test \
+            sentinelgrc:release
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent --max-time 5 http://127.0.0.1:8080/healthz >/tmp/health.json &&
+               curl --fail --silent --max-time 10 http://127.0.0.1:8080/ready >/tmp/ready.json &&
+               jq -e '.status == "ready" and .checks.governance_store == true and .checks.identity_store == true' /tmp/ready.json; then
+              break
+            fi
+            test "$attempt" -lt 20 || { docker logs sentinelgrc-release-smoke; exit 1; }
+            sleep 1
+          done
+          docker stop "${{ job.services.postgres.id }}"
+          curl --fail --silent --max-time 5 http://127.0.0.1:8080/healthz >/tmp/health-after-loss.json
+          status=$(curl --silent --max-time 15 --output /tmp/ready-after-loss.json \
+            --write-out '%{http_code}' http://127.0.0.1:8080/ready)
+          test "$status" = "503"
+          jq -e '.status == "not_ready" and .checks.governance_store == false and .checks.identity_store == false' /tmp/ready-after-loss.json
+          if timeout 20s docker run --rm --entrypoint python --network none \
+            -e SENTINEL_ENV=lab \
+            -e SENTINEL_DATABASE_URL=postgresql://sentinel:x@127.0.0.1:1/unreachable \
+            -e SENTINEL_IDENTITY_DATABASE_URL=postgresql://sentinel:x@127.0.0.1:1/unreachable \
+            sentinelgrc:release -c "from runtime_app import create_application; create_application()"; then
+            echo "Unreachable PostgreSQL unexpectedly started" >&2
+            exit 1
+          fi
+          if output=$(docker run --rm --entrypoint python --network none \
+            -e SENTINEL_ENV=production \
+            -e SENTINEL_DATABASE_URL=postgresql://sentinel:x@127.0.0.1:1/blocked \
+            -e SENTINEL_IDENTITY_DATABASE_URL=postgresql://sentinel:x@127.0.0.1:1/blocked \
+            -e SENTINEL_OIDC_ISSUER=https://login.microsoftonline.com/00000000-0000-0000-0000-000000000001/v2.0 \
+            -e SENTINEL_OIDC_AUDIENCE=00000000-0000-0000-0000-000000000002 \
+            -e SENTINEL_OIDC_TENANT_ID=00000000-0000-0000-0000-000000000001 \
+            -e SENTINEL_OIDC_JWKS_URL=https://login.microsoftonline.com/00000000-0000-0000-0000-000000000001/discovery/v2.0/keys \
+            -e SENTINEL_EVIDENCE_STORE_URL=https://example.blob.core.windows.net/evidence \
+            -e SENTINEL_AUDIT_ARCHIVE_URL=https://example.blob.core.windows.net/audit \
+            -e SENTINEL_AZURE_CLIENT_ID=00000000-0000-0000-0000-000000000003 \
+            -e SENTINEL_SERVICE_BUS_NAMESPACE=sentinel-ci.servicebus.windows.net \
+            -e SENTINEL_SERVICE_BUS_QUEUE=governance-events \
+            -e SENTINEL_REQUIRE_TLS=true sentinelgrc:release \
+            -c "from runtime_app import create_application; create_application()" 2>&1); then
+            echo "Production startup unexpectedly passed" >&2
+            exit 1
+          fi
+          grep -F "production startup is blocked" <<<"$output"
+          docker rm -f sentinelgrc-release-smoke
+          runtime_id=$(docker image inspect --format '{{.Id}}' sentinelgrc:release)
+          assurance_id=$(docker image inspect --format '{{.Id}}' sentinelgrc-assurance:release)
+          docker image save --output qualified-images.tar sentinelgrc:release sentinelgrc-assurance:release
+          bundle_sha256=$(sha256sum qualified-images.tar | cut -d ' ' -f 1)
+          printf 'source_sha=%s\nruntime_image_id=%s\nassurance_image_id=%s\nbundle_sha256=%s\n' \
+            "$GITHUB_SHA" "$runtime_id" "$assurance_id" "$bundle_sha256" > qualification-evidence.txt
+          echo "runtime_image_id=$runtime_id" >> "$GITHUB_OUTPUT"
+          echo "assurance_image_id=$assurance_id" >> "$GITHUB_OUTPUT"
+          echo "bundle_sha256=$bundle_sha256" >> "$GITHUB_OUTPUT"
+      - name: Upload qualified image bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: qualified-staging-images-${{ github.sha }}
+          path: |
+            qualified-images.tar
+            qualification-evidence.txt
+          if-no-files-found: error
+          retention-days: 1
+  publish:
+    if: github.ref == 'refs/heads/main'
+    needs: qualify
+    runs-on: ubuntu-latest
+    environment: staging-image-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download qualified image bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: qualified-staging-images-${{ github.sha }}
+      - name: Verify qualification handoff and load exact layers
+        run: |
+          echo "${{ needs.qualify.outputs.bundle_sha256 }}  qualified-images.tar" | sha256sum --check -
+          docker image load --input qualified-images.tar
+          runtime_id=$(docker image inspect --format '{{.Id}}' sentinelgrc:release)
+          assurance_id=$(docker image inspect --format '{{.Id}}' sentinelgrc-assurance:release)
+          test "$runtime_id" = "${{ needs.qualify.outputs.runtime_image_id }}"
+          test "$assurance_id" = "${{ needs.qualify.outputs.assurance_image_id }}"
+          docker run --rm --entrypoint python sentinelgrc:release -c "import runtime_app"
+          docker run --rm --entrypoint python sentinelgrc-assurance:release -c "import scripts.azure_staging_validator"
+      - name: Azure login with repository OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Push exact qualified layers and resolve digests
+        env:
+          ACR_NAME: ${{ vars.ACR_NAME }}
+          LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}
+        run: |
+          release_tag="run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_SHA}"
+          az acr login --name "$ACR_NAME"
+          docker tag sentinelgrc:release "$LOGIN_SERVER/sentinelgrc:$release_tag"
+          docker tag sentinelgrc-assurance:release "$LOGIN_SERVER/sentinelgrc-assurance:$release_tag"
+          docker push "$LOGIN_SERVER/sentinelgrc:$release_tag"
+          docker push "$LOGIN_SERVER/sentinelgrc-assurance:$release_tag"
+          runtime_digest=$(az acr repository show --name "$ACR_NAME" \
+            --image "sentinelgrc:$release_tag" --query digest --output tsv)
+          assurance_digest=$(az acr repository show --name "$ACR_NAME" \
+            --image "sentinelgrc-assurance:$release_tag" --query digest --output tsv)
+          [[ "$runtime_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          [[ "$assurance_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          printf 'source_sha=%s\ngithub_run_id=%s\ngithub_run_attempt=%s\nrelease_tag=%s\nqualification_bundle_sha256=%s\nruntime_image=%s/sentinelgrc@%s\nvalidation_image=%s/sentinelgrc-assurance@%s\n' \
+            "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$release_tag" \
+            "${{ needs.qualify.outputs.bundle_sha256 }}" \
+            "$LOGIN_SERVER" "$runtime_digest" "$LOGIN_SERVER" "$assurance_digest" > image-digests.txt
+      - name: Upload digest evidence without deploying
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: staging-image-digests-${{ github.sha }}
+          path: image-digests.txt
+          if-no-files-found: error

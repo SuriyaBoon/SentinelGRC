@@ -12,6 +12,7 @@ param monitoringActionGroupResourceId = ''
 // Required even for the infrastructure-only pass so the reviewed deployment
 // contract cannot silently fall back to a mutable image tag.
 param containerImage = 'example.azurecr.io/sentinelgrc@sha256:REPLACE_WITH_64_HEX_DIGEST'
+param validationContainerImage = 'example.azurecr.io/sentinelgrc-assurance@sha256:REPLACE_WITH_64_HEX_DIGEST'
 param containerRegistrySubscriptionId = '00000000-0000-0000-0000-000000000000'
 param containerRegistryResourceGroup = 'replace-with-acr-resource-group'
 param containerRegistryName = 'replacewithacrname'
