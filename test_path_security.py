@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from unittest import mock
 
 from path_security import (
+    load_json_under_root,
     resolve_existing_file_under_root,
     resolve_sqlite_database_under_root,
     resolve_under_root,
@@ -57,6 +58,20 @@ class PathSecurityTests(unittest.TestCase):
                 self.skipTest(f"symlinks are unavailable: {error}")
             with self.assertRaisesRegex(ValueError, "must remain under"):
                 resolve_existing_file_under_root(link / "secret.json", root)
+
+    def test_json_loader_rejects_escape_and_invalid_json(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "runtime"
+            root.mkdir()
+            valid = root / "valid.json"
+            invalid = root / "invalid.json"
+            valid.write_text('{"ok":true}', encoding="utf-8")
+            invalid.write_text("not-json", encoding="utf-8")
+            self.assertEqual(load_json_under_root(valid, root), {"ok": True})
+            with self.assertRaisesRegex(ValueError, "must remain under"):
+                load_json_under_root("../outside.json", root)
+            with self.assertRaisesRegex(ValueError, "valid UTF-8 JSON"):
+                load_json_under_root(invalid, root)
 
     def test_outbound_url_requires_https_and_exact_host_allowlist(self):
         self.assertEqual(
@@ -129,6 +144,35 @@ class PathSecurityTests(unittest.TestCase):
                 partial_tls = argparse.Namespace(**{**base, "tls_cert": "cert.pem"})
                 with self.assertRaisesRegex(SystemExit, "configured together"):
                     ingestion_api.run_server(partial_tls)
+
+    def test_loopback_http_is_rejected_outside_lab_before_side_effects(self):
+        for environment_name in ("staging", "production"):
+            with self.subTest(environment=environment_name):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    args = argparse.Namespace(
+                        host="127.0.0.1",
+                        port=0,
+                        runtime_root=str(root),
+                        output_dir="evidence-inbox",
+                        state_db="state.db",
+                        keys_env="TEST_SENTINEL_KEYS",
+                        tls_cert=None,
+                        tls_key=None,
+                        allow_loopback_http=True,
+                    )
+                    environment = {
+                        "TEST_SENTINEL_KEYS": json.dumps({"k": "s"}),
+                        "SENTINEL_RUNTIME_ROOT": str(root),
+                        "SENTINEL_ENV": environment_name,
+                    }
+                    with mock.patch.dict(os.environ, environment):
+                        with self.assertRaisesRegex(
+                            SystemExit, "only in SENTINEL_ENV=lab"
+                        ):
+                            ingestion_api.run_server(args)
+                    self.assertFalse((root / "evidence-inbox").exists())
+                    self.assertFalse((root / "state.db").exists())
 
     def test_null_and_empty_paths_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -6,6 +6,8 @@ import sys
 import tempfile
 import time
 import unittest
+from argparse import Namespace
+from unittest.mock import patch
 from pathlib import Path
 from job_queue import SQLiteJobQueue
 from scripts import pipeline_worker
@@ -212,6 +214,8 @@ class PipelineWorkerTests(unittest.TestCase):
                 str(inbox),
                 "--runtime-root",
                 str(root),
+                "--config-root",
+                str(Path.cwd()),
                 "--controls",
                 str(Path("controls.json").resolve()),
                 "--assets",
@@ -322,5 +326,100 @@ class PipelineWorkerTests(unittest.TestCase):
                 os.environ.clear()
                 os.environ.update(original)
             self.assertFalse((root / "state.db").exists())
+
+    @staticmethod
+    def _worker_namespace(
+        runtime_root: Path,
+        controls: str,
+        assets: str,
+        *,
+        config_root: str | None = None,
+        access_review: str | None = None,
+    ) -> Namespace:
+        return Namespace(
+            runtime_root=str(runtime_root),
+            config_root=config_root,
+            controls=controls,
+            assets=assets,
+            access_review=access_review,
+            max_attempts=3,
+            retry_delay=60,
+            audit_log="runtime/audit-log.jsonl",
+            lease_seconds=300,
+            governance_db=None,
+        )
+
+    def test_configuration_defaults_to_non_default_runtime_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "controls.json").write_text("[]", encoding="utf-8")
+            (root / "assets.json").write_text("[]", encoding="utf-8")
+            args = self._worker_namespace(root, "controls.json", "assets.json")
+            config_root, runtime_root = pipeline_worker.resolve_worker_roots(args)
+            configuration = pipeline_worker.load_worker_configuration(args, config_root)
+            self.assertEqual(config_root, root.resolve())
+            self.assertEqual(runtime_root, root.resolve())
+            self.assertEqual(configuration.controls, [])
+            self.assertEqual(configuration.assets, [])
+
+    def test_configuration_outside_declared_root_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = self._worker_namespace(
+                root,
+                str(Path("controls.json").resolve()),
+                str(Path("assets.json").resolve()),
+            )
+            config_root, _ = pipeline_worker.resolve_worker_roots(args)
+            with self.assertRaisesRegex(ValueError, "control catalogue must remain under"):
+                pipeline_worker.load_worker_configuration(args, config_root)
+
+    def test_explicit_separate_configuration_root_is_supported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime_root = root / "runtime"
+            config_root = root / "configuration"
+            runtime_root.mkdir()
+            config_root.mkdir()
+            (config_root / "controls.json").write_text("[]", encoding="utf-8")
+            (config_root / "assets.json").write_text("[]", encoding="utf-8")
+            args = self._worker_namespace(
+                runtime_root,
+                "controls.json",
+                "assets.json",
+                config_root=str(config_root),
+            )
+            resolved_config, resolved_runtime = pipeline_worker.resolve_worker_roots(args)
+            configuration = pipeline_worker.load_worker_configuration(
+                args, resolved_config
+            )
+            self.assertEqual(resolved_config, config_root.resolve())
+            self.assertEqual(resolved_runtime, runtime_root.resolve())
+            self.assertEqual(configuration.controls, [])
+            self.assertEqual(configuration.assets, [])
+
+    def test_main_loads_worker_configuration_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            argv = [
+                "pipeline_worker",
+                "once",
+                "--inbox",
+                str(inbox),
+                "--runtime-root",
+                str(root),
+                "--controls",
+                "controls.json",
+                "--assets",
+                "assets.json",
+            ]
+            with patch.object(sys, "argv", argv), patch.object(
+                pipeline_worker, "load_json", side_effect=[[], []]
+            ) as mocked_load:
+                self.assertEqual(pipeline_worker.main(), 0)
+            self.assertEqual(mocked_load.call_count, 2)
+
 if __name__ == "__main__":
     unittest.main()

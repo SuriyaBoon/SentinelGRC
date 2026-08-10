@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 
@@ -55,6 +57,22 @@ def resolve_existing_file_under_root(
     if not path.is_file():
         raise ValueError(f"{purpose} must be an existing regular file")
     return path
+
+
+def load_json_under_root(
+    value: str | Path,
+    root: str | Path,
+    *,
+    purpose: str = "JSON input",
+) -> Any:
+    """Load UTF-8 JSON only after the input path is confined to a trusted root."""
+    path = resolve_existing_file_under_root(value, root, purpose=purpose)
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(
+            f"{purpose} must be a readable file containing valid UTF-8 JSON"
+        ) from error
 
 
 def resolve_directory_under_root(

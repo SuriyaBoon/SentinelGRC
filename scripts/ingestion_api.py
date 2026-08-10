@@ -28,6 +28,7 @@ from state_store import DEFAULT_STATE_DB, SQLiteStateStore
 MAX_BODY_BYTES = 64 * 1024
 MAX_CLOCK_SKEW_SECONDS = 300
 DEFAULT_INGESTION_PORT = 8080
+SUPPORTED_ENVIRONMENTS = {"lab", "staging", "production"}
 NONCE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 KEY_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 REQUIRED_FIELDS = {
@@ -228,7 +229,19 @@ class IngestionServer(ThreadingHTTPServer):
         self.nonce_store = NonceStore(db_path=state_db, storage_root=runtime_root)
 
 
+def _runtime_environment() -> str:
+    environment = os.environ.get("SENTINEL_ENV", "lab").strip().lower()
+    if environment not in SUPPORTED_ENVIRONMENTS:
+        raise SystemExit("SENTINEL_ENV must be lab, staging, or production.")
+    return environment
+
+
 def run_server(args: argparse.Namespace) -> int:
+    environment = _runtime_environment()
+    if args.allow_loopback_http and environment != "lab":
+        raise SystemExit(
+            "--allow-loopback-http is permitted only in SENTINEL_ENV=lab."
+        )
     raw_keys = os.environ.get(args.keys_env)
     if not raw_keys:
         raise SystemExit(f"Environment variable {args.keys_env} is required.")
@@ -278,7 +291,7 @@ def run_server(args: argparse.Namespace) -> int:
         tls_context.load_cert_chain(certfile=certificate, keyfile=private_key)
         server.socket = tls_context.wrap_socket(server.socket, server_side=True)
         protocol = "https"
-    elif args.allow_loopback_http:
+    elif args.allow_loopback_http and environment == "lab":
         protocol = "http"
     else:
         server.server_close()
