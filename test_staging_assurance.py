@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from staging_assurance import evaluate_live_gates, load_assurance_policy, run_offline_assurance
 
@@ -73,6 +74,20 @@ class StagingAssuranceTests(unittest.TestCase):
         self.assertTrue(all(report["offline_gates"].values()))
         self.assertEqual(report["live_validation"]["decision"], "NO_GO")
         self.assertEqual(report["production_decision"], "NO_GO")
+
+    def test_offline_assurance_uses_one_explicit_runtime_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            alerts = Path(temp) / "alerts.jsonl"
+            alerts.write_text(
+                "\n".join(json.dumps(item, sort_keys=True) for item in ALERTS) + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "scripts.staging_logwatcher.os.path.commonpath",
+                side_effect=AssertionError("runtime root inference must not run"),
+            ):
+                report = run_offline_assurance(str(POLICY), str(alerts))
+        self.assertEqual(report["offline_decision"], "READY_FOR_MANUAL_AZURE_STAGING")
 
     def test_policy_rejects_secret_fields_and_unsafe_thresholds(self):
         policy = json.loads(POLICY.read_text(encoding="utf-8"))

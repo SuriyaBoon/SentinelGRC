@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from file_lock import locked_file
+from path_security import (
+    configured_runtime_root,
+    resolve_existing_file_under_root,
+    resolve_under_root,
+)
 
 SEVERITY_WEIGHT = {"low": 1, "medium": 3, "high": 6, "critical": 10}
 CRITICALITY_MULTIPLIER = {"low": 1, "medium": 2, "high": 3, "critical": 4}
@@ -21,7 +26,7 @@ def canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-def load_json(path: str) -> Any:
+def load_json(path: str | Path) -> Any:
     with Path(path).open(encoding="utf-8") as file:
         return json.load(file)
 
@@ -80,7 +85,7 @@ def build_evidence(
     return record
 
 
-def verify_ledger(ledger_path: str) -> tuple[bool, str]:
+def verify_ledger(ledger_path: str | Path) -> tuple[bool, str]:
     path = Path(ledger_path)
     if not path.exists():
         return True, "Ledger is empty."
@@ -106,7 +111,7 @@ def verify_ledger(ledger_path: str) -> tuple[bool, str]:
     return True, "Ledger integrity verified."
 
 
-def read_last_hash(ledger_path: str) -> str:
+def read_last_hash(ledger_path: str | Path) -> str:
     valid, message = verify_ledger(ledger_path)
     if not valid:
         raise ValueError(f"Refusing to append to invalid ledger: {message}")
@@ -117,11 +122,11 @@ def read_last_hash(ledger_path: str) -> str:
     return json.loads(last_line)["record_hash"]
 
 
-def append_evidence(ledger_path: str, evidence: dict[str, Any]) -> None:
+def append_evidence(ledger_path: str | Path, evidence: dict[str, Any]) -> None:
     with Path(ledger_path).open("a", encoding="utf-8") as file:
         file.write(canonical_json(evidence) + "\n")
 
-def find_ledger_record(ledger_path: str, input_hash: str) -> dict[str, Any] | None:
+def find_ledger_record(ledger_path: str | Path, input_hash: str) -> dict[str, Any] | None:
     path = Path(ledger_path)
     with locked_file(str(path) + ".lock"):
         if not path.exists():
@@ -136,7 +141,7 @@ def find_ledger_record(ledger_path: str, input_hash: str) -> dict[str, Any] | No
     return None
 
 def append_evidence_atomic(
-    ledger_path: str,
+    ledger_path: str | Path,
     posture: dict[str, Any],
     results: list[dict[str, Any]],
     extra: dict[str, Any] | None = None,
@@ -188,9 +193,22 @@ def main() -> int:
     verify_parser = subparsers.add_parser("verify-ledger")
     verify_parser.add_argument("--ledger", required=True)
     args = parser.parse_args()
+    runtime_root = configured_runtime_root()
     if args.command == "evaluate":
+        args.controls = resolve_existing_file_under_root(
+            args.controls, runtime_root, purpose="control catalogue"
+        )
+        args.posture = resolve_existing_file_under_root(
+            args.posture, runtime_root, purpose="posture input"
+        )
+        args.ledger = resolve_under_root(
+            args.ledger, runtime_root, purpose="evidence ledger"
+        )
         return evaluate(args)
-    valid, message = verify_ledger(args.ledger)
+    ledger_path = resolve_under_root(
+        args.ledger, runtime_root, purpose="evidence ledger"
+    )
+    valid, message = verify_ledger(ledger_path)
     print(message)
     return 0 if valid else 1
 
