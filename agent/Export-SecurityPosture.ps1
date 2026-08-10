@@ -38,8 +38,16 @@ function Invoke-ReadOnlyCheck {
 
 $computer = $null
 $os = $null
-try { $computer = Get-CimInstance -ClassName Win32_ComputerSystem } catch {}
-try { $os = Get-CimInstance -ClassName Win32_OperatingSystem } catch {}
+try {
+    $computer = Get-CimInstance -ClassName Win32_ComputerSystem
+} catch {
+    Write-Verbose ("Unable to query Win32_ComputerSystem: {0}" -f $_.Exception.Message)
+}
+try {
+    $os = Get-CimInstance -ClassName Win32_OperatingSystem
+} catch {
+    Write-Verbose ("Unable to query Win32_OperatingSystem: {0}" -f $_.Exception.Message)
+}
 
 $checks = @(
     (Invoke-ReadOnlyCheck -Name "bitlocker_system_drive" -Check {
@@ -59,7 +67,7 @@ $checks = @(
     }),
     (Invoke-ReadOnlyCheck -Name "days_since_last_update" -Check {
         $latest = Get-HotFix |
-            Where-Object { $_.InstalledOn -ne $null } |
+            Where-Object { $null -ne $_.InstalledOn } |
             Sort-Object InstalledOn -Descending |
             Select-Object -First 1
         if ($null -eq $latest) {

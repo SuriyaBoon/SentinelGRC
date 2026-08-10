@@ -118,7 +118,7 @@ def _load_contract_fixture(path: str) -> list[dict[str, Any]]:
 def evaluate_live_gates(policy: dict[str, Any], evidence: dict[str, Any] | None) -> dict[str, Any]:
     required = policy["required_live_gates"]
     if evidence is None:
-        gates = {name: "not_run" for name in required}
+        gates = dict.fromkeys(required, "not_run")
     else:
         if not isinstance(evidence, dict) or set(evidence) != set(required):
             raise ValueError("live evidence must contain exactly the required live gates")

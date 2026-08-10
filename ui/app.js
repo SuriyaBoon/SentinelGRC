@@ -5,7 +5,9 @@
   const apiBase = window.SENTINEL_API_BASE || "";
   if (!apiBase) return;
   fetch(apiBase + "/v1/governance/report", {headers: {"Accept": "application/json"}})
-    .then(response => response.ok ? response.json() : Promise.reject(response.status))
+    .then(response => response.ok
+      ? response.json()
+      : Promise.reject(new Error(`Governance report request failed with status ${response.status}`)))
     .then(report => metrics.forEach(node => {
       const value = (report.kpi && report.kpi[node.dataset.metric]) ?? report[node.dataset.metric];
       node.textContent = value === undefined ? "—" : String(value);
