@@ -3,24 +3,51 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 from governance_core import ActorContext, GovernanceCore
+from path_security import (
+    configured_runtime_root,
+    resolve_existing_file_under_root,
+    resolve_sqlite_database_under_root,
+)
 from security_alert_contract import normalize_security_alert_v1
 from security_event_connector import normalize_logwatcher_alert, normalize_security_event
 
 
-def run_logwatcher_staging(events_path: str, governance_db: str, input_kind: str = "auto") -> dict[str, Any]:
-    core = GovernanceCore(governance_db)
+def run_logwatcher_staging(
+    events_path: str,
+    governance_db: str,
+    input_kind: str = "auto",
+    *,
+    runtime_root: str | Path | None = None,
+) -> dict[str, Any]:
+    if runtime_root is None:
+        common = os.path.commonpath(
+            [str(Path(events_path).resolve()), str(Path(governance_db).resolve())]
+        )
+        runtime_root = Path(common)
+    database_path = resolve_sqlite_database_under_root(
+        governance_db,
+        runtime_root,
+        purpose="governance database",
+    )
+    core = GovernanceCore(str(database_path))
     actor = ActorContext("logwatcher-staging-connector", "analyst", "connector")
     result = {
         "events_read": 0, "findings_created": 0, "findings_reassessed": 0,
         "ignored": 0, "errors": 0, "finding_ids": [],
     }
     try:
-        lines = Path(events_path).read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError):
+        source_path = resolve_existing_file_under_root(
+            events_path,
+            runtime_root,
+            purpose="LogWatcher event input",
+        )
+        lines = source_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError, ValueError):
         result["errors"] = 1
         return result
     for line in lines:
@@ -68,4 +95,9 @@ if __name__ == "__main__":
         default="auto",
     )
     args = parser.parse_args()
-    print(json.dumps(run_logwatcher_staging(args.events, args.governance_db, args.input_kind), indent=2))
+    print(json.dumps(run_logwatcher_staging(
+        args.events,
+        args.governance_db,
+        args.input_kind,
+        runtime_root=configured_runtime_root(),
+    ), indent=2))

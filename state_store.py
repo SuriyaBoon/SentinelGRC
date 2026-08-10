@@ -10,13 +10,32 @@ import time
 from pathlib import Path
 from typing import Any
 
+from path_security import resolve_sqlite_database_under_root
+
 
 DEFAULT_STATE_DB = "sentinelgrc-state.db"
 
 
 class SQLiteStateStore:
-    def __init__(self, path: str = DEFAULT_STATE_DB):
-        self.path = str(Path(path))
+    def __init__(
+        self,
+        path: str | Path = DEFAULT_STATE_DB,
+        *,
+        storage_root: str | Path | None = None,
+    ):
+        supplied = Path(path).expanduser()
+        boundary = (
+            Path(storage_root)
+            if storage_root is not None
+            else (supplied.parent if supplied.is_absolute() else Path.cwd())
+        )
+        self.path = str(
+            resolve_sqlite_database_under_root(
+                supplied,
+                boundary,
+                purpose="state database",
+            )
+        )
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         with closing(self._connect()) as connection:
@@ -65,7 +84,7 @@ class SQLiteStateStore:
             connection.commit()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=5)
+        connection = sqlite3.connect(database=self.path, timeout=5, uri=False)
         connection.row_factory = sqlite3.Row
         return connection
 

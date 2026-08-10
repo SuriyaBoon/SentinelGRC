@@ -455,6 +455,9 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
   name: databaseServerName
   location: location
   tags: tags
+  identity: {
+    type: 'SystemAssigned'
+  }
   sku: {
     name: 'Standard_B1ms'
     tier: 'Burstable'
@@ -503,6 +506,9 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: storageAccountName
   location: location
   tags: tags
+  identity: {
+    type: 'SystemAssigned'
+  }
   kind: 'StorageV2'
   sku: {
     name: 'Standard_ZRS'
@@ -512,6 +518,20 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     allowCrossTenantReplication: false
     allowSharedKeyAccess: false
     defaultToOAuthAuthentication: true
+    encryption: {
+      keySource: 'Microsoft.Storage'
+      requireInfrastructureEncryption: true
+      services: {
+        blob: {
+          enabled: true
+          keyType: 'Account'
+        }
+        file: {
+          enabled: true
+          keyType: 'Account'
+        }
+      }
+    }
     minimumTlsVersion: 'TLS1_2'
     publicNetworkAccess: 'Disabled'
     supportsHttpsTrafficOnly: true
@@ -597,6 +617,9 @@ resource serviceBus 'Microsoft.ServiceBus/namespaces@2024-01-01' = {
   name: serviceBusName
   location: location
   tags: tags
+  identity: {
+    type: 'SystemAssigned'
+  }
   sku: {
     capacity: 1
     name: 'Premium'
