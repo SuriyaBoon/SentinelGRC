@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +16,12 @@ if str(ROOT) not in sys.path:
 
 from audit_log import AuditLog
 from minisoar_connector import normalize_minisoar_incident
+from path_security import (
+    configured_runtime_root,
+    resolve_directory_under_root,
+    resolve_sqlite_database_under_root,
+    resolve_under_root,
+)
 from state_store import SQLiteStateStore
 
 CONNECTOR_ACTOR = "minisoar-bridge-connector"
@@ -29,6 +37,7 @@ def run_minisoar_bridge(
     *,
     require_verification_pass: bool = True,
     audit_log_path: str | None = None,
+    runtime_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Import one exported bundle and return a sanitized bridge outcome."""
     result: dict[str, Any] = {
@@ -39,7 +48,28 @@ def run_minisoar_bridge(
         "sentinel_finding_id": None,
         "errors": 0,
     }
-    base = Path(evidence_dir)
+    if runtime_root is None:
+        candidates = [Path(evidence_dir), Path(governance_db)]
+        if audit_log_path is not None:
+            candidates.append(Path(audit_log_path))
+        try:
+            runtime_root = Path(
+                os.path.commonpath([str(path.resolve()) for path in candidates])
+            )
+        except ValueError:
+            result["errors"] = 1
+            result["skipped_reason"] = "bridge paths must share a common runtime root"
+            return result
+    try:
+        base = resolve_directory_under_root(
+            evidence_dir,
+            runtime_root,
+            purpose="Mini-SOAR evidence directory",
+        )
+    except (OSError, ValueError) as exc:
+        result["errors"] = 1
+        result["skipped_reason"] = str(exc)
+        return result
     try:
         finding = _read_json(base / "finding.json")
         alert = _read_json(base / "alert.json")
@@ -65,18 +95,47 @@ def run_minisoar_bridge(
         result["skipped_reason"] = "incident is not closed, synthetic, or independently verified"
         return result
 
-    store = SQLiteStateStore(governance_db)
-    created = store.upsert_external_finding(normalized)
+    try:
+        database_path = resolve_sqlite_database_under_root(
+            governance_db,
+            runtime_root,
+            purpose="governance database",
+        )
+        requested_audit_path = audit_log_path or str(
+            database_path.with_suffix(".audit.jsonl")
+        )
+        audit_path = resolve_under_root(
+            requested_audit_path,
+            runtime_root,
+            purpose="Mini-SOAR audit log",
+        )
+    except (OSError, ValueError) as exc:
+        result["errors"] = 1
+        result["skipped_reason"] = str(exc)
+        return result
+
+    try:
+        store = SQLiteStateStore(database_path, storage_root=runtime_root)
+        created = store.upsert_external_finding(normalized)
+    except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
+        result["errors"] = 1
+        result["skipped_reason"] = f"governance storage failed: {exc}"
+        return result
     result["sentinel_finding_id"] = normalized["finding_id"]
     result["finding_created" if created else "finding_reassessed"] = True
 
-    audit_path = audit_log_path or str(Path(governance_db).with_suffix(".audit.jsonl"))
-    AuditLog(audit_path).append(
-        "bridge.minisoar.finding.created" if created else "bridge.minisoar.finding.reassessed",
-        CONNECTOR_ACTOR,
-        normalized["finding_id"],
-        {"control_id": normalized["control_id"], "source": normalized["source"]},
-    )
+    try:
+        AuditLog(audit_path).append(
+            "bridge.minisoar.finding.created" if created else "bridge.minisoar.finding.reassessed",
+            CONNECTOR_ACTOR,
+            normalized["finding_id"],
+            {"control_id": normalized["control_id"], "source": normalized["source"]},
+        )
+    except (OSError, ValueError) as exc:
+        result["errors"] = 1
+        result["skipped_reason"] = (
+            f"finding state was persisted but audit logging failed: {exc}"
+        )
     return result
 
 
@@ -97,6 +156,7 @@ def main() -> int:
         args.governance_db,
         require_verification_pass=not args.allow_unverified,
         audit_log_path=args.audit_log,
+        runtime_root=configured_runtime_root(),
     )
     print(json.dumps(outcome, indent=2, sort_keys=True))
     return 1 if outcome["errors"] else 0

@@ -1,7 +1,9 @@
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from scripts.bridge_minisoar import run_minisoar_bridge
 from state_store import SQLiteStateStore
@@ -33,6 +35,157 @@ def write_bundle(root: Path, *, status="closed", passed=True, kind="brute_force"
 
 
 class MiniSoarBridgeTests(unittest.TestCase):
+    def test_evidence_path_failure_returns_structured_error_before_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            runtime = parent / "runtime"
+            outside = parent / "outside"
+            runtime.mkdir()
+            outside.mkdir()
+            result = run_minisoar_bridge(
+                str(outside),
+                str(runtime / "governance.db"),
+                runtime_root=runtime,
+            )
+
+        self.assertEqual(result["errors"], 1)
+        self.assertFalse(result["bundle_read"])
+        self.assertFalse(result["finding_created"])
+        self.assertIsNone(result["sentinel_finding_id"])
+
+    def test_invalid_governance_database_returns_structured_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            evidence = runtime / "evidence"
+            evidence.mkdir()
+            write_bundle(evidence)
+            result = run_minisoar_bridge(
+                str(evidence),
+                str(runtime / "governance.notadb"),
+                runtime_root=runtime,
+            )
+
+        self.assertEqual(result["errors"], 1)
+        self.assertTrue(result["bundle_read"])
+        self.assertFalse(result["finding_created"])
+        self.assertIsNone(result["sentinel_finding_id"])
+
+    def test_invalid_audit_path_is_rejected_before_finding_persistence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            runtime = parent / "runtime"
+            evidence = runtime / "evidence"
+            evidence.mkdir(parents=True)
+            write_bundle(evidence)
+            database = runtime / "governance.db"
+            result = run_minisoar_bridge(
+                str(evidence),
+                str(database),
+                audit_log_path=str(parent / "outside-audit.jsonl"),
+                runtime_root=runtime,
+            )
+
+            self.assertFalse(database.exists())
+        self.assertEqual(result["errors"], 1)
+        self.assertTrue(result["bundle_read"])
+        self.assertFalse(result["finding_created"])
+        self.assertIsNone(result["sentinel_finding_id"])
+
+    def test_storage_construction_failure_returns_structured_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            evidence = runtime / "evidence"
+            evidence.mkdir()
+            write_bundle(evidence)
+            with mock.patch(
+                "scripts.bridge_minisoar.SQLiteStateStore",
+                side_effect=OSError("storage unavailable"),
+            ):
+                result = run_minisoar_bridge(
+                    str(evidence),
+                    str(runtime / "governance.db"),
+                    runtime_root=runtime,
+                )
+
+        self.assertEqual(result["errors"], 1)
+        self.assertFalse(result["finding_created"])
+        self.assertIsNone(result["sentinel_finding_id"])
+        self.assertIn("governance storage failed", result["skipped_reason"])
+
+    def test_storage_upsert_failure_returns_structured_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            evidence = runtime / "evidence"
+            evidence.mkdir()
+            write_bundle(evidence)
+            store = mock.Mock()
+            store.upsert_external_finding.side_effect = sqlite3.OperationalError(
+                "database is locked"
+            )
+            with mock.patch(
+                "scripts.bridge_minisoar.SQLiteStateStore",
+                return_value=store,
+            ):
+                result = run_minisoar_bridge(
+                    str(evidence),
+                    str(runtime / "governance.db"),
+                    runtime_root=runtime,
+                )
+
+        self.assertEqual(result["errors"], 1)
+        self.assertFalse(result["finding_created"])
+        self.assertIsNone(result["sentinel_finding_id"])
+        self.assertIn("governance storage failed", result["skipped_reason"])
+
+    def test_audit_write_failure_preserves_persisted_finding_visibility(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            evidence = runtime / "evidence"
+            evidence.mkdir()
+            write_bundle(evidence)
+            database = runtime / "governance.db"
+            with mock.patch(
+                "scripts.bridge_minisoar.AuditLog.append",
+                side_effect=OSError("disk full"),
+            ):
+                result = run_minisoar_bridge(
+                    str(evidence),
+                    str(database),
+                    runtime_root=runtime,
+                )
+
+            persisted = SQLiteStateStore(database).get_external_finding(
+                result["sentinel_finding_id"]
+            )
+        self.assertEqual(result["errors"], 1)
+        self.assertTrue(result["finding_created"])
+        self.assertIsNotNone(result["sentinel_finding_id"])
+        self.assertIsNotNone(persisted)
+        self.assertIn("was persisted but audit logging failed", result["skipped_reason"])
+
+    def test_cross_drive_root_inference_returns_structured_error(self):
+        with (
+            mock.patch(
+                "scripts.bridge_minisoar.os.path.commonpath",
+                side_effect=ValueError("Paths don't have the same drive"),
+            ),
+            mock.patch(
+                "scripts.bridge_minisoar.resolve_directory_under_root",
+                side_effect=AssertionError("no side effect should begin"),
+            ),
+        ):
+            result = run_minisoar_bridge(r"C:\evidence", r"D:\governance.db")
+
+        self.assertEqual(result["errors"], 1)
+        self.assertEqual(
+            result["skipped_reason"],
+            "bridge paths must share a common runtime root",
+        )
+        self.assertFalse(result["bundle_read"])
+        self.assertFalse(result["finding_created"])
+        self.assertFalse(result["finding_reassessed"])
+        self.assertIsNone(result["sentinel_finding_id"])
+
     def test_closed_and_verified_incident_creates_governance_finding(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
