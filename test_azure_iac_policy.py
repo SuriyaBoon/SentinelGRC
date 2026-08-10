@@ -1,4 +1,6 @@
 import re
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -38,11 +40,14 @@ class AzureIacPolicyTests(unittest.TestCase):
             r"@allowed\(\[\s*'staging'\s*\]\)[\s\S]*?param environmentName",
         )
         self.assertIn("param deployApplication bool = false", self.source)
+        self.assertIn("param validationContainerImage string", self.source)
+        self.assertIn("validationImageDigestPinned", self.source)
         self.assertIn(
-            "if (deployApplication && imageDigestPinned)",
+            "if (deployValidatedApplication)",
             self.source,
         )
-        self.assertIn("application-blocked-invalid-image", self.source)
+        self.assertNotIn("application-blocked-invalid-image", self.source)
+        self.assertIn("deployApplication requires a lowercase digest-pinned", self.source)
         self.assertIn("value: 'staging'", self.source)
 
     def test_secret_and_image_inputs_fail_closed(self):
@@ -55,7 +60,73 @@ class AzureIacPolicyTests(unittest.TestCase):
             r"param\s+databaseAdministratorPassword\s*=",
         )
         self.assertIn("@sha256:[a-f0-9]{64}", self.preflight)
+        self.assertIn("ValidationContainerImage", self.preflight)
+        self.assertIn("validation_image_is_digest_pinned", self.preflight)
+        self.assertIn("param validationContainerImage", self.params)
         self.assertNotIn("az deployment", self.preflight.lower())
+        self.assertIn("length(containerImageParts) == 2", self.source)
+        self.assertIn("length(validationImageParts) == 2", self.source)
+        self.assertIn("empty(containerImageInvalidDigestCharacters)", self.source)
+        self.assertIn("empty(validationImageInvalidDigestCharacters)", self.source)
+
+    def test_images_are_bound_to_the_acr_receiving_pull_permissions(self):
+        self.assertIn("expectedRegistryHost = toLower('${containerRegistryName}.azurecr.io')", self.source)
+        self.assertIn("containerImageHost == expectedRegistryHost", self.source)
+        self.assertIn("validationImageHost == expectedRegistryHost", self.source)
+        self.assertNotIn("monitoringImage", self.source)
+        self.assertIn("image_registry_bound = $true", self.preflight)
+        self.assertIn("validation_image_registry_bound = $true", self.preflight)
+
+    def _run_preflight(self, container_image, validation_image):
+        powershell = shutil.which("pwsh") or shutil.which("powershell")
+        if powershell is None:
+            self.skipTest("PowerShell is unavailable")
+        command = [
+            powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", str(PREFLIGHT),
+            "-ContainerImage", container_image,
+            "-ValidationContainerImage", validation_image,
+            "-RegistrySubscriptionId", "11111111-1111-1111-1111-111111111111",
+            "-RegistryResourceGroup", "sentinel-staging", "-RegistryName", "expectedacr",
+            "-OidcIssuer", "https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/v2.0",
+            "-OidcAudience", "22222222-2222-2222-2222-222222222222",
+            "-OidcTenantId", "11111111-1111-1111-1111-111111111111",
+            "-OidcJwksUrl", "https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/discovery/v2.0/keys",
+        ]
+        return subprocess.run(command, capture_output=True, text=True, check=False)
+
+    def test_preflight_accepts_only_matching_immutable_acr_images(self):
+        digest = "a" * 64
+        runtime = f"expectedacr.azurecr.io/sentinelgrc@sha256:{digest}"
+        validation = f"expectedacr.azurecr.io/sentinelgrc-assurance@sha256:{digest}"
+        accepted = self._run_preflight(runtime, validation)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        for rejected_runtime, rejected_validation in (
+            (f"otheracr.azurecr.io/sentinelgrc@sha256:{digest}", validation),
+            (runtime, f"otheracr.azurecr.io/sentinelgrc-assurance@sha256:{digest}"),
+            ("expectedacr.azurecr.io/sentinelgrc:latest", validation),
+        ):
+            with self.subTest(runtime=rejected_runtime, validation=rejected_validation):
+                rejected = self._run_preflight(rejected_runtime, rejected_validation)
+                self.assertNotEqual(rejected.returncode, 0)
+
+    def test_requested_application_jobs_and_monitoring_fail_instead_of_omitting(self):
+        for contract in (
+            "var deployValidatedApplication = !deployApplication",
+            "var deployValidatedJobs = !deployValidationJobs",
+            "var deployValidatedMonitoring = !deployMonitoringAlerts",
+            "deployValidationJobs requires deployApplication=true",
+            "deployValidationJobs requires a lowercase digest-pinned",
+            "deployMonitoringAlerts requires deployApplication=true",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, self.source)
+        self.assertEqual(self.source.count("= if (deployValidatedJobs)"), 6)
+        self.assertEqual(self.source.count("= if (deployValidatedMonitoring)"), 5)
+        self.assertEqual(self.source.count("= if (deployValidatedApplication)"), 1)
+        self.assertNotIn("deployApplication && deployValidationJobs", self.source)
+        self.assertNotIn("deployApplication && deployMonitoringAlerts", self.source)
+        self.assertNotIn("deployApplication && imageDigestPinned", self.source)
 
     def test_complete_oidc_trust_boundary_is_wired_to_runtime(self):
         for parameter, environment_name in (
@@ -115,6 +186,11 @@ class AzureIacPolicyTests(unittest.TestCase):
 
     def test_validation_jobs_isolate_role_bearing_identities(self):
         self.assertIn("param deployValidationJobs bool = false", self.source)
+        self.assertEqual(self.source.count("image: validationContainerImage"), 2)
+        self.assertNotIn(
+            "image: containerImage\n          name: 'sentinel-validation'",
+            self.source,
+        )
         analyst_job = self.source.split(
             "resource validationAnalystJob", 1
         )[1].split("resource validationApproverJob", 1)[0]

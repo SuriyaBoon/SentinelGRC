@@ -69,7 +69,11 @@ class DatabaseConnection:
             return
         self._closed = True
         if self.database.dialect == "postgresql":
-            self.connection.rollback()
+            try:
+                self.connection.rollback()
+            except Exception:
+                self.connection.close()
+                return
             self.database._pool.putconn(self.connection)
         else:
             self.connection.close()
@@ -140,16 +144,16 @@ class Database:
         return DatabaseConnection(self, connection)
 
     def ping(self) -> bool:
-        connection = self.connect()
+        connection: DatabaseConnection | None = None
         try:
+            connection = self.connect()
             connection.execute("SELECT 1").fetchone()
-            connection.rollback()
             return True
         except Exception:
-            connection.rollback()
             return False
         finally:
-            connection.close()
+            if connection is not None:
+                connection.close()
 
     def for_update(self, sql: str) -> str:
         return f"{sql} FOR UPDATE" if self.dialect == "postgresql" else sql
