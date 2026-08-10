@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 import threading
 from contextlib import closing
@@ -10,13 +11,29 @@ import time
 from pathlib import Path
 from typing import Any
 
+from path_security import resolve_sqlite_database_under_root, select_storage_root
+
 
 DEFAULT_STATE_DB = "sentinelgrc-state.db"
+BEGIN_IMMEDIATE_SQL = "BEGIN IMMEDIATE"
 
 
 class SQLiteStateStore:
-    def __init__(self, path: str = DEFAULT_STATE_DB):
-        self.path = str(Path(path))
+    def __init__(
+        self,
+        path: str | Path = DEFAULT_STATE_DB,
+        *,
+        storage_root: str | Path | None = None,
+    ):
+        supplied = Path(path).expanduser()
+        boundary = select_storage_root(supplied, storage_root)
+        self.path = str(
+            resolve_sqlite_database_under_root(
+                supplied,
+                boundary,
+                purpose="state database",
+            )
+        )
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         with closing(self._connect()) as connection:
@@ -51,7 +68,18 @@ class SQLiteStateStore:
                     details_json TEXT NOT NULL,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
-                    reassessment_count INTEGER NOT NULL DEFAULT 0
+                    reassessment_count INTEGER NOT NULL DEFAULT 0,
+                    last_evidence_hash TEXT
+                );
+                CREATE TABLE IF NOT EXISTS external_finding_audit_outbox (
+                    event_id TEXT PRIMARY KEY,
+                    finding_id TEXT NOT NULL,
+                    evidence_hash TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    details_json TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    delivered_at REAL,
+                    UNIQUE(finding_id, evidence_hash)
                 );
                 """
             )
@@ -62,10 +90,19 @@ class SQLiteStateStore:
                 connection.execute("ALTER TABLE pipeline_runs ADD COLUMN last_error TEXT")
             if "run_lease_until" not in columns:
                 connection.execute("ALTER TABLE pipeline_runs ADD COLUMN run_lease_until REAL NOT NULL DEFAULT 0")
+            finding_columns = {
+                row[1] for row in connection.execute(
+                    "PRAGMA table_info(external_findings)"
+                ).fetchall()
+            }
+            if "last_evidence_hash" not in finding_columns:
+                connection.execute(
+                    "ALTER TABLE external_findings ADD COLUMN last_evidence_hash TEXT"
+                )
             connection.commit()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=5)
+        connection = sqlite3.connect(database=self.path, timeout=5, uri=False)
         connection.row_factory = sqlite3.Row
         return connection
 
@@ -105,7 +142,7 @@ class SQLiteStateStore:
     def claim_pipeline_run(self, input_hash: str, now: float | None = None, lease_seconds: int = 900) -> bool:
         current = time.time() if now is None else now
         with closing(self._connect()) as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(BEGIN_IMMEDIATE_SQL)
             row = connection.execute("SELECT status, COALESCE(run_lease_until, 0) AS run_lease_until FROM pipeline_runs WHERE input_hash = ?", (input_hash,)).fetchone()
             if row is None:
                 connection.execute(
@@ -203,7 +240,7 @@ class SQLiteStateStore:
             finding["severity"], details_json,
         )
         with self._lock, closing(self._connect()) as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(BEGIN_IMMEDIATE_SQL)
             exists = connection.execute(
                 "SELECT 1 FROM external_findings WHERE finding_id = ?", (finding["finding_id"],)
             ).fetchone() is not None
@@ -234,6 +271,153 @@ class SQLiteStateStore:
                 )
             connection.commit()
         return not exists
+
+    def record_external_finding_import(
+        self,
+        finding: dict[str, Any],
+        evidence_hash: str,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Atomically persist a bridge import and its deterministic audit outbox event."""
+        required = {
+            "finding_id", "source", "control_id", "asset_id", "title",
+            "risk_owner", "severity", "details",
+        }
+        missing = required.difference(finding)
+        if missing:
+            raise ValueError(f"External finding is missing fields: {sorted(missing)}")
+        if finding["severity"] not in {"low", "medium", "high", "critical"}:
+            raise ValueError("External finding severity is invalid.")
+        if (
+            not isinstance(evidence_hash, str)
+            or len(evidence_hash) != 64
+            or any(character not in "0123456789abcdef" for character in evidence_hash)
+        ):
+            raise ValueError("evidence_hash must be a lowercase SHA-256 digest")
+
+        current = time.time() if now is None else now
+        details_json = json.dumps(
+            finding["details"], sort_keys=True, separators=(",", ":")
+        )
+        finding_id = finding["finding_id"]
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute(BEGIN_IMMEDIATE_SQL)
+            prior_import = connection.execute(
+                """
+                SELECT 1 FROM external_finding_audit_outbox
+                WHERE finding_id = ? AND evidence_hash = ?
+                """,
+                (finding_id, evidence_hash),
+            ).fetchone()
+            existing = connection.execute(
+                "SELECT last_evidence_hash FROM external_findings WHERE finding_id = ?",
+                (finding_id,),
+            ).fetchone()
+            if prior_import is not None:
+                action = "replayed"
+            elif existing is None:
+                action = "created"
+                connection.execute(
+                    """
+                    INSERT INTO external_findings(
+                        finding_id, source, control_id, asset_id, title, risk_owner,
+                        severity, details_json, created_at, updated_at, last_evidence_hash
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        finding_id, finding["source"], finding["control_id"],
+                        finding["asset_id"], finding["title"], finding["risk_owner"],
+                        finding["severity"], details_json, current, current, evidence_hash,
+                    ),
+                )
+            else:
+                action = "reassessed"
+                connection.execute(
+                    """
+                    UPDATE external_findings
+                    SET source = ?, control_id = ?, asset_id = ?, title = ?, risk_owner = ?,
+                        severity = ?, details_json = ?, updated_at = ?,
+                        reassessment_count = reassessment_count + 1,
+                        last_evidence_hash = ?
+                    WHERE finding_id = ?
+                    """,
+                    (
+                        finding["source"], finding["control_id"], finding["asset_id"],
+                        finding["title"], finding["risk_owner"], finding["severity"],
+                        details_json, current, evidence_hash, finding_id,
+                    ),
+                )
+
+            if action != "replayed":
+                event_type = f"bridge.minisoar.finding.{action}"
+                event_id = hashlib.sha256(
+                    f"minisoar-audit|{finding_id}|{evidence_hash}|{event_type}".encode()
+                ).hexdigest()[:24]
+                audit_details = json.dumps(
+                    {"control_id": finding["control_id"], "source": finding["source"]},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO external_finding_audit_outbox(
+                        event_id, finding_id, evidence_hash, event_type,
+                        details_json, created_at, delivered_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, NULL)
+                    """,
+                    (
+                        event_id, finding_id, evidence_hash, event_type,
+                        audit_details, current,
+                    ),
+                )
+
+            outbox = connection.execute(
+                """
+                SELECT event_id, finding_id, evidence_hash, event_type,
+                       details_json, delivered_at
+                FROM external_finding_audit_outbox
+                WHERE finding_id = ? AND evidence_hash = ?
+                """,
+                (finding_id, evidence_hash),
+            ).fetchone()
+            connection.commit()
+
+        audit_event = None
+        if outbox is not None and outbox["delivered_at"] is None:
+            audit_event = dict(outbox)
+            audit_event["details"] = json.loads(audit_event.pop("details_json"))
+        return {"action": action, "audit_event": audit_event}
+
+    def mark_external_finding_audit_delivered(
+        self,
+        event_id: str,
+        now: float | None = None,
+    ) -> None:
+        current = time.time() if now is None else now
+        with self._lock, closing(self._connect()) as connection:
+            cursor = connection.execute(
+                """
+                UPDATE external_finding_audit_outbox
+                SET delivered_at = COALESCE(delivered_at, ?)
+                WHERE event_id = ?
+                """,
+                (current, event_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("unknown external finding audit event")
+            connection.commit()
+
+    def get_external_finding_audit_event(self, event_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT * FROM external_finding_audit_outbox WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["details"] = json.loads(result.pop("details_json"))
+        return result
 
     def export_metadata(self) -> dict[str, Any]:
         with closing(self._connect()) as connection:

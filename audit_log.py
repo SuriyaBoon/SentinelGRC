@@ -14,6 +14,7 @@ from typing import Any
 from file_lock import locked_file
 
 GENESIS_HASH = "0" * 64
+AUDIT_LOCK_SUFFIX = ".lock"
 
 @dataclass(frozen=True)
 class AuthenticatedActor:
@@ -85,25 +86,78 @@ class AuditLog:
             raise ValueError(f"Refusing to append to invalid audit log: {message}")
         return json.loads(self.path.read_text(encoding="utf-8").splitlines()[-1])["event_hash"]
 
+    def _find_event_unlocked(self, event_id: str) -> dict[str, Any] | None:
+        if not self.path.exists() or not self.path.read_text(encoding="utf-8").strip():
+            return None
+        valid, message = self._verify_unlocked()
+        if not valid:
+            raise ValueError(f"Refusing to read invalid audit log: {message}")
+        for line in self.path.read_text(encoding="utf-8").splitlines():
+            record = json.loads(line)
+            if record.get("event_id") == event_id:
+                return record
+        return None
+
+    def _append_unlocked(
+        self,
+        event_id: str,
+        event_type: str,
+        actor: str | AuthenticatedActor,
+        target: str,
+        details: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        record = {
+            "schema_version": "1.0",
+            "event_id": event_id,
+            "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "event_type": event_type,
+            "actor": actor.snapshot() if isinstance(actor, AuthenticatedActor) else actor,
+            "target": target,
+            "details": details or {},
+            "previous_hash": self._last_hash_unlocked(),
+        }
+        record["event_hash"] = hashlib.sha256(canonical_json(record).encode("utf-8")).hexdigest()
+        with self.path.open("a", encoding="utf-8") as file:
+            file.write(canonical_json(record) + "\n")
+            file.flush()
+            os.fsync(file.fileno())
+        return record
+
     def append(self, event_type: str, actor: str | AuthenticatedActor,
                target: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
-        with locked_file(str(self.path) + ".lock"):
-            record = {
-                "schema_version": "1.0",
-                "event_id": hashlib.sha256(f"{datetime.now(timezone.utc).timestamp()}:{event_type}:{target}".encode()).hexdigest()[:24],
-                "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                "event_type": event_type,
-                "actor": actor.snapshot() if isinstance(actor, AuthenticatedActor) else actor,
-                "target": target,
-                "details": details or {},
-                "previous_hash": self._last_hash_unlocked(),
-            }
-            record["event_hash"] = hashlib.sha256(canonical_json(record).encode("utf-8")).hexdigest()
-            with self.path.open("a", encoding="utf-8") as file:
-                file.write(canonical_json(record) + "\n")
-                file.flush()
-                os.fsync(file.fileno())
-            return record
+        with locked_file(str(self.path) + AUDIT_LOCK_SUFFIX):
+            event_id = hashlib.sha256(
+                f"{datetime.now(timezone.utc).timestamp()}:{event_type}:{target}".encode()
+            ).hexdigest()[:24]
+            return self._append_unlocked(event_id, event_type, actor, target, details)
+
+    def append_idempotent(
+        self,
+        event_id: str,
+        event_type: str,
+        actor: str | AuthenticatedActor,
+        target: str,
+        details: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Append once by stable event ID and report whether a record was added."""
+        if not isinstance(event_id, str) or not event_id.strip():
+            raise ValueError("event_id is required for idempotent audit append")
+        expected_actor = actor.snapshot() if isinstance(actor, AuthenticatedActor) else actor
+        expected_details = details or {}
+        with locked_file(str(self.path) + AUDIT_LOCK_SUFFIX):
+            existing = self._find_event_unlocked(event_id)
+            if existing is not None:
+                identity = (
+                    existing.get("event_type"), existing.get("actor"),
+                    existing.get("target"), existing.get("details"),
+                )
+                expected = (event_type, expected_actor, target, expected_details)
+                if identity != expected:
+                    raise ValueError("audit event_id is already bound to different content")
+                return existing, False
+            return self._append_unlocked(
+                event_id, event_type, actor, target, expected_details
+            ), True
 
     def append_human_event(self, event_type: str, actor: AuthenticatedActor,
                            target: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -124,5 +178,5 @@ class AuditLog:
         return self.append(event_type, actor, target, details)
 
     def verify(self) -> tuple[bool, str]:
-        with locked_file(str(self.path) + ".lock"):
+        with locked_file(str(self.path) + AUDIT_LOCK_SUFFIX):
             return self._verify_unlocked()
