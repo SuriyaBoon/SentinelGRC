@@ -7,6 +7,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from path_security import resolve_under_root
+
 
 _EVIDENCE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,126}")
 _WINDOWS_RESERVED_NAMES = {
@@ -28,29 +30,6 @@ def validate_evidence_id(value: str, *, purpose: str = "evidence ID") -> str:
     if value.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
         raise ValueError(f"{purpose} is a reserved filesystem name")
     return value
-
-
-def resolve_under_root(
-    value: str | Path,
-    root: str | Path,
-    *,
-    purpose: str = "runtime path",
-) -> Path:
-    """Resolve a path and require it to remain inside the trusted root."""
-    if not isinstance(value, (str, Path)) or not str(value).strip():
-        raise ValueError(f"{purpose} must be a non-empty filesystem path")
-    if "\x00" in str(value):
-        raise ValueError(f"{purpose} contains a null byte")
-
-    boundary = Path(root).expanduser().resolve(strict=False)
-    supplied = Path(value).expanduser()
-    candidate = supplied if supplied.is_absolute() else boundary / supplied
-    resolved = candidate.resolve(strict=False)
-    try:
-        resolved.relative_to(boundary)
-    except ValueError as error:
-        raise ValueError(f"{purpose} must remain under {boundary}") from error
-    return resolved
 
 
 def read_text_under_root(

@@ -15,6 +15,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
+from path_security import configured_runtime_root, resolve_sqlite_database_under_root, select_storage_root
 from state_store import DEFAULT_STATE_DB
 
 
@@ -26,10 +27,23 @@ def utc_now() -> str:
 
 
 class AgentKeyRegistry:
-    def __init__(self, path: str = DEFAULT_STATE_DB):
-        self.path = str(Path(path))
+    def __init__(
+        self,
+        path: str | Path = DEFAULT_STATE_DB,
+        *,
+        storage_root: str | Path | None = None,
+    ):
+        supplied = Path(path).expanduser()
+        boundary = select_storage_root(supplied, storage_root)
+        self.path = str(
+            resolve_sqlite_database_under_root(
+                supplied,
+                boundary,
+                purpose="agent-key database",
+            )
+        )
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(self.path)) as connection:
+        with closing(sqlite3.connect(database=self.path, uri=False)) as connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS agent_keys (
@@ -47,7 +61,7 @@ class AgentKeyRegistry:
         if not agent_id.strip() or not KEY_ID_PATTERN.fullmatch(key_id):
             raise ValueError("agent_id and key_id must use non-empty safe identifiers.")
         secret = secrets.token_urlsafe(32)
-        with closing(sqlite3.connect(self.path)) as connection:
+        with closing(sqlite3.connect(database=self.path, uri=False)) as connection:
             connection.execute(
                 "INSERT INTO agent_keys(key_id, agent_id, status, created_at) VALUES (?, ?, 'active', ?)",
                 (key_id, agent_id, utc_now()),
@@ -56,7 +70,7 @@ class AgentKeyRegistry:
         return key_id, secret
 
     def revoke(self, key_id: str) -> None:
-        with closing(sqlite3.connect(self.path)) as connection:
+        with closing(sqlite3.connect(database=self.path, uri=False)) as connection:
             connection.execute(
                 "UPDATE agent_keys SET status = 'revoked', revoked_at = ? WHERE key_id = ?",
                 (utc_now(), key_id),
@@ -64,7 +78,7 @@ class AgentKeyRegistry:
             connection.commit()
 
     def is_active(self, key_id: str) -> bool:
-        with closing(sqlite3.connect(self.path)) as connection:
+        with closing(sqlite3.connect(database=self.path, uri=False)) as connection:
             row = connection.execute(
                 "SELECT status FROM agent_keys WHERE key_id = ?", (key_id,)
             ).fetchone()
@@ -87,7 +101,13 @@ def main() -> int:
     revoke = subparsers.add_parser("revoke")
     revoke.add_argument("--key-id", required=True)
     args = parser.parse_args()
-    registry = AgentKeyRegistry(args.db)
+    runtime_root = configured_runtime_root()
+    database_path = resolve_sqlite_database_under_root(
+        args.db,
+        runtime_root,
+        purpose="agent-key database",
+    )
+    registry = AgentKeyRegistry(database_path, storage_root=runtime_root)
     if args.command == "register":
         key_id, secret = registry.register(args.agent_id, args.key_id)
         print(json.dumps({"key_id": key_id, "secret_once": secret}))

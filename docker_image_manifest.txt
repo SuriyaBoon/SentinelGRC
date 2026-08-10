@@ -26,6 +26,7 @@ oidc_auth.py
 oidc_contract.py
 outbox_delivery.py
 outbox_worker.py
+path_security.py
 persistence.py
 postgres_runtime_state.py
 production_contract.py

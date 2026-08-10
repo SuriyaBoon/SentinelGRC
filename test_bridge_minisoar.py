@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from scripts.bridge_minisoar import run_minisoar_bridge
 from state_store import SQLiteStateStore
@@ -33,6 +34,29 @@ def write_bundle(root: Path, *, status="closed", passed=True, kind="brute_force"
 
 
 class MiniSoarBridgeTests(unittest.TestCase):
+    def test_cross_drive_root_inference_returns_structured_error(self):
+        with (
+            mock.patch(
+                "scripts.bridge_minisoar.os.path.commonpath",
+                side_effect=ValueError("Paths don't have the same drive"),
+            ),
+            mock.patch(
+                "scripts.bridge_minisoar.resolve_directory_under_root",
+                side_effect=AssertionError("no side effect should begin"),
+            ),
+        ):
+            result = run_minisoar_bridge(r"C:\evidence", r"D:\governance.db")
+
+        self.assertEqual(result["errors"], 1)
+        self.assertEqual(
+            result["skipped_reason"],
+            "bridge paths must share a common runtime root",
+        )
+        self.assertFalse(result["bundle_read"])
+        self.assertFalse(result["finding_created"])
+        self.assertFalse(result["finding_reassessed"])
+        self.assertIsNone(result["sentinel_finding_id"])
+
     def test_closed_and_verified_incident_creates_governance_finding(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

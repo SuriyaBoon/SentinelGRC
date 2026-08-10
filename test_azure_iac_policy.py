@@ -299,6 +299,27 @@ class AzureIacPolicyTests(unittest.TestCase):
         self.assertIn("enablePurgeProtection: true", self.source)
         self.assertIn("privateDnsZones", self.source)
 
+    def test_stateful_services_declare_identity_and_storage_encryption(self):
+        postgres = self.source.split(
+            "resource postgres 'Microsoft.DBforPostgreSQL", 1
+        )[1].split("resource governanceDatabase", 1)[0]
+        storage = self.source.split(
+            "resource storage 'Microsoft.Storage/storageAccounts", 1
+        )[1].split("resource blobService", 1)[0]
+        service_bus = self.source.split(
+            "resource serviceBus 'Microsoft.ServiceBus/namespaces", 1
+        )[1].split("resource governanceQueue", 1)[0]
+        for name, resource in (
+            ("postgres", postgres),
+            ("storage", storage),
+            ("service_bus", service_bus),
+        ):
+            with self.subTest(resource=name):
+                self.assertIn("type: 'SystemAssigned'", resource)
+        self.assertIn("requireInfrastructureEncryption: true", storage)
+        self.assertIn("keySource: 'Microsoft.Storage'", storage)
+        self.assertIn("keyType: 'Account'", storage)
+
     def test_no_plausible_embedded_cloud_secret(self):
         combined = f"{self.source}\n{self.params}"
         suspicious = (
