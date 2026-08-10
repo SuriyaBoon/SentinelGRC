@@ -145,9 +145,24 @@ def run_offline_assurance(
     alerts = _load_contract_fixture(alerts_path)
     with tempfile.TemporaryDirectory() as temp:
         root = Path(temp)
+        staged_alerts = root / "alerts.jsonl"
+        staged_alerts.write_text(
+            "\n".join(json.dumps(item, sort_keys=True) for item in alerts) + "\n",
+            encoding="utf-8",
+        )
         database_path = str(root / "governance.db")
-        first = run_logwatcher_staging(alerts_path, database_path, input_kind="contract")
-        replay = run_logwatcher_staging(alerts_path, database_path, input_kind="contract")
+        first = run_logwatcher_staging(
+            str(staged_alerts),
+            database_path,
+            input_kind="contract",
+            runtime_root=root,
+        )
+        replay = run_logwatcher_staging(
+            str(staged_alerts),
+            database_path,
+            input_kind="contract",
+            runtime_root=root,
+        )
 
         finding_id = first["finding_ids"][0] if first["finding_ids"] else ""
         core = GovernanceCore(database_path)

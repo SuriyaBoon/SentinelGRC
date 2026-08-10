@@ -39,6 +39,26 @@ class AuditLogTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 log.append_human_event("bad", AuthenticatedActor("agent", "agent", auth_method="hmac"), "x")
 
+    def test_idempotent_append_reuses_exact_event_and_rejects_collision(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "audit.jsonl"
+            log = AuditLog(str(path))
+            first, first_added = log.append_idempotent(
+                "stable-event-1", "finding.created", "connector", "F-1", {"x": 1}
+            )
+            replay, replay_added = log.append_idempotent(
+                "stable-event-1", "finding.created", "connector", "F-1", {"x": 1}
+            )
+
+            self.assertTrue(first_added)
+            self.assertFalse(replay_added)
+            self.assertEqual(first, replay)
+            self.assertEqual(len(path.read_text(encoding="utf-8").splitlines()), 1)
+            with self.assertRaises(ValueError):
+                log.append_idempotent(
+                    "stable-event-1", "finding.reassessed", "connector", "F-1", {"x": 1}
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

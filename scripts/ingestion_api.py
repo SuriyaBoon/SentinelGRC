@@ -8,6 +8,7 @@ import hmac
 import json
 import os
 import re
+import ssl
 import time
 from datetime import datetime
 from http import HTTPStatus
@@ -15,11 +16,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from path_security import (
+    configured_runtime_root,
+    resolve_directory_under_root,
+    resolve_existing_file_under_root,
+    resolve_sqlite_database_under_root,
+)
 from scripts.agent_keys import AgentKeyRegistry
 from state_store import DEFAULT_STATE_DB, SQLiteStateStore
 
 MAX_BODY_BYTES = 64 * 1024
 MAX_CLOCK_SKEW_SECONDS = 300
+DEFAULT_INGESTION_PORT = 8080
 NONCE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 KEY_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 REQUIRED_FIELDS = {
@@ -79,9 +87,17 @@ def validate_posture(payload: Any) -> None:
 
 
 class NonceStore:
-    def __init__(self, ttl_seconds: int = MAX_CLOCK_SKEW_SECONDS, db_path: str | None = None):
+    def __init__(
+        self,
+        ttl_seconds: int = MAX_CLOCK_SKEW_SECONDS,
+        db_path: str | Path | None = None,
+        *,
+        storage_root: str | Path | None = None,
+    ):
         self.ttl_seconds = ttl_seconds
-        self._persistent = SQLiteStateStore(db_path) if db_path else None
+        self._persistent = (
+            SQLiteStateStore(db_path, storage_root=storage_root) if db_path else None
+        )
         self._values: dict[str, float] = {}
 
     def reserve(self, nonce: str, now: float | None = None) -> bool:
@@ -194,14 +210,22 @@ class IngestionServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = False
 
-    def __init__(self, address: tuple[str, int], key_registry: AgentKeyRegistry, key_secrets: dict[str, str], output_dir: Path, state_db: str):
+    def __init__(
+        self,
+        address: tuple[str, int],
+        key_registry: AgentKeyRegistry,
+        key_secrets: dict[str, str],
+        output_dir: Path,
+        state_db: Path,
+        runtime_root: Path,
+    ):
         super().__init__(address, PostureHandler)
         self.key_registry = key_registry
         self.key_secrets = key_secrets
         self.output_dir = output_dir
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.state_store = SQLiteStateStore(state_db)
-        self.nonce_store = NonceStore(db_path=state_db)
+        self.state_store = SQLiteStateStore(state_db, storage_root=runtime_root)
+        self.nonce_store = NonceStore(db_path=state_db, storage_root=runtime_root)
 
 
 def run_server(args: argparse.Namespace) -> int:
@@ -214,15 +238,55 @@ def run_server(args: argparse.Namespace) -> int:
         raise SystemExit(f"Environment variable {args.keys_env} must be a JSON object.") from error
     if not isinstance(key_secrets, dict):
         raise SystemExit(f"Environment variable {args.keys_env} must be a JSON object.")
-    if args.host not in {"127.0.0.1", "localhost", "::1"} and not args.allow_insecure_network:
-        raise SystemExit("Refusing non-loopback bind without --allow-insecure-network.")
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    registry = AgentKeyRegistry(args.state_db)
-    server = IngestionServer(
-        (args.host, args.port), registry, key_secrets, output_dir, args.state_db
+    if args.host not in {"127.0.0.1", "localhost", "::1"}:
+        raise SystemExit(
+            "The lab ingestion server is loopback-only; use the production HTTPS adapter "
+            "for network ingestion."
+        )
+    if bool(args.tls_cert) != bool(args.tls_key):
+        raise SystemExit("TLS certificate and private key must be configured together.")
+    runtime_root = configured_runtime_root()
+    output_dir = resolve_directory_under_root(
+        args.output_dir,
+        runtime_root,
+        purpose="ingestion output directory",
+        create=True,
     )
-    print(f"SentinelGRC ingestion listening on {args.host}:{args.port}")
+    state_db = resolve_sqlite_database_under_root(
+        args.state_db,
+        runtime_root,
+        purpose="ingestion state database",
+    )
+    registry = AgentKeyRegistry(state_db, storage_root=runtime_root)
+    server = IngestionServer(
+        (args.host, args.port),
+        registry,
+        key_secrets,
+        output_dir,
+        state_db,
+        runtime_root,
+    )
+    if args.tls_cert and args.tls_key:
+        certificate = resolve_existing_file_under_root(
+            args.tls_cert, runtime_root, purpose="TLS certificate"
+        )
+        private_key = resolve_existing_file_under_root(
+            args.tls_key, runtime_root, purpose="TLS private key"
+        )
+        tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        tls_context.load_cert_chain(certfile=certificate, keyfile=private_key)
+        server.socket = tls_context.wrap_socket(server.socket, server_side=True)
+        protocol = "https"
+    elif args.allow_loopback_http:
+        protocol = "http"
+    else:
+        server.server_close()
+        raise SystemExit(
+            "TLS certificate and key are required unless lab-only "
+            "--allow-loopback-http is explicitly set."
+        )
+    print(f"SentinelGRC ingestion listening on {protocol}://{args.host}:{args.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -237,11 +301,13 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     serve = subparsers.add_parser("serve")
     serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=8080)
+    serve.add_argument("--port", type=int, default=DEFAULT_INGESTION_PORT)
     serve.add_argument("--output-dir", default="evidence-inbox")
     serve.add_argument("--state-db", default=DEFAULT_STATE_DB)
     serve.add_argument("--keys-env", default="SENTINELGRC_AGENT_KEYS_JSON")
-    serve.add_argument("--allow-insecure-network", action="store_true")
+    serve.add_argument("--tls-cert")
+    serve.add_argument("--tls-key")
+    serve.add_argument("--allow-loopback-http", action="store_true")
     args = parser.parse_args()
     return run_server(args)
 

@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import hashlib
 from pathlib import Path
 
 from state_store import SQLiteStateStore
@@ -21,6 +22,40 @@ class StateStoreTests(unittest.TestCase):
             self.assertFalse(store.remember_payload("hash-1", "evidence-2", now=1001))
             self.assertEqual(store.get_evidence_id("hash-1"), "evidence-1")
             self.assertIsNone(store.get_evidence_id("hash-2"))
+
+    def test_external_import_outbox_distinguishes_replay_and_reassessment(self):
+        finding = {
+            "finding_id": "F-1",
+            "source": "test",
+            "control_id": "C-1",
+            "asset_id": "A-1",
+            "title": "Finding",
+            "risk_owner": "owner",
+            "severity": "high",
+            "details": {"version": 1},
+        }
+        first_hash = hashlib.sha256(b"first").hexdigest()
+        second_hash = hashlib.sha256(b"second").hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStateStore(str(Path(directory) / "state.db"))
+            created = store.record_external_finding_import(finding, first_hash, now=1000)
+            replayed = store.record_external_finding_import(finding, first_hash, now=1001)
+            finding["details"] = {"version": 2}
+            reassessed = store.record_external_finding_import(
+                finding, second_hash, now=1002
+            )
+            finding["details"] = {"version": 1}
+            old_replay = store.record_external_finding_import(
+                finding, first_hash, now=1003
+            )
+            stored = store.get_external_finding("F-1")
+
+        self.assertEqual(created["action"], "created")
+        self.assertEqual(replayed["action"], "replayed")
+        self.assertEqual(reassessed["action"], "reassessed")
+        self.assertEqual(old_replay["action"], "replayed")
+        self.assertEqual(stored["reassessment_count"], 1)
+        self.assertEqual(stored["details"], {"version": 2})
 
 
 if __name__ == "__main__":
