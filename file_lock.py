@@ -10,7 +10,10 @@ from typing import Iterator
 
 @contextmanager
 def locked_file(lock_path: str | Path) -> Iterator[None]:
-    path = Path(lock_path)
+    raw = str(lock_path)
+    if not raw.strip() or "\x00" in raw or raw.lower().startswith("file:"):
+        raise ValueError("lock path must be a non-empty local filesystem path")
+    path = Path(lock_path).expanduser().resolve(strict=False)
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = path.open("a+")
     try:
