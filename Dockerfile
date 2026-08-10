@@ -7,6 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     SENTINEL_ENV=lab \
     SENTINEL_DATABASE_URL=sqlite:////app/runtime/governance.db \
     SENTINEL_IDENTITY_DATABASE_URL=sqlite:////app/runtime/identity.db \
+    SENTINEL_RUNTIME_ROOT=/app/runtime \
     SENTINEL_EVIDENCE_DIR=/app/runtime/evidence \
     SENTINEL_AUDIT_DIR=/app/runtime/audit-archive \
     SENTINEL_OUTBOX_DIR=/app/runtime/outbox
@@ -21,7 +22,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip==26.1.2 \
 
 COPY audit_archive.py audit_delivery.py audit_log.py audit_worker.py connectors.py crypto_agility.py deployment_contract.py domain_packs.py evidence_crypto.py evidence_metadata.py /app/
 COPY evidence_store.py file_lock.py governance_api.py governance_core.py governance_http.py human_identity.py jml_connector.py job_queue.py migrate_json.py migration_runner.py /app/
-COPY minisoar_connector.py observability.py oidc_auth.py oidc_contract.py outbox_delivery.py outbox_worker.py persistence.py postgres_runtime_state.py production_contract.py reporting.py /app/
+COPY minisoar_connector.py observability.py oidc_auth.py oidc_contract.py outbox_delivery.py outbox_worker.py path_security.py persistence.py postgres_runtime_state.py production_contract.py reporting.py /app/
 COPY runtime_app.py security_alert_contract.py security_event_connector.py security_pack.py sentinelgrc.py state_store.py x509_verifier.py /app/
 COPY migrations/postgresql/001_canonical_governance.sql migrations/postgresql/002_runtime_delivery.sql migrations/postgresql/003_evidence_objects.sql /app/migrations/postgresql/
 COPY migrations/postgresql/004_immutable_audit_exports.sql migrations/postgresql/005_service_bus_outbox.sql /app/migrations/postgresql/

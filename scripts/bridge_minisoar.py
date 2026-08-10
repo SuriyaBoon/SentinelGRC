@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,12 @@ if str(ROOT) not in sys.path:
 
 from audit_log import AuditLog
 from minisoar_connector import normalize_minisoar_incident
+from path_security import (
+    configured_runtime_root,
+    resolve_directory_under_root,
+    resolve_sqlite_database_under_root,
+    resolve_under_root,
+)
 from state_store import SQLiteStateStore
 
 CONNECTOR_ACTOR = "minisoar-bridge-connector"
@@ -29,6 +36,7 @@ def run_minisoar_bridge(
     *,
     require_verification_pass: bool = True,
     audit_log_path: str | None = None,
+    runtime_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Import one exported bundle and return a sanitized bridge outcome."""
     result: dict[str, Any] = {
@@ -39,7 +47,16 @@ def run_minisoar_bridge(
         "sentinel_finding_id": None,
         "errors": 0,
     }
-    base = Path(evidence_dir)
+    if runtime_root is None:
+        candidates = [Path(evidence_dir), Path(governance_db)]
+        if audit_log_path is not None:
+            candidates.append(Path(audit_log_path))
+        runtime_root = Path(os.path.commonpath([str(path.resolve()) for path in candidates]))
+    base = resolve_directory_under_root(
+        evidence_dir,
+        runtime_root,
+        purpose="Mini-SOAR evidence directory",
+    )
     try:
         finding = _read_json(base / "finding.json")
         alert = _read_json(base / "alert.json")
@@ -65,12 +82,24 @@ def run_minisoar_bridge(
         result["skipped_reason"] = "incident is not closed, synthetic, or independently verified"
         return result
 
-    store = SQLiteStateStore(governance_db)
+    database_path = resolve_sqlite_database_under_root(
+        governance_db,
+        runtime_root,
+        purpose="governance database",
+    )
+    store = SQLiteStateStore(database_path, storage_root=runtime_root)
     created = store.upsert_external_finding(normalized)
     result["sentinel_finding_id"] = normalized["finding_id"]
     result["finding_created" if created else "finding_reassessed"] = True
 
-    audit_path = audit_log_path or str(Path(governance_db).with_suffix(".audit.jsonl"))
+    requested_audit_path = audit_log_path or str(
+        database_path.with_suffix(".audit.jsonl")
+    )
+    audit_path = resolve_under_root(
+        requested_audit_path,
+        runtime_root,
+        purpose="Mini-SOAR audit log",
+    )
     AuditLog(audit_path).append(
         "bridge.minisoar.finding.created" if created else "bridge.minisoar.finding.reassessed",
         CONNECTOR_ACTOR,
@@ -97,6 +126,7 @@ def main() -> int:
         args.governance_db,
         require_verification_pass=not args.allow_unverified,
         audit_log_path=args.audit_log,
+        runtime_root=configured_runtime_root(),
     )
     print(json.dumps(outcome, indent=2, sort_keys=True))
     return 1 if outcome["errors"] else 0

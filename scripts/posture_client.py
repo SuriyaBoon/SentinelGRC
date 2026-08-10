@@ -10,6 +10,13 @@ import secrets
 import urllib.error
 import urllib.request
 import time
+from pathlib import Path
+
+from path_security import (
+    configured_runtime_root,
+    resolve_existing_file_under_root,
+    validate_outbound_url,
+)
 
 
 def make_signature(secret: bytes, timestamp: str, nonce: str, body: bytes) -> str:
@@ -20,7 +27,17 @@ def make_signature(secret: bytes, timestamp: str, nonce: str, body: bytes) -> st
 def main() -> int:
     parser = argparse.ArgumentParser(description="Send signed posture evidence.")
     parser.add_argument("posture_file")
-    parser.add_argument("--url", default="http://127.0.0.1:8080/v1/posture")
+    parser.add_argument("--url", default="https://127.0.0.1:8443/v1/posture")
+    parser.add_argument(
+        "--allowed-host",
+        action="append",
+        help="Exact destination hostname; repeat for each approved endpoint.",
+    )
+    parser.add_argument(
+        "--allow-loopback-http",
+        action="store_true",
+        help="Lab-only opt-in for plain HTTP to localhost or a loopback IP.",
+    )
     parser.add_argument("--key-id-env", default="SENTINELGRC_AGENT_KEY_ID")
     parser.add_argument("--secret-env", default="SENTINELGRC_AGENT_SECRET")
     args = parser.parse_args()
@@ -29,7 +46,18 @@ def main() -> int:
     secret_value = os.environ.get(args.secret_env)
     if not key_id or not secret_value:
         raise SystemExit(f"Both {args.key_id_env} and {args.secret_env} are required.")
-    with open(args.posture_file, "rb") as file:
+    posture_path = resolve_existing_file_under_root(
+        args.posture_file,
+        configured_runtime_root(),
+        purpose="posture input",
+    )
+    allowed_hosts = set(args.allowed_host or {"127.0.0.1", "localhost", "::1"})
+    destination_url = validate_outbound_url(
+        args.url,
+        allowed_hosts=allowed_hosts,
+        allow_loopback_http=args.allow_loopback_http,
+    )
+    with Path(posture_path).open("rb") as file:
         body = file.read()
     if len(body) > 64 * 1024:
         raise SystemExit("Posture payload exceeds the 64 KiB limit.")
@@ -38,7 +66,7 @@ def main() -> int:
     nonce = secrets.token_urlsafe(24)
     signature = make_signature(secret_value.encode("utf-8"), timestamp, nonce, body)
     request = urllib.request.Request(
-        args.url,
+        destination_url,
         data=body,
         method="POST",
         headers={
