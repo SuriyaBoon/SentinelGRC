@@ -38,6 +38,44 @@ class SentinelGRCTests(unittest.TestCase):
             ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
             self.assertFalse(sentinelgrc.verify_ledger(str(ledger))[0])
 
+    def test_json_input_is_confined_to_runtime_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "runtime"
+            root.mkdir()
+            inside = root / "inside.json"
+            outside = base / "outside.json"
+            inside.write_text('{"scope":"inside"}', encoding="utf-8")
+            outside.write_text('{"scope":"outside"}', encoding="utf-8")
+
+            self.assertEqual(
+                sentinelgrc.load_json(inside, runtime_root=root),
+                {"scope": "inside"},
+            )
+            for unsafe in ("../outside.json", outside.resolve()):
+                with self.subTest(path=unsafe), self.assertRaisesRegex(
+                    ValueError, "must remain under"
+                ):
+                    sentinelgrc.load_json(unsafe, runtime_root=root)
+
+    def test_json_input_rejects_symlink_escape_when_supported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "runtime"
+            outside = base / "outside"
+            root.mkdir()
+            outside.mkdir()
+            (outside / "secret.json").write_text("{}", encoding="utf-8")
+            link = root / "escape"
+            try:
+                link.symlink_to(outside, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symlinks are unavailable: {error}")
+            with self.assertRaisesRegex(ValueError, "must remain under"):
+                sentinelgrc.load_json(
+                    link / "secret.json", runtime_root=root
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

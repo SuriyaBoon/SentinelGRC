@@ -881,6 +881,10 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = if (deployValid
     configuration: {
       activeRevisionsMode: 'Single'
       ingress: {
+        // mTLS is intentionally not asserted without certificate issuance,
+        // rotation, revocation, and application-side XFCC validation. This
+        // internal ingress uses Entra OIDC and role-isolated managed identities.
+        // See docs/sonar-security-remediation.md for the reviewed boundary.
         allowInsecure: false
         external: false
         targetPort: 8080
