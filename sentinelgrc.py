@@ -13,6 +13,7 @@ from typing import Any
 from file_lock import locked_file
 from path_security import (
     configured_runtime_root,
+    load_json_under_root,
     resolve_existing_file_under_root,
     resolve_under_root,
 )
@@ -26,9 +27,15 @@ def canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-def load_json(path: str | Path) -> Any:
-    with Path(path).open(encoding="utf-8") as file:
-        return json.load(file)
+def load_json(
+    path: str | Path,
+    *,
+    root: str | Path,
+    purpose: str = "JSON input",
+) -> Any:
+    """Load JSON under an explicit caller-owned trust boundary."""
+    boundary = Path(root).expanduser().resolve(strict=False)
+    return load_json_under_root(path, boundary, purpose=purpose)
 
 
 def evaluate_control(control: dict[str, Any], posture: dict[str, Any]) -> dict[str, Any]:
@@ -164,8 +171,13 @@ def append_evidence_atomic(
         return evidence
 
 def evaluate(args: argparse.Namespace) -> int:
-    controls = load_json(args.controls)
-    posture = load_json(args.posture)
+    runtime_root = configured_runtime_root()
+    controls = load_json(
+        args.controls, root=runtime_root, purpose="control catalogue"
+    )
+    posture = load_json(
+        args.posture, root=runtime_root, purpose="posture input"
+    )
     results = [evaluate_control(control, posture) for control in controls]
     evidence = append_evidence_atomic(args.ledger, posture, results)
     failed = [result for result in results if not result["passed"]]

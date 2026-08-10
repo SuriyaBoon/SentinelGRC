@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parent
 MAIN = ROOT / "infra" / "azure" / "main.bicep"
 PARAMS = ROOT / "infra" / "azure" / "main.staging.bicepparam.example"
 PREFLIGHT = ROOT / "scripts" / "Test-AzureStagingInputs.ps1"
+SECURITY_REMEDIATION = ROOT / "docs" / "sonar-security-remediation.md"
 
 
 class AzureIacPolicyTests(unittest.TestCase):
@@ -243,6 +244,22 @@ class AzureIacPolicyTests(unittest.TestCase):
             approver_job,
         )
         self.assertNotIn("external: true", self.source)
+
+    def test_client_certificate_decision_does_not_claim_unimplemented_mtls(self):
+        container_app = self.source.split(
+            "resource containerApp 'Microsoft.App/containerApps@2025-01-01'", 1
+        )[1].split("resource analystValidationJob", 1)[0]
+        decision = SECURITY_REMEDIATION.read_text(encoding="utf-8")
+        self.assertIn("allowInsecure: false", container_app)
+        self.assertIn("external: false", container_app)
+        self.assertNotIn("clientCertificateMode: 'require'", container_app)
+        self.assertIn(
+            "mTLS is intentionally not asserted without certificate issuance",
+            container_app,
+        )
+        self.assertIn("Container Apps client certificate", decision)
+        self.assertIn("Entra OIDC", decision)
+        self.assertIn("private-network boundary", decision)
 
     def test_live_monitoring_has_log_source_and_auto_resolution(self):
         self.assertIn("param deployMonitoringAlerts bool = false", self.source)

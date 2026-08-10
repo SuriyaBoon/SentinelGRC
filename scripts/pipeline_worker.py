@@ -37,6 +37,13 @@ class WorkerRunOptions:
     governance_db: str | None = None
 
 
+@dataclass(frozen=True)
+class WorkerConfiguration:
+    controls: list[dict[str, Any]]
+    assets: list[dict[str, Any]]
+    access_review: dict[str, Any] | None = None
+
+
 def _configured_test_failpoint() -> str | None:
     failpoint = os.getenv("SENTINEL_FAILPOINT", "").strip()
     if not failpoint:
@@ -174,27 +181,57 @@ def process_inbox_once(
     return results
 
 
-def worker_options_from_args(args: argparse.Namespace) -> WorkerRunOptions:
+def resolve_worker_roots(args: argparse.Namespace) -> tuple[Path, Path]:
+    """Resolve declared read-only configuration and writable runtime roots once."""
+    runtime_root = Path(args.runtime_root).expanduser().resolve(strict=False)
+    config_value = args.config_root if args.config_root is not None else runtime_root
+    config_root = Path(config_value).expanduser().resolve(strict=False)
+    return config_root, runtime_root
+
+
+def load_worker_configuration(
+    args: argparse.Namespace, config_root: str | Path
+) -> WorkerConfiguration:
+    """Load every worker configuration input through one explicit boundary."""
+    controls = load_json(
+        args.controls, root=config_root, purpose="control catalogue"
+    )
+    assets = load_json(args.assets, root=config_root, purpose="asset registry")
+    access_review = (
+        load_json(
+            args.access_review,
+            root=config_root,
+            purpose="access review input",
+        )
+        if args.access_review
+        else None
+    )
+    return WorkerConfiguration(controls, assets, access_review)
+
+
+def worker_options_from_args(
+    args: argparse.Namespace, runtime_root: str | Path
+) -> WorkerRunOptions:
     return WorkerRunOptions(
         max_attempts=args.max_attempts,
         retry_delay=args.retry_delay,
         audit_path=args.audit_log,
         lease_seconds=args.lease_seconds,
-        runtime_root=args.runtime_root,
+        runtime_root=runtime_root,
         governance_db=args.governance_db,
     )
 
 
-def serve(args: argparse.Namespace) -> int:
-    controls = load_json(args.controls)
-    assets = load_json(args.assets)
-    access_review = load_json(args.access_review) if args.access_review else None
-    options = worker_options_from_args(args)
+def serve(
+    args: argparse.Namespace,
+    configuration: WorkerConfiguration,
+    options: WorkerRunOptions,
+) -> int:
     while True:
         results = process_inbox_once(
-            args.inbox, controls, assets, args.ledger, args.state_db,
-            args.remediation_dir, args.tickets_dir, args.reports_dir,
-            access_review, options,
+            args.inbox, configuration.controls, configuration.assets,
+            args.ledger, args.state_db, args.remediation_dir, args.tickets_dir,
+            args.reports_dir, configuration.access_review, options,
         )
         for result in results:
             print(json.dumps(result, separators=(",", ":")))
@@ -204,6 +241,7 @@ def serve(args: argparse.Namespace) -> int:
 def add_worker_arguments(worker: argparse.ArgumentParser, command: str) -> None:
     worker.add_argument("--inbox", default="evidence-inbox")
     worker.add_argument("--runtime-root", default=".")
+    worker.add_argument("--config-root")
     worker.add_argument("--controls", required=True)
     worker.add_argument("--assets", required=True)
     worker.add_argument("--access-review")
@@ -229,18 +267,18 @@ def main() -> int:
     serve_parser = subparsers.add_parser("serve")
     add_worker_arguments(serve_parser, "serve")
     args = parser.parse_args()
-    controls = load_json(args.controls)
-    assets = load_json(args.assets)
-    access_review = load_json(args.access_review) if args.access_review else None
+    config_root, runtime_root = resolve_worker_roots(args)
+    configuration = load_worker_configuration(args, config_root)
+    options = worker_options_from_args(args, runtime_root)
     if args.command == "once":
         results = process_inbox_once(
-            args.inbox, controls, assets, args.ledger, args.state_db,
-            args.remediation_dir, args.tickets_dir, args.reports_dir,
-            access_review, worker_options_from_args(args),
+            args.inbox, configuration.controls, configuration.assets,
+            args.ledger, args.state_db, args.remediation_dir, args.tickets_dir,
+            args.reports_dir, configuration.access_review, options,
         )
         print(json.dumps(results, indent=2))
         return 0 if all(item["status"] != "error" for item in results) else 1
-    return serve(args)
+    return serve(args, configuration, options)
 
 
 if __name__ == "__main__":
