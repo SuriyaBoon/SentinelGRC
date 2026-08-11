@@ -23,6 +23,7 @@ from audit_log import canonical_json
 
 MAX_AUDIT_EVENT_BYTES = 256 * 1024
 TRANSIENT_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+ARCHIVE_INTEGRITY_ERROR = "archived audit event failed integrity verification"
 HEX_64 = re.compile(r"^[a-f0-9]{64}$")
 EVENT_ID = re.compile(r"^[a-f0-9]{32}$")
 REQUIRED_AUDIT_EVENT_FIELDS = {
@@ -176,7 +177,7 @@ class MemoryAuditArchive:
         content, digest, object_key = serialize_event(event)
         existing = self.objects.setdefault(object_key, content)
         if not hmac.compare_digest(hashlib.sha256(existing).hexdigest(), digest):
-            raise AuditArchiveIntegrityError("archived audit event failed integrity verification")
+            raise AuditArchiveIntegrityError(ARCHIVE_INTEGRITY_ERROR)
         return ArchivedAuditObject(object_key, digest, len(content), digest)
 
     def ready(self) -> bool:
@@ -210,9 +211,7 @@ class LocalAuditArchive:
             len(stored) != len(content)
             or not hmac.compare_digest(hashlib.sha256(stored).hexdigest(), digest)
         ):
-            raise AuditArchiveIntegrityError(
-                "archived audit event failed integrity verification"
-            )
+            raise AuditArchiveIntegrityError(ARCHIVE_INTEGRITY_ERROR)
         return ArchivedAuditObject(object_key, digest, len(content), digest)
 
     def ready(self) -> bool:
@@ -326,9 +325,7 @@ class AzureBlobAuditArchive:
             or len(stored) != len(content)
             or not hmac.compare_digest(hashlib.sha256(stored).hexdigest(), digest)
         ):
-            raise AuditArchiveIntegrityError(
-                "archived audit event failed integrity verification"
-            )
+            raise AuditArchiveIntegrityError(ARCHIVE_INTEGRITY_ERROR)
         etag = str(getattr(properties, "etag", "")).strip('"')
         if not etag:
             raise AuditArchiveIntegrityError(
