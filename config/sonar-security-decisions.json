@@ -1,0 +1,66 @@
+{
+  "schema_version": "1.0.0",
+  "date_basis": "UTC",
+  "reviewed_on": "2026-08-10",
+  "review_owner": "repository-security-owner",
+  "expires_on": "2026-11-08",
+  "production_verdict": "NO_GO_PENDING_LIVE_EVIDENCE",
+  "decisions": [
+    {
+      "issue_key": "AZ_eYu98jmTxNrSpRwha",
+      "rule": "python:S5332",
+      "component": "scripts/ingestion_api.py",
+      "classification": "false_positive",
+      "sonar_transition": "falsepositive",
+      "rationale": "The scanner reports the common serve_forever call, but the server socket is wrapped by a TLS server context before that call. The only plaintext branch requires an explicit lab-only flag and a loopback host; staging and production reject that flag before creating the server.",
+      "implemented_controls": [
+        "TLS is required by default",
+        "TLS 1.2 is the configured minimum",
+        "Plaintext requires --allow-loopback-http",
+        "Plaintext is limited to SENTINEL_ENV=lab",
+        "All binds are limited to loopback addresses"
+      ],
+      "evidence_tests": [
+        "test_path_security.py",
+        "test_sonar_security_decisions.py"
+      ],
+      "revisit_when": [
+        "The server implementation or TLS wrapping changes",
+        "A non-loopback bind is introduced",
+        "The lab plaintext exception is broadened"
+      ],
+      "sonar_comment": "Reviewed false positive: the flagged serve_forever call uses a TLS-wrapped socket. Cleartext requires an explicit lab-only flag and remains loopback-only; staging and production fail closed. Evidence is enforced by test_sonar_security_decisions.py and the ingestion security tests."
+    },
+    {
+      "issue_key": "AZ_eYu_yjmTxNrSpRwia",
+      "rule": "azureresourcemanager:S6382",
+      "component": "infra/azure/main.bicep",
+      "classification": "accepted",
+      "sonar_transition": "accept",
+      "rationale": "Container Apps client certificates are not the system authentication boundary. The application uses internal-only ingress, encrypted transport, Entra OIDC for human actors, and separate managed identities for role-isolated validation jobs. Enabling clientCertificateMode without certificate issuance, rotation, revocation, delivery, and application-side validation would be a decorative control and would break current clients.",
+      "implemented_controls": [
+        "Container App ingress is internal-only",
+        "Insecure ingress is disabled",
+        "Human authentication uses Entra OIDC",
+        "Analyst and approver validation jobs use separate managed identities",
+        "No application claim relies on an unvalidated forwarded client certificate"
+      ],
+      "evidence_tests": [
+        "test_azure_iac_policy.py",
+        "test_sonar_security_decisions.py"
+      ],
+      "required_live_evidence": [
+        "Public ingress is unavailable from an external execution point",
+        "TLS-only ingress is observed in the deployed revision",
+        "Analyst and approver role assignments remain distinct"
+      ],
+      "revisit_when": [
+        "Ingress becomes public",
+        "A non-OIDC client is introduced",
+        "An approved end-to-end mTLS certificate lifecycle is implemented",
+        "This decision reaches its expiry date"
+      ],
+      "sonar_comment": "Reviewed architecture acceptance: client certificates are not the authentication boundary. The app is internal-only with TLS, Entra OIDC, and role-isolated managed identities. A complete mTLS lifecycle is not implemented, so setting require would be decorative and would break clients. Acceptance expires 2026-11-08 UTC and live private-ingress evidence remains mandatory before a production verdict."
+    }
+  ]
+}
