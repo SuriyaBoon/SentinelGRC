@@ -6,11 +6,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from audit_archive import (
+    ARCHIVE_INTEGRITY_ERROR,
     AuditArchiveError,
     AuditArchiveIntegrityError,
     AzureBlobAuditArchive,
     LocalAuditArchive,
     MAX_AUDIT_EVENT_BYTES,
+    MemoryAuditArchive,
     serialize_event,
 )
 from audit_log import canonical_json
@@ -125,6 +127,45 @@ def rehash(value):
 
 
 class AuditArchiveTests(unittest.TestCase):
+    def test_memory_archive_preserves_content_integrity_error_contract(self):
+        archive = MemoryAuditArchive()
+        value = event()
+        stored = archive.persist_event(value)
+        archive.objects[stored.object_key] = b"tampered"
+
+        with self.assertRaises(AuditArchiveIntegrityError) as raised:
+            archive.persist_event(value)
+
+        self.assertEqual(str(raised.exception), ARCHIVE_INTEGRITY_ERROR)
+
+    def test_local_archive_preserves_content_integrity_error_contract(self):
+        with tempfile.TemporaryDirectory() as temp:
+            archive = LocalAuditArchive(temp)
+            value = event()
+            stored = archive.persist_event(value)
+            (Path(temp) / stored.object_key).write_bytes(b"tampered")
+
+            with self.assertRaises(AuditArchiveIntegrityError) as raised:
+                archive.persist_event(value)
+
+        self.assertEqual(str(raised.exception), ARCHIVE_INTEGRITY_ERROR)
+
+    def test_azure_archive_preserves_content_integrity_error_contract(self):
+        value = event()
+        content, digest, _ = serialize_event(value)
+        blob = FakeBlob()
+        blob.content = b"x" * len(content)
+        blob.metadata = {"sha256": digest, "size": str(len(content))}
+        archive = AzureBlobAuditArchive(
+            "https://account.blob.core.windows.net/audit-archive",
+            container_client=FakeContainer(blob),
+        )
+
+        with self.assertRaises(AuditArchiveIntegrityError) as raised:
+            archive.persist_event(value)
+
+        self.assertEqual(str(raised.exception), ARCHIVE_INTEGRITY_ERROR)
+
     def test_serialize_rejects_non_object_before_schema_validation(self):
         invalid_event = []
         with self.assertRaisesRegex(ValueError, "^audit event must be an object$"):
