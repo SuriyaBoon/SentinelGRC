@@ -25,6 +25,30 @@ MAX_AUDIT_EVENT_BYTES = 256 * 1024
 TRANSIENT_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 HEX_64 = re.compile(r"^[a-f0-9]{64}$")
 EVENT_ID = re.compile(r"^[a-f0-9]{32}$")
+REQUIRED_AUDIT_EVENT_FIELDS = {
+    "event_id",
+    "finding_id",
+    "event_sequence",
+    "event_type",
+    "actor_id",
+    "actor_role",
+    "auth_method",
+    "occurred_at",
+    "details",
+    "previous_hash",
+    "event_hash",
+}
+AUDIT_SCALAR_FIELDS = ("event_type", "actor_id", "actor_role", "auth_method")
+AUDIT_CHAIN_FIELDS = (
+    "finding_id",
+    "event_type",
+    "actor_id",
+    "actor_role",
+    "auth_method",
+    "occurred_at",
+    "details",
+    "previous_hash",
+)
 
 
 class AuditArchiveError(RuntimeError):
@@ -49,24 +73,17 @@ class AuditArchive(Protocol):
     def ready(self) -> bool: ...
 
 
-def serialize_event(event: dict[str, Any]) -> tuple[bytes, str, str]:
+def _validate_event_schema(event: Any) -> dict[str, Any]:
     if not isinstance(event, dict):
         raise ValueError("audit event must be an object")
-    required = {
-        "event_id",
-        "finding_id",
-        "event_sequence",
-        "event_type",
-        "actor_id",
-        "actor_role",
-        "auth_method",
-        "occurred_at",
-        "details",
-        "previous_hash",
-        "event_hash",
-    }
-    if set(event) != required:
+    if set(event) != REQUIRED_AUDIT_EVENT_FIELDS:
         raise ValueError("audit event has an invalid schema")
+    return event
+
+
+def _validate_event_identity(
+    event: dict[str, Any],
+) -> tuple[str, str, str, int]:
     event_id = event["event_id"]
     event_hash = event["event_hash"]
     finding_id = event["finding_id"]
@@ -79,10 +96,17 @@ def serialize_event(event: dict[str, Any]) -> tuple[bytes, str, str]:
         raise ValueError("audit finding_id is invalid")
     if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1:
         raise ValueError("audit event_sequence is invalid")
-    for name in ("event_type", "actor_id", "actor_role", "auth_method"):
+    return event_id, event_hash, finding_id, sequence
+
+
+def _validate_scalar_fields(event: dict[str, Any]) -> None:
+    for name in AUDIT_SCALAR_FIELDS:
         value = event[name]
         if not isinstance(value, str) or not value.strip() or len(value) > 128:
             raise ValueError(f"audit {name} is invalid")
+
+
+def _validate_payload_fields(event: dict[str, Any]) -> str:
     if not isinstance(event["details"], dict):
         raise ValueError("audit details must be an object")
     if not isinstance(event["occurred_at"], (int, float)) or isinstance(
@@ -94,19 +118,13 @@ def serialize_event(event: dict[str, Any]) -> tuple[bytes, str, str]:
         not isinstance(previous_hash, str) or not HEX_64.fullmatch(previous_hash)
     ):
         raise ValueError("audit previous_hash is invalid")
-    chain_body = {
-        key: event[key]
-        for key in (
-            "finding_id",
-            "event_type",
-            "actor_id",
-            "actor_role",
-            "auth_method",
-            "occurred_at",
-            "details",
-            "previous_hash",
-        )
-    }
+    return previous_hash
+
+
+def _verify_chain_hash(
+    event: dict[str, Any], previous_hash: str, event_hash: str
+) -> None:
+    chain_body = {key: event[key] for key in AUDIT_CHAIN_FIELDS}
     expected_event_hash = hashlib.sha256(
         (
             previous_hash
@@ -115,15 +133,36 @@ def serialize_event(event: dict[str, Any]) -> tuple[bytes, str, str]:
     ).hexdigest()
     if not hmac.compare_digest(expected_event_hash, event_hash):
         raise AuditArchiveIntegrityError("audit event chain hash is invalid")
+
+
+def _serialize_content(event: dict[str, Any]) -> tuple[bytes, str]:
     content = canonical_json(event).encode("utf-8")
     if not content or len(content) > MAX_AUDIT_EVENT_BYTES:
         raise ValueError("audit event exceeds the size limit")
     digest = hashlib.sha256(content).hexdigest()
+    return content, digest
+
+
+def _build_object_key(
+    finding_id: str, sequence: int, event_id: str, event_hash: str
+) -> str:
     finding_digest = hashlib.sha256(finding_id.encode("utf-8")).hexdigest()
-    object_key = (
+    return (
         f"events/{finding_digest[:2]}/{finding_digest}/"
         f"{sequence:020d}-{event_id}-{event_hash}.json"
     )
+
+
+def serialize_event(event: dict[str, Any]) -> tuple[bytes, str, str]:
+    validated_event = _validate_event_schema(event)
+    event_id, event_hash, finding_id, sequence = _validate_event_identity(
+        validated_event
+    )
+    _validate_scalar_fields(validated_event)
+    previous_hash = _validate_payload_fields(validated_event)
+    _verify_chain_hash(validated_event, previous_hash, event_hash)
+    content, digest = _serialize_content(validated_event)
+    object_key = _build_object_key(finding_id, sequence, event_id, event_hash)
     return content, digest, object_key
 
 
