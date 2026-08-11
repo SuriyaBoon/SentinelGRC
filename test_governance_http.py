@@ -55,6 +55,39 @@ class GovernanceHttpTests(unittest.TestCase):
         status, _ = self.app.handle("POST", "/v1/governance/report", {}, b"{}")
         self.assertEqual(status, 401)
 
+    def test_route_and_json_error_precedence_is_preserved(self):
+        self.assertEqual(
+            self.app.handle("PUT", "/wrong", {}, b"")[1],
+            {"error": "missing_bearer_token"},
+        )
+        headers = {
+            "X-API-Key-ID": "alice-v1",
+            "Authorization": f"Bearer {self.secret}",
+        }
+        self.assertEqual(
+            self.app.handle("POST", "/findings/F/extra/action", headers, b"{"),
+            (404, {"error": "not_found"}),
+        )
+
+        class RejectingVerifier:
+            def verify(self, token):
+                raise AuthenticationError("invalid bearer token")
+
+        oidc_app = GovernanceHttpApplication(
+            self.app.api,
+            authentication_mode="oidc",
+            oidc_verifier=RejectingVerifier(),
+        )
+        self.assertEqual(
+            oidc_app.handle(
+                "POST",
+                "/v1/governance/create",
+                {"Authorization": "Bearer invalid"},
+                b"{",
+            ),
+            (400, {"error": "invalid_json"}),
+        )
+
     def test_invalid_json_and_oversized_requests_are_rejected(self):
         headers = {"X-API-Key-ID": "alice-v1", "Authorization": f"Bearer {self.secret}"}
         status, result = self.app.handle(

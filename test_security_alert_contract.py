@@ -60,6 +60,33 @@ class SecurityAlertContractTests(unittest.TestCase):
             with self.subTest(payload=payload), self.assertRaises(ValueError):
                 normalize_security_alert_v1(payload)
 
+    def test_contract_validation_order_is_stable(self):
+        payload = alert()
+        payload["approved_by"] = "caller-controlled"
+        del payload["asset_id"]
+        payload["schema_version"] = "unsupported"
+        with self.assertRaisesRegex(
+            ValueError,
+            "^security alert contains unknown fields: approved_by$",
+        ):
+            normalize_security_alert_v1(payload)
+
+        del payload["approved_by"]
+        with self.assertRaisesRegex(
+            ValueError,
+            "^security alert missing fields: asset_id$",
+        ):
+            normalize_security_alert_v1(payload)
+
+        payload = alert()
+        payload["source"] = "invalid source"
+        payload["kind"] = "unsupported"
+        with self.assertRaisesRegex(
+            ValueError,
+            "^security alert source is invalid$",
+        ):
+            normalize_security_alert_v1(payload)
+
     def test_contract_requires_timezone_ip_and_approved_evidence_reference(self):
         for field, value in (
             ("observed_at", "2026-07-03T02:14:25"),
