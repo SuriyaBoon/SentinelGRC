@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+POSTGRESQL_PSYCOPG_SCHEME = "postgresql+psycopg://"
+POSTGRESQL_SCHEME = "postgresql://"
+
 
 class DatabaseIntegrityError(RuntimeError):
     """A backend-neutral uniqueness or foreign-key violation."""
@@ -31,8 +34,10 @@ def sqlite_path(database_url: str) -> str:
 
 
 def normalize_postgres_url(database_url: str) -> str:
-    if database_url.startswith("postgresql+psycopg://"):
-        return "postgresql://" + database_url.removeprefix("postgresql+psycopg://")
+    if database_url.startswith(POSTGRESQL_PSYCOPG_SCHEME):
+        return POSTGRESQL_SCHEME + database_url.removeprefix(
+            POSTGRESQL_PSYCOPG_SCHEME
+        )
     return database_url
 
 
@@ -98,7 +103,7 @@ class Database:
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
             self.integrity_errors = (sqlite3.IntegrityError,)
             return
-        if database_url.startswith(("postgresql://", "postgresql+psycopg://")):
+        if database_url.startswith((POSTGRESQL_SCHEME, POSTGRESQL_PSYCOPG_SCHEME)):
             self.dialect = "postgresql"
             self.path = None
             try:

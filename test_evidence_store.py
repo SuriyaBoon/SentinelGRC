@@ -10,6 +10,7 @@ from evidence_store import (
     EvidenceStoreError,
     LocalEvidenceStore,
     MAX_EVIDENCE_BYTES,
+    MemoryEvidenceStore,
 )
 from governance_core import ActorContext, GovernanceCore
 
@@ -73,6 +74,16 @@ class FakeContainer:
 
 
 class EvidenceStoreTests(unittest.TestCase):
+    def test_memory_store_detects_existing_object_corruption_with_stable_error(self):
+        store = MemoryEvidenceStore()
+        stored = store.persist(b"original")
+        store.objects[stored.object_key] = b"tampered"
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "^stored evidence failed integrity verification$",
+        ):
+            store.persist(b"original")
+
     def test_local_store_is_content_addressed_create_only_and_bounded(self):
         with tempfile.TemporaryDirectory() as temp:
             store = LocalEvidenceStore(temp)
@@ -91,7 +102,10 @@ class EvidenceStoreTests(unittest.TestCase):
             store = LocalEvidenceStore(temp)
             stored = store.persist(b"original")
             (Path(temp) / stored.object_key).write_bytes(b"tampered")
-            with self.assertRaises(EvidenceIntegrityError):
+            with self.assertRaisesRegex(
+                EvidenceIntegrityError,
+                "^stored evidence failed integrity verification$",
+            ):
                 store.persist(b"original")
 
     def test_azure_store_uses_server_key_and_verifies_replay(self):
@@ -148,7 +162,7 @@ class EvidenceStoreTests(unittest.TestCase):
                 "https://account.blob.core.windows.net/evidence"
             )
         blob = FakeBlob()
-        blob.content = b"wrong"
+        blob.content = b"tampered"
         blob.metadata = {
             "sha256": hashlib.sha256(b"expected").hexdigest(),
             "size": str(len(b"expected")),
@@ -158,7 +172,10 @@ class EvidenceStoreTests(unittest.TestCase):
             container_client=FakeContainer(blob),
             sleep=lambda _: None,
         )
-        with self.assertRaises(EvidenceIntegrityError):
+        with self.assertRaisesRegex(
+            EvidenceIntegrityError,
+            "^stored evidence failed integrity verification$",
+        ):
             store.persist(b"expected")
         self.assertFalse(
             AzureBlobEvidenceStore(

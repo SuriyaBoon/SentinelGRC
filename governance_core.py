@@ -26,6 +26,8 @@ RISK_RATINGS = {"low", "medium", "high", "critical"}
 MAX_IDENTIFIER_LENGTH = 128
 MAX_TEXT_LENGTH = 4_096
 MAX_EVIDENCE_BYTES = 256 * 1024
+BEGIN_IMMEDIATE_SQL = "BEGIN IMMEDIATE"
+FINDING_BY_ID_SQL = "SELECT * FROM findings WHERE finding_id = ?"
 ACTIVE_STATUSES = {
     "open",
     "risk_assessed",
@@ -470,10 +472,10 @@ class GovernanceCore:
                 workflow: tuple[str, tuple[Any, ...]] | None = None) -> dict[str, Any]:
         now = self._now()
         with closing(self._connect()) as db:
-            db.execute("BEGIN IMMEDIATE")
+            db.execute(BEGIN_IMMEDIATE_SQL)
             row = db.execute(
                 self.database.for_update(
-                    "SELECT * FROM findings WHERE finding_id = ?"
+                    FINDING_BY_ID_SQL
                 ),
                 (finding_id,),
             ).fetchone()
@@ -506,7 +508,7 @@ class GovernanceCore:
         values = (finding_id, control_id, asset_id, title, risk_owner, severity, "open",
                   None, None, None, None, None, None, self._now(), self._now())
         with closing(self._connect()) as db:
-            db.execute("BEGIN IMMEDIATE")
+            db.execute(BEGIN_IMMEDIATE_SQL)
             try:
                 db.execute("INSERT INTO findings VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", values)
                 self._event(db, finding_id, "finding_created", actor, {
@@ -625,10 +627,10 @@ class GovernanceCore:
             raise RuntimeError("evidence store returned inconsistent integrity metadata")
         now = self._now()
         with closing(self._connect()) as db:
-            db.execute("BEGIN IMMEDIATE")
+            db.execute(BEGIN_IMMEDIATE_SQL)
             row = db.execute(
                 self.database.for_update(
-                    "SELECT * FROM findings WHERE finding_id = ?"
+                    FINDING_BY_ID_SQL
                 ),
                 (finding_id,),
             ).fetchone()
@@ -729,10 +731,10 @@ class GovernanceCore:
                 raise
         now = self._now()
         with closing(self._connect()) as db:
-            db.execute("BEGIN IMMEDIATE")
+            db.execute(BEGIN_IMMEDIATE_SQL)
             row = db.execute(
                 self.database.for_update(
-                    "SELECT * FROM findings WHERE finding_id = ?"
+                    FINDING_BY_ID_SQL
                 ),
                 (finding_id,),
             ).fetchone()
@@ -777,7 +779,7 @@ class GovernanceCore:
 
     def get_finding(self, finding_id: str) -> dict[str, Any]:
         with closing(self._connect()) as db:
-            row = db.execute("SELECT * FROM findings WHERE finding_id = ?", (finding_id,)).fetchone()
+            row = db.execute(FINDING_BY_ID_SQL, (finding_id,)).fetchone()
         if row is None:
             raise KeyError(f"finding {finding_id} was not found")
         return dict(row)
