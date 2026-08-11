@@ -101,7 +101,129 @@ def event(sequence=1, previous_hash="", **changes):
     return value
 
 
+def rehash(value):
+    chain_body = {
+        key: value[key]
+        for key in (
+            "finding_id",
+            "event_type",
+            "actor_id",
+            "actor_role",
+            "auth_method",
+            "occurred_at",
+            "details",
+            "previous_hash",
+        )
+    }
+    value["event_hash"] = hashlib.sha256(
+        (
+            value["previous_hash"]
+            + json.dumps(chain_body, sort_keys=True, separators=(",", ":"))
+        ).encode("utf-8")
+    ).hexdigest()
+    return value
+
+
 class AuditArchiveTests(unittest.TestCase):
+    def test_serialize_rejects_non_object_before_schema_validation(self):
+        invalid_event = []
+        with self.assertRaisesRegex(ValueError, "^audit event must be an object$"):
+            serialize_event(invalid_event)
+
+    def test_serialize_rejects_missing_and_extra_schema_keys(self):
+        missing = event()
+        missing.pop("details")
+        extra = event(extra_field="unexpected")
+        for invalid_event in (missing, extra):
+            with self.subTest(keys=sorted(invalid_event)):
+                with self.assertRaisesRegex(
+                    ValueError, "^audit event has an invalid schema$"
+                ):
+                    serialize_event(invalid_event)
+
+    def test_serialize_validates_event_id_before_event_hash(self):
+        invalid_event = event(event_id="invalid", event_hash="invalid")
+        with self.assertRaisesRegex(ValueError, "^audit event_id is invalid$"):
+            serialize_event(invalid_event)
+
+    def test_serialize_validates_event_hash_before_finding_id(self):
+        invalid_event = event(event_hash="invalid", finding_id="")
+        with self.assertRaisesRegex(ValueError, "^audit event_hash is invalid$"):
+            serialize_event(invalid_event)
+
+    def test_serialize_validates_finding_id_before_sequence(self):
+        invalid_event = event(finding_id="", event_sequence=0)
+        with self.assertRaisesRegex(ValueError, "^audit finding_id is invalid$"):
+            serialize_event(invalid_event)
+
+    def test_serialize_validates_sequence_before_scalar_fields(self):
+        invalid_event = event(event_sequence=True, event_type="")
+        with self.assertRaisesRegex(ValueError, "^audit event_sequence is invalid$"):
+            serialize_event(invalid_event)
+
+    def test_serialize_rejects_each_invalid_scalar_field(self):
+        for name in ("event_type", "actor_id", "actor_role", "auth_method"):
+            invalid_event = event(**{name: " "})
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    ValueError, f"^audit {name} is invalid$"
+                ):
+                    serialize_event(invalid_event)
+
+    def test_serialize_validates_details_before_timestamp(self):
+        invalid_event = event(details="invalid", occurred_at=True)
+        with self.assertRaisesRegex(ValueError, "^audit details must be an object$"):
+            serialize_event(invalid_event)
+
+    def test_serialize_validates_timestamp_before_previous_hash(self):
+        invalid_event = event(occurred_at=True, previous_hash="invalid")
+        with self.assertRaisesRegex(ValueError, "^audit occurred_at is invalid$"):
+            serialize_event(invalid_event)
+
+    def test_serialize_validates_previous_hash_before_chain_hash(self):
+        invalid_event = event(previous_hash="invalid", event_hash="0" * 64)
+        with self.assertRaisesRegex(ValueError, "^audit previous_hash is invalid$"):
+            serialize_event(invalid_event)
+
+    def test_serialize_reports_chain_hash_mismatch_as_integrity_error(self):
+        invalid_event = event(event_hash="0" * 64)
+        with self.assertRaisesRegex(
+            AuditArchiveIntegrityError, "^audit event chain hash is invalid$"
+        ):
+            serialize_event(invalid_event)
+
+    def test_serialize_checks_size_after_chain_integrity(self):
+        oversized = event(details={"content": "x" * MAX_AUDIT_EVENT_BYTES})
+        rehash(oversized)
+        with self.assertRaisesRegex(
+            ValueError, "^audit event exceeds the size limit$"
+        ):
+            serialize_event(oversized)
+
+    def test_serialize_output_is_deterministic_and_matches_identity(self):
+        value = event(sequence=7)
+        first = serialize_event(value)
+        second = serialize_event(value)
+        expected_content = canonical_json(value).encode("utf-8")
+        expected_digest = hashlib.sha256(expected_content).hexdigest()
+        finding_digest = hashlib.sha256(value["finding_id"].encode("utf-8")).hexdigest()
+        expected_key = (
+            f"events/{finding_digest[:2]}/{finding_digest}/"
+            f"{value['event_sequence']:020d}-{value['event_id']}-"
+            f"{value['event_hash']}.json"
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(first, (expected_content, expected_digest, expected_key))
+
+    def test_serialize_unicode_preserves_legacy_chain_hash_compatibility(self):
+        value = event(details={"reason": "\u0e22\u0e37\u0e19\u0e22\u0e31\u0e19\u0e01\u0e32\u0e23\u0e04\u0e27\u0e1a\u0e04\u0e38\u0e21"})
+        rehash(value)
+        content, digest, object_key = serialize_event(value)
+        expected_content = canonical_json(value).encode("utf-8")
+        self.assertEqual(content, expected_content)
+        self.assertEqual(digest, hashlib.sha256(expected_content).hexdigest())
+        self.assertTrue(object_key.endswith(f"-{value['event_hash']}.json"))
+
     def test_local_archive_is_ordered_create_only_and_replay_safe(self):
         with tempfile.TemporaryDirectory() as temp:
             archive = LocalAuditArchive(temp)
