@@ -15,16 +15,10 @@ def _finding_id(source: str) -> str:
     return "SEC-" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:16].upper()
 
 
-def build_security_findings(
-    posture: dict[str, Any],
-    access_review: dict[str, Any] | None = None,
-    vulnerabilities: list[dict[str, Any]] | None = None,
-    exposures: list[dict[str, Any]] | None = None,
+def _posture_findings(
+    posture: dict[str, Any], asset_id: str, owner: str, severity: str
 ) -> list[dict[str, Any]]:
-    findings: list[dict[str, Any]] = []
-    asset_id = str(posture.get("asset_id", "unknown"))
-    owner = str(posture.get("owner") or "Security Operations")
-    severity = str(posture.get("criticality") or "medium")
+    findings = []
     for check in posture.get("checks", []):
         if check.get("passed") is False:
             source = f"posture:{asset_id}:{check.get('name')}"
@@ -39,11 +33,18 @@ def build_security_findings(
                 "severity": severity,
                 "details": {"value": check.get("value"), "error": check.get("error")},
             })
+    return findings
 
-    for user in (access_review or {}).get("users", []):
+
+def _access_review_findings(
+    access_review: dict[str, Any] | None, asset_id: str
+) -> list[dict[str, Any]]:
+    findings = []
+    review = access_review or {}
+    for user in review.get("users", []):
         if user.get("stale") and (user.get("enabled") or user.get("privileged")):
             account = str(user.get("sam_account_name", "unknown"))
-            source = f"ad-access:{account}:{(access_review or {}).get('reviewed_at')}"
+            source = f"ad-access:{account}:{review.get('reviewed_at')}"
             findings.append({
                 "finding_id": _finding_id(source),
                 "domain": "security",
@@ -55,7 +56,13 @@ def build_security_findings(
                 "severity": "critical" if user.get("privileged") else "high",
                 "details": {"enabled": bool(user.get("enabled")), "privileged": bool(user.get("privileged"))},
             })
+    return findings
 
+
+def _vulnerability_findings(
+    vulnerabilities: list[dict[str, Any]] | None, asset_id: str, owner: str
+) -> list[dict[str, Any]]:
+    findings = []
     for item in vulnerabilities or []:
         if item.get("status", "open") == "open":
             source = f"vulnerability:{asset_id}:{item.get('id')}"
@@ -70,7 +77,13 @@ def build_security_findings(
                 "severity": str(item.get("severity") or "high"),
                 "details": {"cve": item.get("cve"), "cvss": item.get("cvss")},
             })
+    return findings
 
+
+def _exposure_findings(
+    exposures: list[dict[str, Any]] | None, asset_id: str, owner: str
+) -> list[dict[str, Any]]:
+    findings = []
     for item in exposures or []:
         if item.get("exposed") is True:
             source = f"exposure:{asset_id}:{item.get('id')}"
@@ -85,4 +98,20 @@ def build_security_findings(
                 "severity": str(item.get("severity") or "high"),
                 "details": {"endpoint": item.get("endpoint"), "port": item.get("port")},
             })
+    return findings
+
+
+def build_security_findings(
+    posture: dict[str, Any],
+    access_review: dict[str, Any] | None = None,
+    vulnerabilities: list[dict[str, Any]] | None = None,
+    exposures: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    asset_id = str(posture.get("asset_id", "unknown"))
+    owner = str(posture.get("owner") or "Security Operations")
+    severity = str(posture.get("criticality") or "medium")
+    findings = _posture_findings(posture, asset_id, owner, severity)
+    findings.extend(_access_review_findings(access_review, asset_id))
+    findings.extend(_vulnerability_findings(vulnerabilities, asset_id, owner))
+    findings.extend(_exposure_findings(exposures, asset_id, owner))
     return findings

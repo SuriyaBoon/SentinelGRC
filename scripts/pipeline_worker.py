@@ -44,6 +44,29 @@ class WorkerConfiguration:
     access_review: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class _WorkerPaths:
+    inbox: Path
+    storage_root: Path
+    ledger: str
+    state_db: str
+    remediation_dir: str
+    tickets_dir: str
+    reports_dir: str
+    audit_path: str | None
+    governance_db: str | None
+
+
+@dataclass(frozen=True)
+class _WorkerJobContext:
+    controls: list[dict[str, Any]]
+    assets: list[dict[str, Any]]
+    access_review: dict[str, Any] | None
+    options: WorkerRunOptions
+    paths: _WorkerPaths
+    failpoint: str | None
+
+
 def _configured_test_failpoint() -> str | None:
     failpoint = os.getenv("SENTINEL_FAILPOINT", "").strip()
     if not failpoint:
@@ -85,29 +108,30 @@ def _validated_inbox_item(value: str | Path, inbox: Path) -> Path:
     return path
 
 
-def process_inbox_once(
-    inbox: str, controls: list[dict[str, Any]], assets: list[dict[str, Any]],
-    ledger: str, state_db: str, remediation_dir: str, tickets_dir: str,
-    reports_dir: str, access_review: dict[str, Any] | None = None,
-    options: WorkerRunOptions | None = None,
-) -> list[dict[str, Any]]:
-    options = options or WorkerRunOptions()
-    failpoint = _configured_test_failpoint()
+def _resolve_process_paths(
+    inbox: str,
+    ledger: str,
+    state_db: str,
+    remediation_dir: str,
+    tickets_dir: str,
+    reports_dir: str,
+    options: WorkerRunOptions,
+) -> _WorkerPaths:
     inbox_path = Path(inbox).expanduser().resolve(strict=False)
     storage_root = (
         Path(options.runtime_root).expanduser().resolve(strict=False)
         if options.runtime_root is not None
         else inbox_path.parent
     )
-    ledger = str(resolve_under_root(ledger, storage_root, purpose="ledger path"))
-    state_db = str(resolve_under_root(state_db, storage_root, purpose="state database path"))
-    remediation_dir = str(resolve_worker_output_directory(
+    resolved_ledger = str(resolve_under_root(ledger, storage_root, purpose="ledger path"))
+    resolved_state_db = str(resolve_under_root(state_db, storage_root, purpose="state database path"))
+    resolved_remediation = str(resolve_worker_output_directory(
         remediation_dir, storage_root, "remediation", purpose="remediation directory"
     ))
-    tickets_dir = str(resolve_worker_output_directory(
+    resolved_tickets = str(resolve_worker_output_directory(
         tickets_dir, storage_root, "tickets", purpose="tickets directory"
     ))
-    reports_dir = str(resolve_worker_output_directory(
+    resolved_reports = str(resolve_worker_output_directory(
         reports_dir, storage_root, "reports", purpose="reports directory"
     ))
     audit_path = options.audit_path
@@ -118,66 +142,108 @@ def process_inbox_once(
         governance_db = str(resolve_under_root(
             governance_db, storage_root, purpose="governance database path"
         ))
-    inbox_path.mkdir(parents=True, exist_ok=True)
-    inbox_items = sorted(inbox_path.glob("*.json"))
-    for posture_path in inbox_items:
-        _validated_inbox_item(posture_path, inbox_path)
-    queue = SQLiteJobQueue(state_db)
+    return _WorkerPaths(
+        inbox_path, storage_root, resolved_ledger, resolved_state_db,
+        resolved_remediation, resolved_tickets, resolved_reports,
+        audit_path, governance_db,
+    )
+
+
+def _enqueue_inbox_items(queue: SQLiteJobQueue, inbox_items: list[Path]) -> None:
     for posture_path in inbox_items:
         queue.enqueue(str(posture_path))
+
+
+def _process_claimed_job(
+    queue: SQLiteJobQueue,
+    job: dict[str, Any],
+    worker_id: str,
+    context: _WorkerJobContext,
+) -> dict[str, Any]:
+    try:
+        posture_path = _validated_inbox_item(job["payload_path"], context.paths.inbox)
+    except (TypeError, ValueError) as error:
+        status = queue.fail(
+            int(job["job_id"]), worker_id, str(error),
+            max_attempts=1, retry_delay=0,
+        )
+        return {
+            "file": str(job["payload_path"]),
+            "status": "error",
+            "queue_status": status,
+            "error": str(error),
+        }
+
+    stop = threading.Event()
+    heartbeat_thread = threading.Thread(
+        target=_renew_lease_until_stopped,
+        args=(queue, stop, int(job["job_id"]), worker_id, context.options.lease_seconds),
+        daemon=True,
+    )
+    heartbeat_thread.start()
+    try:
+        posture = json.loads(posture_path.read_text(encoding="utf-8"))
+        stem = posture_path.stem
+        result = pipeline.run_pipeline(
+            posture, context.controls, context.assets, context.paths.ledger,
+            str(Path(context.paths.remediation_dir) / f"{stem}.json"),
+            str(Path(context.paths.tickets_dir) / f"{stem}.json"),
+            str(Path(context.paths.reports_dir) / f"{stem}.json"),
+            context.paths.state_db, context.access_review,
+            audit_path=context.paths.audit_path,
+            governance_db=context.paths.governance_db,
+            options=pipeline.PipelineRunOptions(
+                run_lease_seconds=context.options.lease_seconds,
+                runtime_root=context.paths.storage_root,
+            ),
+        )
+        _trigger_test_failpoint(context.failpoint, FAILPOINT_AFTER_PIPELINE_COMMIT)
+        if not queue.complete(int(job["job_id"]), worker_id):
+            return {"file": str(posture_path), "status": "lease_lost"}
+        return {"file": str(posture_path), **result}
+    except Exception as error:
+        status = queue.fail(
+            int(job["job_id"]), worker_id, str(error),
+            context.options.max_attempts, context.options.retry_delay,
+        )
+        return {
+            "file": str(posture_path),
+            "status": "error",
+            "queue_status": status,
+            "error": str(error),
+        }
+    finally:
+        stop.set()
+        heartbeat_thread.join(timeout=2)
+
+
+def process_inbox_once(
+    inbox: str, controls: list[dict[str, Any]], assets: list[dict[str, Any]],
+    ledger: str, state_db: str, remediation_dir: str, tickets_dir: str,
+    reports_dir: str, access_review: dict[str, Any] | None = None,
+    options: WorkerRunOptions | None = None,
+) -> list[dict[str, Any]]:
+    options = options or WorkerRunOptions()
+    failpoint = _configured_test_failpoint()
+    paths = _resolve_process_paths(
+        inbox, ledger, state_db, remediation_dir, tickets_dir, reports_dir, options,
+    )
+    paths.inbox.mkdir(parents=True, exist_ok=True)
+    inbox_items = sorted(paths.inbox.glob("*.json"))
+    for posture_path in inbox_items:
+        _validated_inbox_item(posture_path, paths.inbox)
+    queue = SQLiteJobQueue(paths.state_db)
+    _enqueue_inbox_items(queue, inbox_items)
     results: list[dict[str, Any]] = []
     worker_id = "worker-" + secrets.token_hex(6)
+    context = _WorkerJobContext(
+        controls, assets, access_review, options, paths, failpoint,
+    )
     while True:
         job = queue.claim(worker_id, lease_seconds=options.lease_seconds)
         if job is None:
             break
-        try:
-            posture_path = _validated_inbox_item(job["payload_path"], inbox_path)
-        except (TypeError, ValueError) as error:
-            status = queue.fail(
-                int(job["job_id"]), worker_id, str(error),
-                max_attempts=1, retry_delay=0,
-            )
-            results.append({
-                "file": str(job["payload_path"]),
-                "status": "error",
-                "queue_status": status,
-                "error": str(error),
-            })
-            continue
-        stop = threading.Event()
-        heartbeat_thread = threading.Thread(
-            target=_renew_lease_until_stopped,
-            args=(queue, stop, int(job["job_id"]), worker_id, options.lease_seconds),
-            daemon=True,
-        )
-        heartbeat_thread.start()
-        try:
-            posture = json.loads(posture_path.read_text(encoding="utf-8"))
-            stem = posture_path.stem
-            result = pipeline.run_pipeline(
-                posture, controls, assets, ledger,
-                str(Path(remediation_dir) / f"{stem}.json"),
-                str(Path(tickets_dir) / f"{stem}.json"),
-                str(Path(reports_dir) / f"{stem}.json"),
-                state_db, access_review, audit_path=audit_path,
-                governance_db=governance_db,
-                options=pipeline.PipelineRunOptions(
-                    run_lease_seconds=options.lease_seconds,
-                    runtime_root=storage_root,
-                ),
-            )
-            _trigger_test_failpoint(failpoint, FAILPOINT_AFTER_PIPELINE_COMMIT)
-            if not queue.complete(int(job["job_id"]), worker_id):
-                results.append({"file": str(posture_path), "status": "lease_lost"})
-            else:
-                results.append({"file": str(posture_path), **result})
-        except Exception as error:
-            status = queue.fail(int(job["job_id"]), worker_id, str(error), options.max_attempts, options.retry_delay)
-            results.append({"file": str(posture_path), "status": "error", "queue_status": status, "error": str(error)})
-        finally:
-            stop.set()
-            heartbeat_thread.join(timeout=2)
+        results.append(_process_claimed_job(queue, job, worker_id, context))
     return results
 
 

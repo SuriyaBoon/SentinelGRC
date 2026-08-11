@@ -48,7 +48,7 @@ def build_worker(settings: Settings, worker_id: str) -> OutboxWorker:
     return OutboxWorker(GovernanceOutboxQueue(database), publisher, worker_id)
 
 
-def main(argv: list[str] | None = None) -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--max-items", type=int, default=100)
     parser.add_argument("--worker-id", default=f"outbox-{uuid.uuid4().hex[:12]}")
@@ -56,34 +56,48 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-forever", action="store_true")
     parser.add_argument("--requeue-outbox")
     parser.add_argument("--confirm", default="")
-    args = parser.parse_args(argv)
+    return parser
+
+
+def _validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if not 1 <= args.max_items <= 10_000:
         parser.error("--max-items must be between 1 and 10000")
     if not 0.1 <= args.poll_seconds <= 60:
         parser.error("--poll-seconds must be between 0.1 and 60")
+
+
+def _run_worker(args: argparse.Namespace, worker: OutboxWorker) -> int:
+    if args.requeue_outbox:
+        changed = worker.queue.requeue_dead(args.requeue_outbox, args.confirm)
+        print(json.dumps({"requeued": changed}, sort_keys=True))
+        return 0 if changed else 1
+
+    counts = {"delivered": 0, "empty": 0, "retry": 0, "dead": 0, "stale": 0}
+    while True:
+        result = worker.run_once()
+        counts[result] += 1
+        if result == "empty":
+            if not args.run_forever:
+                break
+            time.sleep(args.poll_seconds)
+        elif result in {"retry", "dead", "stale"}:
+            print(json.dumps(counts, sort_keys=True), file=sys.stderr)
+            if not args.run_forever:
+                return 1
+            time.sleep(args.poll_seconds)
+        if not args.run_forever and sum(counts.values()) >= args.max_items:
+            break
+    print(json.dumps(counts, sort_keys=True))
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    _validate_args(args, parser)
     try:
         worker = build_worker(Settings.from_env(), args.worker_id)
-        if args.requeue_outbox:
-            changed = worker.queue.requeue_dead(args.requeue_outbox, args.confirm)
-            print(json.dumps({"requeued": changed}, sort_keys=True))
-            return 0 if changed else 1
-        counts = {"delivered": 0, "empty": 0, "retry": 0, "dead": 0, "stale": 0}
-        while True:
-            result = worker.run_once()
-            counts[result] += 1
-            if result == "empty":
-                if not args.run_forever:
-                    break
-                time.sleep(args.poll_seconds)
-            elif result in {"retry", "dead", "stale"}:
-                print(json.dumps(counts, sort_keys=True), file=sys.stderr)
-                if not args.run_forever:
-                    return 1
-                time.sleep(args.poll_seconds)
-            if not args.run_forever and sum(counts.values()) >= args.max_items:
-                break
-        print(json.dumps(counts, sort_keys=True))
-        return 0
+        return _run_worker(args, worker)
     except (RuntimeError, ValueError, PermissionError) as error:
         print(json.dumps({"error": str(error)}, sort_keys=True), file=sys.stderr)
         return 2
