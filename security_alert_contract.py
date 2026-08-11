@@ -93,11 +93,7 @@ def _evidence_refs(value: Any) -> list[str]:
     return references
 
 
-def normalize_security_alert_v1(alert: dict[str, Any]) -> dict[str, Any]:
-    """Validate one canonical alert and convert it to a governance finding."""
-
-    if not isinstance(alert, dict):
-        raise ValueError("security alert must be an object")
+def _validate_alert_shape(alert: dict[str, Any]) -> None:
     unknown = sorted(set(alert) - ALLOWED_FIELDS)
     missing = sorted(REQUIRED_FIELDS - set(alert))
     if unknown:
@@ -107,6 +103,10 @@ def normalize_security_alert_v1(alert: dict[str, Any]) -> dict[str, Any]:
     if alert.get("schema_version") != SCHEMA_VERSION:
         raise ValueError(f"security alert schema_version must be {SCHEMA_VERSION}")
 
+
+def _required_alert_fields(
+    alert: dict[str, Any],
+) -> tuple[str, str, str, str, str]:
     source = _required_text(alert, "source", 64).lower()
     source_event_id = _required_text(alert, "source_event_id", 128)
     asset_id = _required_text(alert, "asset_id", 128)
@@ -120,7 +120,12 @@ def normalize_security_alert_v1(alert: dict[str, Any]) -> dict[str, Any]:
     ):
         if IDENTIFIER.fullmatch(value) is None:
             raise ValueError(f"security alert {name} is invalid")
+    return source, source_event_id, asset_id, title, risk_owner
 
+
+def _event_fields(
+    alert: dict[str, Any],
+) -> tuple[str, str, Any, str, list[str]]:
     kind = _required_text(alert, "kind", 64).lower()
     severity = _required_text(alert, "severity", 16).lower()
     if kind not in CONTROL_BY_KIND:
@@ -132,7 +137,10 @@ def normalize_security_alert_v1(alert: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("security alert event_code does not match kind")
     observed_at = _timestamp(alert.get("observed_at"))
     references = _evidence_refs(alert.get("evidence_refs"))
+    return kind, severity, event_code, observed_at, references
 
+
+def _optional_context(alert: dict[str, Any]) -> tuple[str | None, str | None]:
     source_ip = alert.get("source_ip")
     if source_ip is not None:
         if not isinstance(source_ip, str):
@@ -148,6 +156,23 @@ def normalize_security_alert_v1(alert: dict[str, Any]) -> dict[str, Any]:
         or len(target_user.strip()) > 256
     ):
         raise ValueError("security alert target_user is invalid")
+    normalized_user = (
+        target_user.strip() if isinstance(target_user, str) else None
+    )
+    return source_ip, normalized_user
+
+
+def normalize_security_alert_v1(alert: dict[str, Any]) -> dict[str, Any]:
+    """Validate one canonical alert and convert it to a governance finding."""
+
+    if not isinstance(alert, dict):
+        raise ValueError("security alert must be an object")
+    _validate_alert_shape(alert)
+    source, source_event_id, asset_id, title, risk_owner = _required_alert_fields(
+        alert
+    )
+    kind, severity, event_code, observed_at, references = _event_fields(alert)
+    source_ip, target_user = _optional_context(alert)
 
     identity = "|".join((SCHEMA_VERSION, source, source_event_id, asset_id, kind))
     return {
@@ -166,7 +191,7 @@ def normalize_security_alert_v1(alert: dict[str, Any]) -> dict[str, Any]:
             "kind": kind,
             "event_code": event_code,
             "source_ip": source_ip,
-            "target_user": target_user.strip() if isinstance(target_user, str) else None,
+            "target_user": target_user,
             "evidence_refs": references,
         },
     }

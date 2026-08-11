@@ -126,8 +126,7 @@ class Settings:
             require_tls=_read_bool("SENTINEL_REQUIRE_TLS"),
         )
 
-    def validate(self) -> list[str]:
-        errors: list[str] = []
+    def _append_base_errors(self, errors: list[str]) -> None:
         if self.environment not in {"lab", "staging", "production"}:
             errors.append("SENTINEL_ENV must be lab, staging, or production")
         if not self.database_url:
@@ -140,52 +139,57 @@ class Settings:
             errors.append("SENTINEL_AUDIT_DIR is required")
         if not self.outbox_dir:
             errors.append("SENTINEL_OUTBOX_DIR is required")
+
+    def _append_service_bus_errors(self, errors: list[str]) -> None:
+        namespace_pattern = (
+            r"[a-z0-9][a-z0-9-]{4,48}[a-z0-9]\.servicebus\.windows\.net"
+        )
+        if re.fullmatch(namespace_pattern, self.service_bus_namespace) is None:
+            errors.append(
+                f"{self.environment} requires a valid "
+                "SENTINEL_SERVICE_BUS_NAMESPACE"
+            )
+        queue_pattern = r"[A-Za-z0-9][A-Za-z0-9._/-]{0,259}"
+        if (
+            re.fullmatch(queue_pattern, self.service_bus_queue) is None
+            or "//" in self.service_bus_queue
+        ):
+            errors.append(
+                f"{self.environment} requires a valid SENTINEL_SERVICE_BUS_QUEUE"
+            )
+
+    def _append_external_control_errors(self, errors: list[str]) -> None:
+        if not self.oidc_issuer:
+            errors.append(f"{self.environment} requires SENTINEL_OIDC_ISSUER")
+        if not self.oidc_audience:
+            errors.append(f"{self.environment} requires SENTINEL_OIDC_AUDIENCE")
+        if not self.oidc_tenant_id:
+            errors.append(f"{self.environment} requires SENTINEL_OIDC_TENANT_ID")
+        if not self.oidc_jwks_url:
+            errors.append(f"{self.environment} requires SENTINEL_OIDC_JWKS_URL")
+        if not self.evidence_store_url:
+            errors.append(f"{self.environment} requires SENTINEL_EVIDENCE_STORE_URL")
+        if not self.audit_archive_url:
+            errors.append(f"{self.environment} requires SENTINEL_AUDIT_ARCHIVE_URL")
+        if not self.azure_managed_identity_client_id:
+            errors.append(f"{self.environment} requires SENTINEL_AZURE_CLIENT_ID")
+        self._append_service_bus_errors(errors)
+
+    def _append_production_errors(self, errors: list[str]) -> None:
+        if not self.database_url.startswith(POSTGRESQL_SCHEMES):
+            errors.append("production requires PostgreSQL")
+        if not self.identity_database_url.startswith(POSTGRESQL_SCHEMES):
+            errors.append("production identity storage requires PostgreSQL")
+        if not self.require_tls:
+            errors.append("production requires SENTINEL_REQUIRE_TLS=true")
+
+    def validate(self) -> list[str]:
+        errors: list[str] = []
+        self._append_base_errors(errors)
         if self.environment in {"staging", "production"}:
-            if not self.oidc_issuer:
-                errors.append(f"{self.environment} requires SENTINEL_OIDC_ISSUER")
-            if not self.oidc_audience:
-                errors.append(f"{self.environment} requires SENTINEL_OIDC_AUDIENCE")
-            if not self.oidc_tenant_id:
-                errors.append(f"{self.environment} requires SENTINEL_OIDC_TENANT_ID")
-            if not self.oidc_jwks_url:
-                errors.append(f"{self.environment} requires SENTINEL_OIDC_JWKS_URL")
-            if not self.evidence_store_url:
-                errors.append(
-                    f"{self.environment} requires SENTINEL_EVIDENCE_STORE_URL"
-                )
-            if not self.audit_archive_url:
-                errors.append(
-                    f"{self.environment} requires SENTINEL_AUDIT_ARCHIVE_URL"
-                )
-            if not self.azure_managed_identity_client_id:
-                errors.append(
-                    f"{self.environment} requires SENTINEL_AZURE_CLIENT_ID"
-                )
-            if re.fullmatch(
-                r"[a-z0-9][a-z0-9-]{4,48}[a-z0-9]\.servicebus\.windows\.net",
-                self.service_bus_namespace,
-            ) is None:
-                errors.append(
-                    f"{self.environment} requires a valid "
-                    "SENTINEL_SERVICE_BUS_NAMESPACE"
-                )
-            if (
-                re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,259}", self.service_bus_queue)
-                is None
-                or "//" in self.service_bus_queue
-            ):
-                errors.append(
-                    f"{self.environment} requires a valid SENTINEL_SERVICE_BUS_QUEUE"
-                )
+            self._append_external_control_errors(errors)
         if self.environment == "production":
-            if not self.database_url.startswith(POSTGRESQL_SCHEMES):
-                errors.append("production requires PostgreSQL")
-            if not self.identity_database_url.startswith(
-                POSTGRESQL_SCHEMES
-            ):
-                errors.append("production identity storage requires PostgreSQL")
-            if not self.require_tls:
-                errors.append("production requires SENTINEL_REQUIRE_TLS=true")
+            self._append_production_errors(errors)
         return errors
 
     def validate_outbox_worker(self) -> list[str]:
@@ -205,22 +209,7 @@ class Settings:
                 errors.append(
                     f"{self.environment} requires SENTINEL_AZURE_CLIENT_ID"
                 )
-            if re.fullmatch(
-                r"[a-z0-9][a-z0-9-]{4,48}[a-z0-9]\.servicebus\.windows\.net",
-                self.service_bus_namespace,
-            ) is None:
-                errors.append(
-                    f"{self.environment} requires a valid "
-                    "SENTINEL_SERVICE_BUS_NAMESPACE"
-                )
-            if (
-                re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,259}", self.service_bus_queue)
-                is None
-                or "//" in self.service_bus_queue
-            ):
-                errors.append(
-                    f"{self.environment} requires a valid SENTINEL_SERVICE_BUS_QUEUE"
-                )
+            self._append_service_bus_errors(errors)
         return errors
 
 

@@ -140,6 +140,15 @@ class RuntimeApplicationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "retention and worker delivery"):
             create_application(settings)
 
+    def test_invalid_configuration_precedes_production_startup_block(self):
+        settings = Settings(
+            environment="production",
+            database_url="",
+            identity_database_url="",
+        )
+        with self.assertRaisesRegex(RuntimeError, "^invalid Sentinel configuration:"):
+            create_application(settings)
+
     def test_environment_boolean_is_strict(self):
         with patch.dict(os.environ, {"SENTINEL_REQUIRE_TLS": "sometimes"}):
             with self.assertRaisesRegex(ValueError, "must be a boolean"):

@@ -65,6 +65,92 @@ def sqlite_path(database_url: str) -> str:
     return raw_path.lstrip("/")
 
 
+def _validate_startup(settings: Settings) -> None:
+    errors = settings.validate()
+    if errors:
+        raise RuntimeError("invalid Sentinel configuration: " + "; ".join(errors))
+    if settings.environment == "production":
+        raise RuntimeError(
+            "production startup is blocked until immutable-audit retention "
+            "and worker delivery are validated in the target environment"
+        )
+
+
+def _runtime_databases(settings: Settings) -> tuple[Database, Database]:
+    governance_database = Database(settings.database_url)
+    identity_database = (
+        governance_database
+        if settings.identity_database_url == settings.database_url
+        else Database(settings.identity_database_url)
+    )
+    return governance_database, identity_database
+
+
+def _apply_runtime_migrations(
+    governance_database: Database,
+    identity_database: Database,
+) -> None:
+    migrations = Path(__file__).parent / "migrations" / "postgresql"
+    migrated: set[int] = set()
+    for database in (governance_database, identity_database):
+        if database.dialect == "postgresql" and id(database) not in migrated:
+            PostgresMigrationRunner(database, str(migrations)).apply()
+            migrated.add(id(database))
+
+
+def _configured_evidence_store(
+    settings: Settings,
+    evidence_store: EvidenceStore | None,
+) -> EvidenceStore:
+    if evidence_store is not None:
+        return evidence_store
+    if settings.environment == "lab":
+        return LocalEvidenceStore(settings.evidence_dir)
+    return AzureBlobEvidenceStore(
+        settings.evidence_store_url,
+        managed_identity_client_id=settings.azure_managed_identity_client_id,
+    )
+
+
+def _configured_audit_archive(
+    settings: Settings,
+    audit_archive: AuditArchive | None,
+) -> AuditArchive:
+    if audit_archive is not None:
+        return audit_archive
+    if settings.environment == "lab":
+        return LocalAuditArchive(settings.audit_dir)
+    return AzureBlobAuditArchive(
+        settings.audit_archive_url,
+        managed_identity_client_id=settings.azure_managed_identity_client_id,
+    )
+
+
+def _configured_oidc_verifier(
+    settings: Settings,
+    oidc_verifier: EntraTokenVerifier | None,
+) -> EntraTokenVerifier | None:
+    if settings.environment == "lab" or oidc_verifier is not None:
+        return oidc_verifier
+    try:
+        from oidc_auth import (
+            EntraTokenVerifier as RuntimeEntraTokenVerifier,
+            OidcVerifierConfig,
+        )
+    except ModuleNotFoundError as error:
+        raise RuntimeError("staging OIDC dependencies are not installed") from error
+    return RuntimeEntraTokenVerifier(
+        OidcVerifierConfig(
+            issuer=settings.oidc_issuer,
+            audience=settings.oidc_audience,
+            tenant_id=settings.oidc_tenant_id,
+            jwks_url=settings.oidc_jwks_url,
+            role_map=settings.oidc_role_map or dict(ROLE_MAP),
+            group_role_map=settings.oidc_group_role_map,
+        )
+    )
+
+
 class SentinelRuntime:
     def __init__(
         self,
@@ -73,30 +159,16 @@ class SentinelRuntime:
         evidence_store: EvidenceStore | None = None,
         audit_archive: AuditArchive | None = None,
     ) -> None:
-        errors = settings.validate()
-        if errors:
-            raise RuntimeError("invalid Sentinel configuration: " + "; ".join(errors))
-        if settings.environment == "production":
-            raise RuntimeError(
-                "production startup is blocked until immutable-audit retention "
-                "and worker delivery are validated in the target environment"
-            )
+        _validate_startup(settings)
         self.settings = settings
-        self.governance_database = Database(settings.database_url)
-        self.identity_database = (
-            self.governance_database
-            if settings.identity_database_url == settings.database_url
-            else Database(settings.identity_database_url)
-        )
-        migrations = Path(__file__).parent / "migrations" / "postgresql"
-        migrated: set[int] = set()
-        for database in (
+        (
             self.governance_database,
             self.identity_database,
-        ):
-            if database.dialect == "postgresql" and id(database) not in migrated:
-                PostgresMigrationRunner(database, str(migrations)).apply()
-                migrated.add(id(database))
+        ) = _runtime_databases(settings)
+        _apply_runtime_migrations(
+            self.governance_database,
+            self.identity_database,
+        )
         self.governance_path = (
             self.governance_database.path
             or "postgresql"
@@ -105,47 +177,10 @@ class SentinelRuntime:
             self.identity_database.path
             or "postgresql"
         )
-        if evidence_store is None:
-            if settings.environment == "lab":
-                evidence_store = LocalEvidenceStore(settings.evidence_dir)
-            else:
-                evidence_store = AzureBlobEvidenceStore(
-                    settings.evidence_store_url,
-                    managed_identity_client_id=(
-                        settings.azure_managed_identity_client_id
-                    ),
-                )
-        self.evidence_store = evidence_store
-        if audit_archive is None:
-            if settings.environment == "lab":
-                audit_archive = LocalAuditArchive(settings.audit_dir)
-            else:
-                audit_archive = AzureBlobAuditArchive(
-                    settings.audit_archive_url,
-                    managed_identity_client_id=(
-                        settings.azure_managed_identity_client_id
-                    ),
-                )
-        self.audit_archive = audit_archive
+        self.evidence_store = _configured_evidence_store(settings, evidence_store)
+        self.audit_archive = _configured_audit_archive(settings, audit_archive)
         self.outbox_queue = GovernanceOutboxQueue(self.governance_database)
-        if settings.environment != "lab" and oidc_verifier is None:
-            try:
-                from oidc_auth import EntraTokenVerifier, OidcVerifierConfig
-            except ModuleNotFoundError as error:
-                raise RuntimeError(
-                    "staging OIDC dependencies are not installed"
-                ) from error
-            oidc_verifier = EntraTokenVerifier(
-                OidcVerifierConfig(
-                    issuer=settings.oidc_issuer,
-                    audience=settings.oidc_audience,
-                    tenant_id=settings.oidc_tenant_id,
-                    jwks_url=settings.oidc_jwks_url,
-                    role_map=settings.oidc_role_map or dict(ROLE_MAP),
-                    group_role_map=settings.oidc_group_role_map,
-                )
-            )
-        self.oidc_verifier = oidc_verifier
+        self.oidc_verifier = _configured_oidc_verifier(settings, oidc_verifier)
         self.http = GovernanceHttpApplication(
             GovernanceApi(
                 GovernanceCore(
@@ -157,7 +192,7 @@ class SentinelRuntime:
             authentication_mode=(
                 "api_key" if settings.environment == "lab" else "oidc"
             ),
-            oidc_verifier=oidc_verifier,
+            oidc_verifier=self.oidc_verifier,
         )
 
     def readiness(self) -> dict[str, Any]:

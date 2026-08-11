@@ -37,6 +37,26 @@ class ProductionContractTests(unittest.TestCase):
         )
         self.assertIn("production requires SENTINEL_REQUIRE_TLS=true", result["errors"])
 
+    def test_production_validation_error_order_is_stable(self):
+        errors = Settings(environment="production").validate()
+        self.assertEqual(
+            errors,
+            [
+                "production requires SENTINEL_OIDC_ISSUER",
+                "production requires SENTINEL_OIDC_AUDIENCE",
+                "production requires SENTINEL_OIDC_TENANT_ID",
+                "production requires SENTINEL_OIDC_JWKS_URL",
+                "production requires SENTINEL_EVIDENCE_STORE_URL",
+                "production requires SENTINEL_AUDIT_ARCHIVE_URL",
+                "production requires SENTINEL_AZURE_CLIENT_ID",
+                "production requires a valid SENTINEL_SERVICE_BUS_NAMESPACE",
+                "production requires a valid SENTINEL_SERVICE_BUS_QUEUE",
+                "production requires PostgreSQL",
+                "production identity storage requires PostgreSQL",
+                "production requires SENTINEL_REQUIRE_TLS=true",
+            ],
+        )
+
     def test_environment_configuration_is_read_from_process(self):
         with patch.dict(os.environ, {
             "SENTINEL_ENV": "staging",
