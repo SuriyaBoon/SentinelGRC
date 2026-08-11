@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+POSTGRESQL_SCHEMES = ("postgresql://", "postgresql+psycopg://")
+
 
 def _read_bool(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
@@ -176,10 +178,10 @@ class Settings:
                     f"{self.environment} requires a valid SENTINEL_SERVICE_BUS_QUEUE"
                 )
         if self.environment == "production":
-            if not self.database_url.startswith(("postgresql://", "postgresql+psycopg://")):
+            if not self.database_url.startswith(POSTGRESQL_SCHEMES):
                 errors.append("production requires PostgreSQL")
             if not self.identity_database_url.startswith(
-                ("postgresql://", "postgresql+psycopg://")
+                POSTGRESQL_SCHEMES
             ):
                 errors.append("production identity storage requires PostgreSQL")
             if not self.require_tls:
@@ -196,7 +198,7 @@ class Settings:
             errors.append("SENTINEL_OUTBOX_DIR is required")
         if self.environment in {"staging", "production"}:
             if not self.database_url.startswith(
-                ("postgresql://", "postgresql+psycopg://")
+                POSTGRESQL_SCHEMES
             ):
                 errors.append(f"{self.environment} outbox requires PostgreSQL")
             if not self.azure_managed_identity_client_id:

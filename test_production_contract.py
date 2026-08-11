@@ -85,6 +85,18 @@ class ProductionContractTests(unittest.TestCase):
             "staging requires a valid SENTINEL_SERVICE_BUS_NAMESPACE", errors
         )
 
+    def test_outbox_worker_accepts_both_supported_postgres_schemes(self):
+        for scheme in ("postgresql://", "postgresql+psycopg://"):
+            with self.subTest(scheme=scheme):
+                settings = Settings(
+                    environment="staging",
+                    database_url=f"{scheme}db/sentinel",
+                    azure_managed_identity_client_id="managed-id",
+                    service_bus_namespace="sentinel-staging.servicebus.windows.net",
+                    service_bus_queue="governance-outbox",
+                )
+                self.assertEqual(settings.validate_outbox_worker(), [])
+
     def test_outbox_runtime_limits_are_strict(self):
         with patch.dict(
             os.environ,

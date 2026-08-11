@@ -44,7 +44,10 @@ class WorkflowTests(unittest.TestCase):
             datetime(2026, 7, 16, 12, 0, tzinfo=timezone.utc),
         )
         self.assertEqual(len(result["tickets"]), 2)
+        self.assertEqual(result["generated_at"], "2026-07-16T12:00:00Z")
+        self.assertEqual(result["tickets"][0]["created_at"], "2026-07-16T12:00:00Z")
         self.assertEqual(result["tickets"][0]["response_due_at"], "2026-07-16T12:30:00Z")
+        self.assertEqual(result["tickets"][0]["resolution_due_at"], "2026-07-16T20:00:00Z")
         self.assertEqual(result["tickets"][1]["priority"], "critical")
         self.assertFalse(result["auto_remediation"])
         self.assertTrue(all(ticket["auto_remediation"] is False for ticket in result["tickets"]))

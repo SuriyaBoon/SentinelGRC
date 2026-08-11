@@ -15,6 +15,8 @@ from human_identity import AuthenticationError
 
 
 MAX_REQUEST_BODY_BYTES = 256 * 1024
+FINDING_PATH_PREFIX = "/findings/"
+GOVERNANCE_API_PREFIX = "/v1/governance/"
 
 
 class OidcVerifier(Protocol):
@@ -53,8 +55,10 @@ class GovernanceHttpApplication:
                 return 200, {"status": "ready"}
             except Exception:
                 return 503, {"status": "not_ready"}
-        known_get = path == "/findings" or path.startswith("/findings/")
-        known_post = path.startswith("/v1/governance/") or path.startswith("/findings/")
+        known_get = path == "/findings" or path.startswith(FINDING_PATH_PREFIX)
+        known_post = path.startswith(GOVERNANCE_API_PREFIX) or path.startswith(
+            FINDING_PATH_PREFIX
+        )
         if (method == "GET" and not known_get) or (method == "POST" and not known_post):
             return 404, {"error": "not_found"}
         normalized_headers = {
@@ -68,12 +72,12 @@ class GovernanceHttpApplication:
         action = ""
         if method == "GET" and path == "/findings":
             action = "list"
-        elif method == "GET" and path.startswith("/findings/"):
+        elif method == "GET" and path.startswith(FINDING_PATH_PREFIX):
             action = "get"
-            payload["finding_id"] = path.removeprefix("/findings/").strip("/")
-        elif method == "POST" and path.startswith("/v1/governance/"):
-            action = path.removeprefix("/v1/governance/").strip("/")
-        elif method == "POST" and path.startswith("/findings/"):
+            payload["finding_id"] = path.removeprefix(FINDING_PATH_PREFIX).strip("/")
+        elif method == "POST" and path.startswith(GOVERNANCE_API_PREFIX):
+            action = path.removeprefix(GOVERNANCE_API_PREFIX).strip("/")
+        elif method == "POST" and path.startswith(FINDING_PATH_PREFIX):
             parts = path.strip("/").split("/")
             if len(parts) != 3:
                 return 404, {"error": "not_found"}

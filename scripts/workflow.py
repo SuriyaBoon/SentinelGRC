@@ -12,6 +12,7 @@ from typing import Any
 from scripts.path_policy import load_json_under_root, require_exact_output
 
 TICKET_OUTPUT = "runtime/tickets.json"
+UTC_OFFSET_SUFFIX = "+00:00"
 
 
 SLA = {
@@ -43,13 +44,13 @@ def make_ticket(
         "priority": priority,
         "owner": owner,
         "status": "open",
-        "created_at": created_at.isoformat().replace("+00:00", "Z"),
+        "created_at": created_at.isoformat().replace(UTC_OFFSET_SUFFIX, "Z"),
         "response_due_at": (
             created_at + timedelta(minutes=sla["response_minutes"])
-        ).isoformat().replace("+00:00", "Z"),
+        ).isoformat().replace(UTC_OFFSET_SUFFIX, "Z"),
         "resolution_due_at": (
             created_at + timedelta(hours=sla["resolution_hours"])
-        ).isoformat().replace("+00:00", "Z"),
+        ).isoformat().replace(UTC_OFFSET_SUFFIX, "Z"),
         "asset": {
             "asset_id": asset.get("asset_id"),
             "hostname": asset.get("hostname"),
@@ -111,7 +112,7 @@ def generate_tickets(
 
     return {
         "schema_version": "1.0",
-        "generated_at": created.isoformat().replace("+00:00", "Z"),
+        "generated_at": created.isoformat().replace(UTC_OFFSET_SUFFIX, "Z"),
         "tickets": tickets,
         "auto_remediation": False,
     }

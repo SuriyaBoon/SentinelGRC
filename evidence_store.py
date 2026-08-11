@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 
 MAX_EVIDENCE_BYTES = 256 * 1024
 TRANSIENT_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+EVIDENCE_INTEGRITY_ERROR = "stored evidence failed integrity verification"
 
 
 class EvidenceStoreError(RuntimeError):
@@ -62,7 +63,7 @@ class MemoryEvidenceStore:
         digest, object_key = _validate_content(content)
         existing = self.objects.setdefault(object_key, bytes(content))
         if not hmac.compare_digest(hashlib.sha256(existing).hexdigest(), digest):
-            raise EvidenceIntegrityError("stored evidence failed integrity verification")
+            raise EvidenceIntegrityError(EVIDENCE_INTEGRITY_ERROR)
         return EvidenceObject(object_key, digest, len(content), digest)
 
     def ready(self) -> bool:
@@ -96,7 +97,7 @@ class LocalEvidenceStore:
             len(stored) != len(content)
             or not hmac.compare_digest(hashlib.sha256(stored).hexdigest(), digest)
         ):
-            raise EvidenceIntegrityError("stored evidence failed integrity verification")
+            raise EvidenceIntegrityError(EVIDENCE_INTEGRITY_ERROR)
         return EvidenceObject(object_key, digest, len(content), digest)
 
     def ready(self) -> bool:
@@ -208,7 +209,7 @@ class AzureBlobEvidenceStore:
             or len(stored) != len(content)
             or not hmac.compare_digest(hashlib.sha256(stored).hexdigest(), digest)
         ):
-            raise EvidenceIntegrityError("stored evidence failed integrity verification")
+            raise EvidenceIntegrityError(EVIDENCE_INTEGRITY_ERROR)
         etag = str(getattr(properties, "etag", "")).strip('"')
         if not etag:
             raise EvidenceIntegrityError("stored evidence has no immutable version tag")
