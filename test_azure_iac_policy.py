@@ -22,6 +22,17 @@ RESOURCE_ELEMENT_ORDER = {
     "tags": 150,
     "properties": 1000,
 }
+TOP_LEVEL_DECLARATION_ORDER = {
+    "targetscope": 0,
+    "metadata": 1,
+    "param": 2,
+    "func": 3,
+    "var": 4,
+    "resource_existing": 5,
+    "resource": 6,
+    "module": 7,
+    "output": 8,
+}
 
 
 def _without_bicep_strings(line):
@@ -62,6 +73,34 @@ def _first_resource_order_violation(elements):
     return None
 
 
+def _top_level_declaration_sequence(source):
+    declarations = []
+    for line in source.splitlines():
+        code = _without_bicep_strings(line)
+        match = re.match(
+            r"^(targetScope|metadata|param|func|var|resource|module|output)\b",
+            code,
+            re.IGNORECASE,
+        )
+        if match is None:
+            continue
+        kind = match.group(1).lower()
+        if kind == "resource" and re.search(r"\bexisting\s*=", code):
+            kind = "resource_existing"
+        declarations.append(kind)
+    return declarations
+
+
+def _first_top_level_order_violation(declarations):
+    previous = 0
+    for declaration in declarations:
+        current = TOP_LEVEL_DECLARATION_ORDER[declaration]
+        if current < previous:
+            return declaration
+        previous = current
+    return None
+
+
 class AzureIacPolicyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -92,6 +131,11 @@ class AzureIacPolicyTests(unittest.TestCase):
             if violating_element is not None:
                 violations.append(f"{resource_name}: {violating_element} in {elements}")
         self.assertEqual(violations, [])
+
+    def test_top_level_declarations_follow_sonar_recommended_order(self):
+        declarations = _top_level_declaration_sequence(self.source)
+        violation = _first_top_level_order_violation(declarations)
+        self.assertIsNone(violation, declarations)
 
     def test_template_is_staging_only_and_application_is_opt_in(self):
         self.assertRegex(
@@ -341,7 +385,7 @@ class AzureIacPolicyTests(unittest.TestCase):
         )
         outbox_alert = self.source.split(
             "resource outboxHealthAlert", 1
-        )[1].split("output deploymentMode", 1)[0]
+        )[1].split("module acrPull", 1)[0]
         self.assertIn("type: 'UserAssigned'", outbox_alert)
         self.assertIn("monitoringQueryIdentity!.id", outbox_alert)
         self.assertIn("kind: 'LogAlert'", outbox_alert)

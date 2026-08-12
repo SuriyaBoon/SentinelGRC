@@ -51,13 +51,15 @@ class GovernanceTests(unittest.TestCase):
         queue = governance.build_remediation_queue(
             self.controls, self.posture, self.assets
         )
+        finding_id = queue["findings"][0]["finding_id"]
+        expired_on = date.today().isoformat()
         with self.assertRaises(ValueError):
             governance.approve_exception(
                 queue,
-                queue["findings"][0]["finding_id"],
+                finding_id,
                 "manager",
                 "reason",
-                date.today().isoformat(),
+                expired_on,
             )
 
     def test_expired_exception_reopens_finding(self):

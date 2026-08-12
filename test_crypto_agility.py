@@ -50,11 +50,12 @@ class CoreCryptoPolicyTests(unittest.TestCase):
         message = b"token"
         signature = key.sign(message, padding.PKCS1v15(), hashes.SHA256())
         verifier = RS256SignatureVerifier(policy)
-        verifier.verify("RS256", key.public_key(), signature, message)
+        public_key = key.public_key()
+        verifier.verify("RS256", public_key, signature, message)
         with self.assertRaises(CryptoPolicyError):
-            verifier.verify("ML-DSA-44", key.public_key(), signature, message)
+            verifier.verify("ML-DSA-44", public_key, signature, message)
         with self.assertRaises(InvalidSignature):
-            verifier.verify("RS256", key.public_key(), signature, b"tampered")
+            verifier.verify("RS256", public_key, signature, b"tampered")
 
 
 @unittest.skipUnless(
@@ -63,9 +64,10 @@ class CoreCryptoPolicyTests(unittest.TestCase):
 )
 class CobblestoneEvidenceCryptoTests(unittest.TestCase):
     def test_cobblestone_is_opt_in_and_detects_tampering(self):
+        disabled_policy = CryptoPolicy()
         with self.assertRaises(CryptoPolicyError):
             CobblestoneEvidenceCrypto(
-                CryptoPolicy(),
+                disabled_policy,
                 algorithm="COBBLESTONE-128",
                 key=b"k" * 16,
                 key_id="kv/key/1",
@@ -102,16 +104,15 @@ class CobblestoneEvidenceCryptoTests(unittest.TestCase):
 class X509VerificationAdapterTests(unittest.TestCase):
     def test_x509_requires_policy_and_valid_trust_material(self):
         config = X509TrustConfig("connector.internal", ())
+        disabled_policy = CryptoPolicy()
         with self.assertRaises(CryptoPolicyError):
-            X509VerificationAdapter(CryptoPolicy(), config)
+            X509VerificationAdapter(disabled_policy, config)
         enabled = CryptoPolicy(certificate_verifiers=("X509-PATH",))
         with self.assertRaises(CryptoPolicyError):
             X509VerificationAdapter(enabled, config)
+        invalid_trust = X509TrustConfig("connector.internal", (b"bad",))
         with self.assertRaises(CryptoPolicyError):
-            X509VerificationAdapter(
-                enabled,
-                X509TrustConfig("connector.internal", (b"bad",)),
-            )
+            X509VerificationAdapter(enabled, invalid_trust)
 
 
 if __name__ == "__main__":

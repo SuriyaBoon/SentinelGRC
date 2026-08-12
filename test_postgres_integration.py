@@ -97,12 +97,11 @@ class PostgresIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             changed = Path(temp) / "001_canonical_governance.sql"
             changed.write_text("SELECT 1;\n", encoding="utf-8")
+            runner = PostgresMigrationRunner(self.database, temp)
             with self.assertRaisesRegex(
                 ValueError, "migration checksum mismatch"
             ):
-                PostgresMigrationRunner(
-                    self.database, temp
-                ).apply()
+                runner.apply()
 
     def test_staging_runtime_composes_postgres_without_sqlite_fallback(self):
         class ReadyVerifier:

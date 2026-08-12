@@ -1,9 +1,15 @@
+import io
 import json
+import tempfile
+import time
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 
 from scripts.ingestion_api import (
     IngestionError,
     NonceStore,
+    PostureHandler,
     authenticate_request,
     make_signature,
     parse_authorization,
@@ -11,9 +17,31 @@ from scripts.ingestion_api import (
 )
 
 
+class StaticKeyRegistry:
+    def __init__(self, secret):
+        self.secret = secret
+
+    def resolve_secret(self, key_id, key_secrets):
+        return self.secret
+
+
+class MemoryPayloadState:
+    def __init__(self):
+        self.evidence_ids = {}
+
+    def get_evidence_id(self, payload_hash):
+        return self.evidence_ids.get(payload_hash)
+
+    def remember_payload(self, payload_hash, evidence_id):
+        if payload_hash in self.evidence_ids:
+            return False
+        self.evidence_ids[payload_hash] = evidence_id
+        return True
+
+
 class IngestionSecurityTests(unittest.TestCase):
     def setUp(self):
-        self.secret = b"test-only-secret"
+        self.signing_key = b"test-fixture-material"
         self.body = json.dumps(
             {
                 "schema_version": "1.0",
@@ -33,17 +61,18 @@ class IngestionSecurityTests(unittest.TestCase):
 
     def auth(self):
         return "HMAC " + self.key_id + ":" + make_signature(
-            self.secret, self.timestamp, self.nonce, self.body
+            self.signing_key, self.timestamp, self.nonce, self.body
         )
 
     def test_valid_keyed_signature_is_accepted_once(self):
         store = NonceStore()
         authenticate_request(
-            self.secret, self.auth(), self.timestamp, self.nonce, self.body, store, now=1000
+            self.signing_key, self.auth(), self.timestamp, self.nonce, self.body, store, now=1000
         )
+        authorization = self.auth()
         with self.assertRaises(IngestionError):
             authenticate_request(
-                self.secret, self.auth(), self.timestamp, self.nonce, self.body, store, now=1000
+                self.signing_key, authorization, self.timestamp, self.nonce, self.body, store, now=1000
             )
 
     def test_authorization_parser_requires_key_id(self):
@@ -52,23 +81,28 @@ class IngestionSecurityTests(unittest.TestCase):
             parse_authorization("HMAC " + ("a" * 64))
 
     def test_modified_body_fails_signature(self):
+        signature = make_signature(
+            self.signing_key, self.timestamp, self.nonce, self.body
+        )
+        authorization = "HMAC " + self.key_id + ":" + signature
+        store = NonceStore()
         with self.assertRaises(IngestionError):
             authenticate_request(
-                self.secret,
-                "HMAC " + self.key_id + ":" + make_signature(
-                    self.secret, self.timestamp, self.nonce, self.body
-                ),
+                self.signing_key,
+                authorization,
                 self.timestamp,
                 "nonce-0987654321",
                 self.body + b" ",
-                NonceStore(),
+                store,
                 now=1000,
             )
 
     def test_old_timestamp_fails(self):
+        authorization = self.auth()
+        store = NonceStore()
         with self.assertRaises(IngestionError):
             authenticate_request(
-                self.secret, self.auth(), self.timestamp, self.nonce, self.body, NonceStore(), now=2000
+                self.signing_key, authorization, self.timestamp, self.nonce, self.body, store, now=2000
             )
 
     def test_required_fields_are_validated(self):
@@ -83,6 +117,41 @@ class IngestionSecurityTests(unittest.TestCase):
         invalid["unexpected"] = "reject-me"
         with self.assertRaises(ValueError):
             validate_posture(invalid)
+
+    def test_http_handler_preserves_authenticated_acceptance_and_deduplication(self):
+        state = MemoryPayloadState()
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            responses = []
+            for nonce in ("nonce-http-000001", "nonce-http-000002"):
+                timestamp = str(int(time.time()))
+                authorization = "HMAC " + self.key_id + ":" + make_signature(
+                    self.signing_key, timestamp, nonce, self.body
+                )
+                handler = PostureHandler.__new__(PostureHandler)
+                handler.path = "/v1/posture"
+                handler.headers = {
+                    "Content-Type": "application/json",
+                    "Content-Length": str(len(self.body)),
+                    "X-Sentinel-Timestamp": timestamp,
+                    "X-Sentinel-Nonce": nonce,
+                    "Authorization": authorization,
+                }
+                handler.rfile = io.BytesIO(self.body)
+                handler.server = SimpleNamespace(
+                    key_registry=StaticKeyRegistry(self.signing_key),
+                    key_secrets={},
+                    nonce_store=NonceStore(),
+                    state_store=state,
+                    output_dir=output_dir,
+                )
+                handler._send_json = lambda status, payload: responses.append(
+                    (status, payload)
+                )
+                handler.do_POST()
+        self.assertEqual(responses[0][1]["status"], "accepted")
+        self.assertEqual(responses[1][1]["status"], "duplicate")
+        self.assertEqual(responses[0][1]["evidence_id"], responses[1][1]["evidence_id"])
         invalid = json.loads(self.body)
         invalid["collected_at"] = "2026-07-16T10:00:00"
         with self.assertRaises(ValueError):
