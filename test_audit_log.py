@@ -36,8 +36,9 @@ class AuditLogTests(unittest.TestCase):
         from audit_log import AuthenticatedActor
         with tempfile.TemporaryDirectory() as directory:
             log = AuditLog(str(Path(directory) / "audit.jsonl"))
+            invalid_actor = AuthenticatedActor("agent", "agent", auth_method="hmac")
             with self.assertRaises(ValueError):
-                log.append_human_event("bad", AuthenticatedActor("agent", "agent", auth_method="hmac"), "x")
+                log.append_human_event("bad", invalid_actor, "x")
 
     def test_idempotent_append_reuses_exact_event_and_rejects_collision(self):
         with tempfile.TemporaryDirectory() as directory:
