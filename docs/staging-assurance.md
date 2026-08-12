@@ -224,3 +224,27 @@ Even when every live staging gate passes, the evaluator returns only
 `GO_LIMITED_STAGING_PILOT`. Production remains a separate organisational risk
 decision requiring security assessment, capacity/SLO validation, data
 classification, support ownership, incident response, DR and change approval.
+
+## Deterministic offline evidence collector
+
+After the offline assurance path passes, create a sanitized, hash-verifiable
+evidence envelope without contacting Azure:
+
+```powershell
+python -m scripts.collect_offline_evidence `
+  --source-commit <reviewed-40-character-commit-sha>
+```
+
+The fixed output is
+`runtime/staging-assurance/offline-evidence.json`. The collector records only
+the reviewed source commit, canonical policy and alert hashes, bounded result
+counts, offline gate booleans, and an explicit claim boundary. It excludes raw
+alerts, finding IDs, resource identifiers, endpoints, credentials, and live
+evidence.
+
+Exit code `0` means the repository-only offline gates passed. Exit code `1`
+means one or more offline gates failed but a valid evidence envelope was still
+written. Exit code `2` means input, path, schema, sanitization, or output
+validation failed. Every result keeps `current_live_gate_credit` false and
+`production_decision` equal to `NO_GO_PENDING_LIVE_EVIDENCE`.
+
