@@ -41,6 +41,14 @@ ACTIVE_STATUSES = {
 }
 TERMINAL_STATUSES = {"verified", "accepted", "closed"}
 
+
+def _treatment_approval_status(decision: str, treatment_type: str | None) -> str:
+    if decision != "approved":
+        return "risk_assessed"
+    if treatment_type == "accept":
+        return "accepted"
+    return "approved"
+
 @dataclass(frozen=True)
 class ActorContext:
     actor_id: str
@@ -571,7 +579,7 @@ class GovernanceCore:
         finding = self.get_finding(finding_id)
         if actor.actor_id == finding["risk_owner"]:
             raise PermissionError("risk owner cannot approve the same finding")
-        status = "accepted" if decision == "approved" and finding["treatment_type"] == "accept" else ("approved" if decision == "approved" else "risk_assessed")
+        status = _treatment_approval_status(decision, finding["treatment_type"])
         approval_id = "AP-" + uuid.uuid4().hex[:12]
         result = self._mutate(finding_id, actor, "treatment_approved" if decision == "approved" else "treatment_rejected",
                               status, {"decision": decision, "reason": reason},
@@ -597,57 +605,75 @@ class GovernanceCore:
                               ))
         return result
 
-    def submit_evidence(self, finding_id: str, actor: ActorContext,
-                        source: str, content: bytes | str) -> dict[str, Any]:
-        self._require(actor, "risk_owner", "analyst", "admin")
+    def _prepare_evidence(
+        self, source: str, content: bytes | str
+    ) -> tuple[str, bytes, str]:
         source = self._required_text(source, "evidence source", MAX_IDENTIFIER_LENGTH)
         if not isinstance(content, (bytes, str)):
             raise ValueError("evidence content must be bytes or text")
         raw = content.encode("utf-8") if isinstance(content, str) else content
         if not raw or len(raw) > MAX_EVIDENCE_BYTES:
             raise ValueError("evidence content must be non-empty and within the size limit")
-        digest = hashlib.sha256(raw).hexdigest()
-        finding = self.get_finding(finding_id)
-        if finding["status"] == "pending_verification":
-            existing = [
-                item
-                for item in self.list_evidence(finding_id)
-                if item["sha256"] == digest
-                and item["source"] == source
-                and item["submitted_by"] == actor.actor_id
-                and item["status"] == "submitted"
-            ]
-            if existing:
-                return finding
-        if finding["status"] != "in_progress":
-            raise ValueError(f"finding cannot transition from {finding['status']}")
-        evidence_id = "EV-" + uuid.uuid4().hex[:12].upper()
+        return source, raw, hashlib.sha256(raw).hexdigest()
+
+    def _has_duplicate_evidence(
+        self, finding_id: str, digest: str, source: str, actor_id: str
+    ) -> bool:
+        return any(
+            item["sha256"] == digest
+            and item["source"] == source
+            and item["submitted_by"] == actor_id
+            and item["status"] == "submitted"
+            for item in self.list_evidence(finding_id)
+        )
+
+    def _persist_checked_evidence(self, raw: bytes, digest: str):
         stored = self.evidence_store.persist(raw)
         if stored.sha256 != digest:
             raise RuntimeError("evidence store returned inconsistent integrity metadata")
-        now = self._now()
+        return stored
+
+    @staticmethod
+    def _existing_evidence_row(
+        db: DatabaseConnection,
+        finding_id: str,
+        digest: str,
+        source: str,
+        actor_id: str,
+    ):
+        return db.execute(
+            "SELECT evidence_id FROM governance_evidence "
+            "WHERE finding_id = ? AND sha256 = ? AND source = ? "
+            "AND submitted_by = ? AND status = 'submitted'",
+            (finding_id, digest, source, actor_id),
+        ).fetchone()
+
+    def _commit_evidence(
+        self,
+        finding_id: str,
+        actor: ActorContext,
+        source: str,
+        digest: str,
+        evidence_id: str,
+        stored,
+        now: float,
+    ) -> dict[str, Any] | None:
         with closing(self._connect()) as db:
             db.execute(BEGIN_IMMEDIATE_SQL)
             row = db.execute(
-                self.database.for_update(
-                    FINDING_BY_ID_SQL
-                ),
+                self.database.for_update(FINDING_BY_ID_SQL),
                 (finding_id,),
             ).fetchone()
             if row is None:
                 db.rollback()
                 raise KeyError(f"finding {finding_id} was not found")
             if row["status"] != "in_progress":
-                if row["status"] == "pending_verification":
-                    existing = db.execute(
-                        "SELECT evidence_id FROM governance_evidence "
-                        "WHERE finding_id = ? AND sha256 = ? AND source = ? "
-                        "AND submitted_by = ? AND status = 'submitted'",
-                        (finding_id, digest, source, actor.actor_id),
-                    ).fetchone()
-                    if existing is not None:
-                        db.rollback()
-                        return self.get_finding(finding_id)
+                existing = self._existing_evidence_row(
+                    db, finding_id, digest, source, actor.actor_id
+                )
+                if existing is not None and row["status"] == "pending_verification":
+                    db.rollback()
+                    return self.get_finding(finding_id)
                 db.rollback()
                 raise ValueError(f"finding cannot transition from {row['status']}")
             db.execute(
@@ -668,8 +694,11 @@ class GovernanceCore:
                     stored.etag,
                 ),
             )
-            db.execute("UPDATE findings SET status = 'pending_verification', evidence_submitter = ?, updated_at = ? WHERE finding_id = ?",
-                       (actor.actor_id, now, finding_id))
+            db.execute(
+                "UPDATE findings SET status = 'pending_verification', "
+                "evidence_submitter = ?, updated_at = ? WHERE finding_id = ?",
+                (actor.actor_id, now, finding_id),
+            )
             self._event(db, finding_id, "evidence_submitted", actor, {
                 "evidence_id": evidence_id,
                 "source": source,
@@ -678,7 +707,30 @@ class GovernanceCore:
                 "size_bytes": stored.size_bytes,
             }, now)
             db.commit()
-        return self.get_finding(finding_id)
+        return None
+
+    def submit_evidence(self, finding_id: str, actor: ActorContext,
+                        source: str, content: bytes | str) -> dict[str, Any]:
+        self._require(actor, "risk_owner", "analyst", "admin")
+        source, raw, digest = self._prepare_evidence(source, content)
+        finding = self.get_finding(finding_id)
+        if finding["status"] == "pending_verification" and self._has_duplicate_evidence(
+            finding_id, digest, source, actor.actor_id
+        ):
+            return finding
+        if finding["status"] != "in_progress":
+            raise ValueError(f"finding cannot transition from {finding['status']}")
+        stored = self._persist_checked_evidence(raw, digest)
+        duplicate = self._commit_evidence(
+            finding_id,
+            actor,
+            source,
+            digest,
+            "EV-" + uuid.uuid4().hex[:12].upper(),
+            stored,
+            self._now(),
+        )
+        return duplicate or self.get_finding(finding_id)
 
     def verify(self, finding_id: str, actor: ActorContext,
                passed: bool, notes: str = "") -> dict[str, Any]:

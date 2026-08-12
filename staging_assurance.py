@@ -50,19 +50,27 @@ def _reject_secret_fields(value: Any, path: str = "policy") -> None:
             _reject_secret_fields(item, f"{path}[{index}]")
 
 
-def load_assurance_policy(path: str) -> dict[str, Any]:
+def _load_policy_document(path: str) -> dict[str, Any]:
     try:
         policy = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (OSError, ValueError) as error:
         raise ValueError("staging assurance policy cannot be loaded") from error
-    if not isinstance(policy, dict) or set(policy) != POLICY_KEYS:
+    if not isinstance(policy, dict):
+        raise ValueError("staging assurance policy fields are invalid")
+    return policy
+
+
+def _validate_policy_identity(policy: dict[str, Any]) -> None:
+    if set(policy) != POLICY_KEYS:
         raise ValueError("staging assurance policy fields are invalid")
     _reject_secret_fields(policy)
     if policy["schema_version"] != POLICY_SCHEMA or policy["environment"] != "staging":
         raise ValueError("staging assurance policy identity is invalid")
     if policy["source_contract"] != "security_alert.v1":
         raise ValueError("staging assurance source contract is invalid")
-    thresholds = policy["thresholds"]
+
+
+def _validate_thresholds(thresholds: Any) -> None:
     if not isinstance(thresholds, dict) or set(thresholds) != THRESHOLD_KEYS:
         raise ValueError("staging assurance thresholds are invalid")
     limits = {
@@ -75,17 +83,32 @@ def load_assurance_policy(path: str) -> dict[str, Any]:
         value = thresholds[name]
         if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
             raise ValueError(f"staging assurance threshold is invalid: {name}")
-    for name in ("required_offline_gates", "required_live_gates"):
-        gates = policy[name]
-        if (
-            not isinstance(gates, list)
-            or not gates
-            or any(not isinstance(gate, str) or not gate.strip() for gate in gates)
-            or len(set(gates)) != len(gates)
-        ):
-            raise ValueError(f"staging assurance {name} is invalid")
-    if set(policy["required_offline_gates"]) & set(policy["required_live_gates"]):
+
+
+def _validate_gate_list(name: str, gates: Any) -> None:
+    if (
+        not isinstance(gates, list)
+        or not gates
+        or any(not isinstance(gate, str) or not gate.strip() for gate in gates)
+        or len(set(gates)) != len(gates)
+    ):
+        raise ValueError(f"staging assurance {name} is invalid")
+
+
+def _validate_gate_sets(policy: dict[str, Any]) -> None:
+    offline = policy["required_offline_gates"]
+    live = policy["required_live_gates"]
+    _validate_gate_list("required_offline_gates", offline)
+    _validate_gate_list("required_live_gates", live)
+    if set(offline) & set(live):
         raise ValueError("offline and live staging gates must be separate")
+
+
+def load_assurance_policy(path: str) -> dict[str, Any]:
+    policy = _load_policy_document(path)
+    _validate_policy_identity(policy)
+    _validate_thresholds(policy["thresholds"])
+    _validate_gate_sets(policy)
     return policy
 
 
@@ -101,7 +124,7 @@ def _load_contract_fixture(path: str) -> list[dict[str, Any]]:
         try:
             payload = json.loads(line)
             normalize_security_alert_v1(payload)
-        except (json.JSONDecodeError, TypeError, ValueError) as error:
+        except (TypeError, ValueError) as error:
             raise ValueError(f"security alert fixture line {line_number} is invalid") from error
         alerts.append(payload)
     if not alerts:
