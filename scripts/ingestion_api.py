@@ -56,9 +56,7 @@ def parse_authorization(value: str) -> tuple[str, str]:
     return key_id, signature
 
 
-def validate_posture(payload: Any) -> None:
-    if not isinstance(payload, dict):
-        raise ValueError("Posture payload must be a JSON object.")
+def _validate_posture_shape(payload: dict[str, Any]) -> None:
     missing = REQUIRED_FIELDS.difference(payload)
     if missing:
         raise ValueError(f"Missing required fields: {sorted(missing)}")
@@ -67,24 +65,45 @@ def validate_posture(payload: Any) -> None:
         raise ValueError(f"Unknown fields: {sorted(unknown)}")
     if payload["schema_version"] != "1.0":
         raise ValueError("Unsupported posture schema version.")
+
+
+def _validate_identity_fields(payload: dict[str, Any]) -> None:
     if not isinstance(payload["asset_id"], str) or not 1 <= len(payload["asset_id"]) <= 128:
         raise ValueError("asset_id length is invalid.")
     if not isinstance(payload["hostname"], str) or not 1 <= len(payload["hostname"]) <= 255:
         raise ValueError("hostname length is invalid.")
     if any(ord(char) < 32 for char in payload["asset_id"] + payload["hostname"]):
         raise ValueError("asset_id and hostname cannot contain control characters.")
+
+
+def _validate_collection_time(value: Any) -> None:
     try:
-        collected_at = datetime.fromisoformat(payload["collected_at"].replace("Z", "+00:00"))
+        collected_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except (AttributeError, TypeError, ValueError) as error:
         raise ValueError("collected_at must be an ISO-8601 timestamp.") from error
     if collected_at.tzinfo is None:
         raise ValueError("collected_at must include a timezone.")
+
+
+def _validate_boolean_fields(payload: dict[str, Any]) -> None:
     for field in ("bitlocker_system_drive", "firewall_all_profiles_enabled", "defender_realtime_enabled"):
         if not isinstance(payload[field], bool):
             raise ValueError(f"{field} must be boolean.")
-    age = payload["days_since_last_update"]
-    if age is not None and (not isinstance(age, int) or isinstance(age, bool) or age < 0):
+
+
+def _validate_update_age(value: Any) -> None:
+    if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
         raise ValueError("days_since_last_update must be a non-negative integer or null.")
+
+
+def validate_posture(payload: Any) -> None:
+    if not isinstance(payload, dict):
+        raise ValueError("Posture payload must be a JSON object.")
+    _validate_posture_shape(payload)
+    _validate_identity_fields(payload)
+    _validate_collection_time(payload["collected_at"])
+    _validate_boolean_fields(payload)
+    _validate_update_age(payload["days_since_last_update"])
 
 
 class NonceStore:

@@ -1,5 +1,6 @@
 import io
 import json
+import re
 import tempfile
 import time
 import unittest
@@ -117,6 +118,31 @@ class IngestionSecurityTests(unittest.TestCase):
         invalid["unexpected"] = "reject-me"
         with self.assertRaises(ValueError):
             validate_posture(invalid)
+
+    def test_posture_validation_preserves_error_precedence_and_messages(self):
+        valid = json.loads(self.body)
+        cases = [
+            ([], "Posture payload must be a JSON object."),
+            ({key: value for key, value in valid.items() if key != "hostname"}, "Missing required fields: ['hostname']"),
+            ({**valid, "unexpected": True}, "Unknown fields: ['unexpected']"),
+            ({**valid, "schema_version": "2.0"}, "Unsupported posture schema version."),
+            ({**valid, "asset_id": ""}, "asset_id length is invalid."),
+            ({**valid, "collected_at": "not-a-timestamp"}, "collected_at must be an ISO-8601 timestamp."),
+            ({**valid, "firewall_all_profiles_enabled": 1}, "firewall_all_profiles_enabled must be boolean."),
+            ({**valid, "days_since_last_update": -1}, "days_since_last_update must be a non-negative integer or null."),
+        ]
+        for payload, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ValueError, re.escape(message)):
+                    validate_posture(payload)
+
+        invalid_at_multiple_layers = {
+            **valid,
+            "unexpected": True,
+            "asset_id": "",
+        }
+        with self.assertRaisesRegex(ValueError, "Unknown fields"):
+            validate_posture(invalid_at_multiple_layers)
 
     def test_http_handler_preserves_authenticated_acceptance_and_deduplication(self):
         state = MemoryPayloadState()
