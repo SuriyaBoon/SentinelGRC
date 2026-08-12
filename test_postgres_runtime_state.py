@@ -175,6 +175,7 @@ class PostgresRuntimeStateTests(unittest.TestCase):
             original(*args, **kwargs)
             raise RuntimeError("forced rollback")
 
+        actor = ActorContext("analyst-2", "analyst")
         with patch.object(core, "_event", side_effect=fail_after_outbox):
             with self.assertRaisesRegex(RuntimeError, "forced rollback"):
                 core.create_finding(
@@ -184,7 +185,7 @@ class PostgresRuntimeStateTests(unittest.TestCase):
                     "Atomic rollback",
                     "owner-2",
                     "medium",
-                    ActorContext("analyst-2", "analyst"),
+                    actor,
                 )
         with closing(self.database.connect()) as db:
             finding_count = db.execute(

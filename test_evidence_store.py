@@ -147,15 +147,17 @@ class EvidenceStoreTests(unittest.TestCase):
         self.assertEqual(permanent.upload_calls, 1)
 
     def test_azure_store_rejects_unsafe_url_and_integrity_mismatch(self):
+        insecure_container = FakeContainer()
         with self.assertRaises(ValueError):
             AzureBlobEvidenceStore(
                 "http://account.blob.core.windows.net/evidence",
-                container_client=FakeContainer(),
+                container_client=insecure_container,
             )
+        credential_container = FakeContainer()
         with self.assertRaises(ValueError):
             AzureBlobEvidenceStore(
                 "https://account.blob.core.windows.net/evidence?sig=secret",
-                container_client=FakeContainer(),
+                container_client=credential_container,
             )
         with self.assertRaisesRegex(ValueError, "managed identity client ID"):
             AzureBlobEvidenceStore(

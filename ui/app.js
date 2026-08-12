@@ -9,7 +9,7 @@
       ? response.json()
       : Promise.reject(new Error(`Governance report request failed with status ${response.status}`)))
     .then(report => metrics.forEach(node => {
-      const value = (report.kpi && report.kpi[node.dataset.metric]) ?? report[node.dataset.metric];
+      const value = report.kpi?.[node.dataset.metric] ?? report[node.dataset.metric];
       node.textContent = value === undefined ? "—" : String(value);
     }))
     .catch(() => metrics.forEach(node => { node.textContent = "—"; }));

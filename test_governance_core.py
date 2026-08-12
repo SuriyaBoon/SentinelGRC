@@ -39,14 +39,16 @@ class GovernanceCoreTests(unittest.TestCase):
             self.core.close("F-002", self.approver)
         self.core.assess_risk("F-002", ActorContext("owner-2", "risk_owner"), "medium", "high")
         self.core.propose_treatment("F-002", ActorContext("owner-2", "risk_owner"), "mitigate", "temporary exception", "team-id")
+        self_approver = ActorContext("owner-2", "approver")
         with self.assertRaises(PermissionError):
-            self.core.approve_treatment("F-002", ActorContext("owner-2", "approver"), "approved")
+            self.core.approve_treatment("F-002", self_approver, "approved")
         self.core.approve_treatment("F-002", self.approver, "approved")
         self.core.start_action("F-002", ActorContext("owner-2", "risk_owner"), "engineer-2")
         self.core.submit_evidence("F-002", ActorContext("owner-2", "risk_owner"), "ticket", "proof")
+        implementer_verifier = ActorContext("engineer-2", "analyst")
         with self.assertRaises(PermissionError):
-            self.core.verify("F-002", ActorContext("engineer-2", "analyst"), True)
-        self.assertFalse(self.core.verify("F-002", self.verifier, False)["status"] == "closed")
+            self.core.verify("F-002", implementer_verifier, True)
+        self.assertNotEqual(self.core.verify("F-002", self.verifier, False)["status"], "closed")
 
     def test_accepted_risk_requires_authorized_approval(self):
         self.core.create_finding("F-003", "AC-03", "APP-03",
@@ -99,11 +101,12 @@ class GovernanceCoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.core.create_finding("F-BAD", "AC-BAD", "APP-BAD", "Bad", "owner", "urgent", self.analyst)
         self.core.create_finding("F-VALID", "AC-VALID", "APP-VALID", "Valid", "owner-valid", "high", self.analyst)
+        owner = ActorContext("owner-valid", "risk_owner")
         with self.assertRaises(ValueError):
-            self.core.assess_risk("F-VALID", ActorContext("owner-valid", "risk_owner"), "likely", "high")
-        self.core.assess_risk("F-VALID", ActorContext("owner-valid", "risk_owner"), "high", "high")
+            self.core.assess_risk("F-VALID", owner, "likely", "high")
+        self.core.assess_risk("F-VALID", owner, "high", "high")
         with self.assertRaises(ValueError):
-            self.core.propose_treatment("F-VALID", ActorContext("owner-valid", "risk_owner"), "mitigate", "fix", "team", "not-a-date")
+            self.core.propose_treatment("F-VALID", owner, "mitigate", "fix", "team", "not-a-date")
 
     def test_lifecycle_persists_normalized_business_records(self):
         self.core.create_finding("F-007", "AC-07", "APP-07",

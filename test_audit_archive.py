@@ -374,10 +374,11 @@ class AuditArchiveTests(unittest.TestCase):
             retry_attempts=5,
             sleep=lambda _: None,
         )
+        audit_event = event()
         with self.assertRaisesRegex(
             AuditArchiveError, "^audit archive is unavailable$"
         ):
-            archive.persist_event(event())
+            archive.persist_event(audit_event)
         self.assertEqual(permanent.upload_calls, 1)
 
     def test_azure_archive_rejects_credentials_and_detects_mismatch(self):

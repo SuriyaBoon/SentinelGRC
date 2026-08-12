@@ -3,6 +3,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from governance_core import ActorContext, GovernanceCore
 from outbox_delivery import (
@@ -15,6 +16,7 @@ from outbox_delivery import (
     PermanentOutboxError,
     TransientOutboxError,
 )
+from outbox_worker import _run_worker_loop
 from persistence import Database
 
 
@@ -77,6 +79,14 @@ class FakeClient:
         return self.sender
 
 
+class SequenceWorker:
+    def __init__(self, results):
+        self.results = iter(results)
+
+    def run_once(self):
+        return next(self.results)
+
+
 class OutboxDeliveryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -109,6 +119,19 @@ class OutboxDeliveryTests(unittest.TestCase):
         payload = json.loads(files[0].read_text(encoding="utf-8"))
         self.assertEqual(payload["finding_id"], "OUTBOX-1")
         self.assertEqual(payload["event_sequence"], 1)
+
+    def test_cli_loop_preserves_bounded_and_failure_exit_semantics(self):
+        bounded = SimpleNamespace(run_forever=False, max_items=2, poll_seconds=1)
+        counts, exit_code = _run_worker_loop(
+            SequenceWorker(["delivered", "delivered"]), bounded
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(counts["delivered"], 2)
+
+        failure = SimpleNamespace(run_forever=False, max_items=2, poll_seconds=1)
+        counts, exit_code = _run_worker_loop(SequenceWorker(["retry"]), failure)
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(counts["retry"], 1)
 
     def test_crash_after_publish_replays_same_identity_without_duplicate(self):
         self.create("OUTBOX-CRASH")

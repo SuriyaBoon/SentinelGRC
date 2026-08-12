@@ -149,45 +149,68 @@ def authenticate_request(
 class PostureHandler(BaseHTTPRequestHandler):
     server_version = "SentinelGRC/0.7"
 
+    def _read_authenticated_body(self) -> bytes:
+        if not self.headers.get("Content-Type", "").lower().startswith("application/json"):
+            raise IngestionError("Content-Type must be application/json.")
+        length = int(self.headers.get("Content-Length", "0"))
+        if length < 1 or length > MAX_BODY_BYTES:
+            raise IngestionError(
+                "Payload size is not allowed.", HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+            )
+        body = self.rfile.read(length)
+        if len(body) != length:
+            raise IngestionError("Incomplete request body.")
+        timestamp = self.headers.get("X-Sentinel-Timestamp", "")
+        nonce = self.headers.get("X-Sentinel-Nonce", "")
+        key_id, signature = parse_authorization(
+            self.headers.get("Authorization", "")
+        )
+        secret = self.server.key_registry.resolve_secret(
+            key_id, self.server.key_secrets
+        )
+        if secret is None:
+            raise IngestionError("Unknown or revoked key.", HTTPStatus.UNAUTHORIZED)
+        authenticate_request(
+            secret,
+            f"HMAC {key_id}:{signature}",
+            timestamp,
+            nonce,
+            body,
+            self.server.nonce_store,
+        )
+        return body
+
+    def _persist_posture(self, body: bytes) -> None:
+        payload = json.loads(body.decode("utf-8"))
+        validate_posture(payload)
+        payload_hash = hashlib.sha256(body).hexdigest()
+        existing_id = self.server.state_store.get_evidence_id(payload_hash)
+        if existing_id:
+            self._send_json(
+                HTTPStatus.ACCEPTED,
+                {"status": "duplicate", "evidence_id": existing_id},
+            )
+            return
+        evidence_id = payload_hash[:24]
+        destination = self.server.output_dir / f"{evidence_id}.json"
+        temporary = self.server.output_dir / f".{evidence_id}.tmp"
+        temporary.write_bytes(body)
+        os.replace(temporary, destination)
+        inserted = self.server.state_store.remember_payload(payload_hash, evidence_id)
+        self._send_json(
+            HTTPStatus.ACCEPTED,
+            {
+                "status": "accepted" if inserted else "duplicate",
+                "evidence_id": evidence_id,
+            },
+        )
+
     def do_POST(self) -> None:  # noqa: N802
         if self.path != "/v1/posture":
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
             return
         try:
-            if not self.headers.get("Content-Type", "").lower().startswith("application/json"):
-                raise IngestionError("Content-Type must be application/json.")
-            length = int(self.headers.get("Content-Length", "0"))
-            if length < 1 or length > MAX_BODY_BYTES:
-                raise IngestionError("Payload size is not allowed.", HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
-            body = self.rfile.read(length)
-            if len(body) != length:
-                raise IngestionError("Incomplete request body.")
-            timestamp = self.headers.get("X-Sentinel-Timestamp", "")
-            nonce = self.headers.get("X-Sentinel-Nonce", "")
-            key_id, signature = parse_authorization(self.headers.get("Authorization", ""))
-            secret = self.server.key_registry.resolve_secret(key_id, self.server.key_secrets)
-            if secret is None:
-                raise IngestionError("Unknown or revoked key.", HTTPStatus.UNAUTHORIZED)
-            authenticate_request(
-                secret, f"HMAC {key_id}:{signature}", timestamp, nonce, body, self.server.nonce_store
-            )
-            payload = json.loads(body.decode("utf-8"))
-            validate_posture(payload)
-            payload_hash = hashlib.sha256(body).hexdigest()
-            existing_id = self.server.state_store.get_evidence_id(payload_hash)
-            if existing_id:
-                self._send_json(HTTPStatus.ACCEPTED, {"status": "duplicate", "evidence_id": existing_id})
-                return
-            evidence_id = payload_hash[:24]
-            destination = self.server.output_dir / f"{evidence_id}.json"
-            temporary = self.server.output_dir / f".{evidence_id}.tmp"
-            temporary.write_bytes(body)
-            os.replace(temporary, destination)
-            inserted = self.server.state_store.remember_payload(payload_hash, evidence_id)
-            self._send_json(
-                HTTPStatus.ACCEPTED,
-                {"status": "accepted" if inserted else "duplicate", "evidence_id": evidence_id},
-            )
+            self._persist_posture(self._read_authenticated_body())
         except (UnicodeDecodeError, json.JSONDecodeError):
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_json"})
         except IngestionError as error:

@@ -24,5 +24,6 @@ class JsonMigrationTests(unittest.TestCase):
     def test_unauthorized_migration_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             core = GovernanceCore(str(Path(directory) / "governance.db"))
+            actor = ActorContext("owner", "risk_owner")
             with self.assertRaises(PermissionError):
-                migrate_queue({"findings": []}, core, ActorContext("owner", "risk_owner"))
+                migrate_queue({"findings": []}, core, actor)

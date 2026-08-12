@@ -116,15 +116,19 @@ class OidcAuthenticationTests(unittest.TestCase):
         ]
         for config in cases:
             with self.subTest(config=config):
+                verifier = self.verifier(**config)
+                token = self.token()
                 with self.assertRaises(AuthenticationError):
-                    self.verifier(**config).verify(self.token())
+                    verifier.verify(token)
         for claims in (
             self.claims(exp=800),
             self.claims(nbf=1200),
             self.claims(iat=1200),
         ):
+            verifier = self.verifier()
+            token = self.token(claims)
             with self.assertRaises(AuthenticationError):
-                self.verifier().verify(self.token(claims))
+                verifier.verify(token)
 
     def test_group_mapping_and_ambiguous_roles(self):
         verifier = self.verifier(
@@ -135,10 +139,12 @@ class OidcAuthenticationTests(unittest.TestCase):
             roles=[], groups=["group-risk"]
         )))
         self.assertEqual(actor.role, "risk_owner")
+        ambiguous_claims = self.claims(
+            roles=["sentinel-analyst", "sentinel-approver"]
+        )
+        ambiguous_token = self.token(ambiguous_claims)
         with self.assertRaises(AuthenticationError):
-            verifier.verify(self.token(self.claims(
-                roles=["sentinel-analyst", "sentinel-approver"]
-            )))
+            verifier.verify(ambiguous_token)
 
     def test_clock_skew_is_bounded_and_numeric_dates_are_strict(self):
         actor = self.verifier().verify(self.token(self.claims(
@@ -151,8 +157,10 @@ class OidcAuthenticationTests(unittest.TestCase):
             self.claims(iat=None),
         ):
             with self.subTest(claims=claims):
+                verifier = self.verifier()
+                token = self.token(claims)
                 with self.assertRaises(AuthenticationError):
-                    self.verifier().verify(self.token(claims))
+                    verifier.verify(token)
 
     def test_configuration_and_readiness_are_fail_closed(self):
         with self.assertRaises(ValueError):

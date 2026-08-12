@@ -276,8 +276,9 @@ class AzureStagingValidatorTests(unittest.TestCase):
             with self.subTest(update=update):
                 values = self.config().__dict__.copy()
                 values.update(update)
+                config = ValidatorConfig(**values)
                 with self.assertRaises(ValueError):
-                    ValidatorConfig(**values).validate()
+                    config.validate()
 
     def test_legacy_dual_identity_environment_is_rejected(self):
         environment = {

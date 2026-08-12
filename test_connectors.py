@@ -26,13 +26,16 @@ class ConnectorTests(unittest.TestCase):
         self.assertIsNone(second["payload"])
 
     def test_invalid_signature_and_invalid_payload_are_rejected(self):
+        fixture_key = "connector-fixture-material"
         with self.assertRaises(PermissionError):
             ingest_event(self.raw, source="siem", event_id="evt-2",
-                         signature="sha256=bad", secret="connector-secret", store=self.store)
+                         signature="sha256=bad", secret=fixture_key, store=self.store)
+        invalid_payload = b"[]"
+        invalid_signature = sign_event(invalid_payload, fixture_key)
         with self.assertRaises(ValueError):
-            ingest_event(b"[]", source="siem", event_id="evt-3",
-                         signature=sign_event(b"[]", "connector-secret"),
-                         secret="connector-secret", store=self.store)
+            ingest_event(invalid_payload, source="siem", event_id="evt-3",
+                         signature=invalid_signature,
+                         secret=fixture_key, store=self.store)
 
     def test_event_id_is_not_accepted_before_authentication(self):
         with self.assertRaises(PermissionError):

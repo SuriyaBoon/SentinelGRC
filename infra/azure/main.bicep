@@ -188,6 +188,27 @@ var logAnalyticsReaderRoleId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   '73c42c96-874c-492b-b04d-ab87d138a893'
 )
+
+resource containerSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
+  parent: vnet
+  name: containerSubnetName
+}
+
+resource databaseSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
+  parent: vnet
+  name: databaseSubnetName
+}
+
+resource privateEndpointSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
+  parent: vnet
+  name: privateEndpointSubnetName
+}
+
+resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
+  scope: resourceGroup(containerRegistrySubscriptionId, containerRegistryResourceGroup)
+  name: containerRegistryName
+}
+
 resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   name: vnetName
   location: location
@@ -237,21 +258,6 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
       }
     ]
   }
-}
-
-resource containerSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
-  parent: vnet
-  name: containerSubnetName
-}
-
-resource databaseSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
-  parent: vnet
-  name: databaseSubnetName
-}
-
-resource privateEndpointSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
-  parent: vnet
-  name: privateEndpointSubnetName
 }
 
 resource postgresPrivateDns 'Microsoft.Network/privateDnsZones@2024-06-01' = {
@@ -767,11 +773,6 @@ resource serviceBusPrivateDnsGroup 'Microsoft.Network/privateEndpoints/privateDn
   }
 }
 
-resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
-  scope: resourceGroup(containerRegistrySubscriptionId, containerRegistryResourceGroup)
-  name: containerRegistryName
-}
-
 resource acrPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
   name: '${baseName}-acr-pe'
   location: location
@@ -806,24 +807,6 @@ resource acrPrivateDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGr
         }
       }
     ]
-  }
-}
-
-module acrPull 'acr-pull-role.bicep' = {
-  name: '${deployment().name}-acr-pull'
-  scope: resourceGroup(containerRegistrySubscriptionId, containerRegistryResourceGroup)
-  params: {
-    principalId: appIdentity.properties.principalId
-    registryName: containerRegistryName
-  }
-}
-
-module validationAcrPull 'acr-pull-role.bicep' = if (deployValidatedJobs) {
-  name: '${deployment().name}-validation-acr-pull'
-  scope: resourceGroup(containerRegistrySubscriptionId, containerRegistryResourceGroup)
-  params: {
-    principalId: validationImagePullIdentity!.properties.principalId
-    registryName: containerRegistryName
   }
 }
 
@@ -1364,6 +1347,24 @@ ContainerAppConsoleLogs_CL
     severity: 1
     skipQueryValidation: false
     windowSize: 'PT5M'
+  }
+}
+
+module acrPull 'acr-pull-role.bicep' = {
+  name: '${deployment().name}-acr-pull'
+  scope: resourceGroup(containerRegistrySubscriptionId, containerRegistryResourceGroup)
+  params: {
+    principalId: appIdentity.properties.principalId
+    registryName: containerRegistryName
+  }
+}
+
+module validationAcrPull 'acr-pull-role.bicep' = if (deployValidatedJobs) {
+  name: '${deployment().name}-validation-acr-pull'
+  scope: resourceGroup(containerRegistrySubscriptionId, containerRegistryResourceGroup)
+  params: {
+    principalId: validationImagePullIdentity!.properties.principalId
+    registryName: containerRegistryName
   }
 }
 
