@@ -65,6 +65,10 @@ def _allowed_output_path(value: str | Path, root: str | Path, *, purpose: str) -
         ),
         "runtime/staging-assurance/offline-evidence.json": Path(
             "runtime/staging-assurance/offline-evidence.json"
+        ),        "runtime/staging-assurance/hermetic-recovery-evidence.json": Path(
+            "runtime/staging-assurance/hermetic-recovery-evidence.json"
+        ),        "runtime/staging-assurance/hermetic-recovery-evidence.json": Path(
+            "runtime/staging-assurance/hermetic-recovery-evidence.json"
         ),
         "remediation.json": Path("remediation.json"),
         "tickets.json": Path("tickets.json"),
