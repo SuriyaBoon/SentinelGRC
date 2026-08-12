@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         print(rendered, end="")
         return 0 if report["offline_decision"] == "READY_FOR_MANUAL_AZURE_STAGING" else 1
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+    except (OSError, TypeError, ValueError) as error:
         print(json.dumps({"error": str(error)}, sort_keys=True))
         return 2
 

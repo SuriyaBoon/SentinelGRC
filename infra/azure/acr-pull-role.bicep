@@ -16,8 +16,8 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing =
 }
 
 resource assignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(registry.id, principalId, acrPullRoleId)
   scope: registry
+  name: guid(registry.id, principalId, acrPullRoleId)
   properties: {
     principalId: principalId
     principalType: 'ServicePrincipal'

@@ -57,7 +57,7 @@ class OutboxMessage:
         try:
             event_sequence = int(item["event_sequence"])
             payload = json.loads(item["payload_json"])
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        except (KeyError, TypeError, ValueError) as error:
             raise PermanentOutboxError("outbox payload is invalid") from error
         if event_sequence < 1 or not isinstance(payload, dict):
             raise PermanentOutboxError("outbox event sequence is invalid")

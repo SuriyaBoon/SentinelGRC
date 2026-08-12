@@ -240,18 +240,18 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
 }
 
 resource containerSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
-  name: containerSubnetName
   parent: vnet
+  name: containerSubnetName
 }
 
 resource databaseSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
-  name: databaseSubnetName
   parent: vnet
+  name: databaseSubnetName
 }
 
 resource privateEndpointSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
-  name: privateEndpointSubnetName
   parent: vnet
+  name: privateEndpointSubnetName
 }
 
 resource postgresPrivateDns 'Microsoft.Network/privateDnsZones@2024-06-01' = {
@@ -285,8 +285,8 @@ resource acrPrivateDns 'Microsoft.Network/privateDnsZones@2024-06-01' = {
 }
 
 resource postgresDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
-  name: '${baseName}-pg-link'
   parent: postgresPrivateDns
+  name: '${baseName}-pg-link'
   location: 'global'
   properties: {
     registrationEnabled: false
@@ -297,8 +297,8 @@ resource postgresDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@
 }
 
 resource blobDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
-  name: '${baseName}-blob-link'
   parent: blobPrivateDns
+  name: '${baseName}-blob-link'
   location: 'global'
   properties: {
     registrationEnabled: false
@@ -309,8 +309,8 @@ resource blobDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024
 }
 
 resource vaultDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
-  name: '${baseName}-vault-link'
   parent: vaultPrivateDns
+  name: '${baseName}-vault-link'
   location: 'global'
   properties: {
     registrationEnabled: false
@@ -321,8 +321,8 @@ resource vaultDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@202
 }
 
 resource serviceBusDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
-  name: '${baseName}-bus-link'
   parent: serviceBusPrivateDns
+  name: '${baseName}-bus-link'
   location: 'global'
   properties: {
     registrationEnabled: false
@@ -333,8 +333,8 @@ resource serviceBusDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLink
 }
 
 resource acrDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
-  name: '${baseName}-acr-link'
   parent: acrPrivateDns
+  name: '${baseName}-acr-link'
   location: 'global'
   properties: {
     registrationEnabled: false
@@ -455,12 +455,12 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
   name: databaseServerName
   location: location
   tags: tags
-  identity: {
-    type: 'SystemAssigned'
-  }
   sku: {
     name: 'Standard_B1ms'
     tier: 'Burstable'
+  }
+  identity: {
+    type: 'SystemAssigned'
   }
   properties: {
     administratorLogin: databaseAdministratorLogin
@@ -494,8 +494,8 @@ resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
 }
 
 resource governanceDatabase 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-01' = {
-  name: databaseName
   parent: postgres
+  name: databaseName
   properties: {
     charset: 'UTF8'
     collation: 'en_US.utf8'
@@ -509,10 +509,10 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     name: 'Standard_ZRS'
   }
   kind: 'StorageV2'
+  tags: tags
   identity: {
     type: 'SystemAssigned'
   }
-  tags: tags
   properties: {
     allowBlobPublicAccess: false
     allowCrossTenantReplication: false
@@ -539,8 +539,8 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
 }
 
 resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = {
-  name: 'default'
   parent: storage
+  name: 'default'
   properties: {
     containerDeleteRetentionPolicy: {
       days: blobDeleteRetentionDays
@@ -556,16 +556,16 @@ resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01'
 }
 
 resource evidenceContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
-  name: evidenceContainerName
   parent: blobService
+  name: evidenceContainerName
   properties: {
     publicAccess: 'None'
   }
 }
 
 resource auditContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-05-01' = {
-  name: auditContainerName
   parent: blobService
+  name: auditContainerName
   properties: {
     immutableStorageWithVersioning: {
       enabled: true
@@ -575,8 +575,8 @@ resource auditContainer 'Microsoft.Storage/storageAccounts/blobServices/containe
 }
 
 resource auditImmutabilityPolicy 'Microsoft.Storage/storageAccounts/blobServices/containers/immutabilityPolicies@2023-05-01' = {
-  name: 'default'
   parent: auditContainer
+  name: 'default'
   properties: {
     allowProtectedAppendWrites: true
     immutabilityPeriodSinceCreationInDays: auditImmutabilityDays
@@ -603,8 +603,8 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
 }
 
 resource databaseUrlSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  name: databaseSecretName
   parent: keyVault
+  name: databaseSecretName
   properties: {
     value: 'postgresql://${databaseAdministratorLogin}:${uriComponent(databaseAdministratorPassword)}@${postgres.properties.fullyQualifiedDomainName}:5432/${databaseName}?sslmode=require'
   }
@@ -621,10 +621,10 @@ resource serviceBus 'Microsoft.ServiceBus/namespaces@2024-01-01' = {
     name: 'Premium'
     tier: 'Premium'
   }
+  tags: tags
   identity: {
     type: 'SystemAssigned'
   }
-  tags: tags
   properties: {
     disableLocalAuth: true
     minimumTlsVersion: '1.2'
@@ -635,8 +635,8 @@ resource serviceBus 'Microsoft.ServiceBus/namespaces@2024-01-01' = {
 }
 
 resource governanceQueue 'Microsoft.ServiceBus/namespaces/queues@2024-01-01' = {
-  name: serviceBusQueueName
   parent: serviceBus
+  name: serviceBusQueueName
   properties: {
     deadLetteringOnMessageExpiration: true
     defaultMessageTimeToLive: 'P14D'
@@ -679,8 +679,8 @@ resource blobPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
 }
 
 resource blobPrivateDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = {
-  name: 'default'
   parent: blobPrivateEndpoint
+  name: 'default'
   properties: {
     privateDnsZoneConfigs: [
       {
@@ -716,8 +716,8 @@ resource vaultPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = 
 }
 
 resource vaultPrivateDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = {
-  name: 'default'
   parent: vaultPrivateEndpoint
+  name: 'default'
   properties: {
     privateDnsZoneConfigs: [
       {
@@ -753,8 +753,8 @@ resource serviceBusPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-0
 }
 
 resource serviceBusPrivateDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = {
-  name: 'default'
   parent: serviceBusPrivateEndpoint
+  name: 'default'
   properties: {
     privateDnsZoneConfigs: [
       {
@@ -768,8 +768,8 @@ resource serviceBusPrivateDnsGroup 'Microsoft.Network/privateEndpoints/privateDn
 }
 
 resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
-  name: containerRegistryName
   scope: resourceGroup(containerRegistrySubscriptionId, containerRegistryResourceGroup)
+  name: containerRegistryName
 }
 
 resource acrPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
@@ -795,8 +795,8 @@ resource acrPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
 }
 
 resource acrPrivateDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = {
-  name: 'default'
   parent: acrPrivateEndpoint
+  name: 'default'
   properties: {
     privateDnsZoneConfigs: [
       {
@@ -828,8 +828,8 @@ module validationAcrPull 'acr-pull-role.bicep' = if (deployValidatedJobs) {
 }
 
 resource keyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, appIdentity.id, keyVaultSecretsUserRoleId)
   scope: keyVault
+  name: guid(keyVault.id, appIdentity.id, keyVaultSecretsUserRoleId)
   properties: {
     principalId: appIdentity.properties.principalId
     principalType: 'ServicePrincipal'
@@ -838,8 +838,8 @@ resource keyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01
 }
 
 resource evidenceBlobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(evidenceContainer.id, appIdentity.id, storageBlobContributorRoleId)
   scope: evidenceContainer
+  name: guid(evidenceContainer.id, appIdentity.id, storageBlobContributorRoleId)
   properties: {
     principalId: appIdentity.properties.principalId
     principalType: 'ServicePrincipal'
@@ -848,8 +848,8 @@ resource evidenceBlobContributor 'Microsoft.Authorization/roleAssignments@2022-0
 }
 
 resource auditBlobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(auditContainer.id, appIdentity.id, storageBlobContributorRoleId)
   scope: auditContainer
+  name: guid(auditContainer.id, appIdentity.id, storageBlobContributorRoleId)
   properties: {
     principalId: appIdentity.properties.principalId
     principalType: 'ServicePrincipal'
@@ -858,8 +858,8 @@ resource auditBlobContributor 'Microsoft.Authorization/roleAssignments@2022-04-0
 }
 
 resource serviceBusSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(governanceQueue.id, appIdentity.id, serviceBusSenderRoleId)
   scope: governanceQueue
+  name: guid(governanceQueue.id, appIdentity.id, serviceBusSenderRoleId)
   properties: {
     principalId: appIdentity.properties.principalId
     principalType: 'ServicePrincipal'
@@ -1078,8 +1078,8 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = if (deployValid
 }
 
 resource monitoringQueryReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployValidatedMonitoring) {
-  name: guid(logAnalytics.id, monitoringQueryIdentity!.id, logAnalyticsReaderRoleId)
   scope: logAnalytics
+  name: guid(logAnalytics.id, monitoringQueryIdentity!.id, logAnalyticsReaderRoleId)
   properties: {
     principalId: monitoringQueryIdentity!.properties.principalId
     principalType: 'ServicePrincipal'
@@ -1090,6 +1090,10 @@ resource monitoringQueryReader 'Microsoft.Authorization/roleAssignments@2022-04-
 resource validationAnalystJob 'Microsoft.App/jobs@2025-01-01' = if (deployValidatedJobs) {
   name: validationAnalystJobName
   location: location
+  tags: union(tags, {
+    purpose: 'staging-lifecycle-validation'
+    sentinelRole: 'analyst'
+  })
   identity: {
     type: 'UserAssigned'
     userAssignedIdentities: {
@@ -1170,10 +1174,6 @@ resource validationAnalystJob 'Microsoft.App/jobs@2025-01-01' = if (deployValida
     }
     workloadProfileName: 'Consumption'
   }
-  tags: union(tags, {
-    purpose: 'staging-lifecycle-validation'
-    sentinelRole: 'analyst'
-  })
   dependsOn: [
     acrPrivateDnsGroup
     validationAcrPull
@@ -1183,6 +1183,10 @@ resource validationAnalystJob 'Microsoft.App/jobs@2025-01-01' = if (deployValida
 resource validationApproverJob 'Microsoft.App/jobs@2025-01-01' = if (deployValidatedJobs) {
   name: validationApproverJobName
   location: location
+  tags: union(tags, {
+    purpose: 'staging-lifecycle-validation'
+    sentinelRole: 'approver'
+  })
   identity: {
     type: 'UserAssigned'
     userAssignedIdentities: {
@@ -1263,10 +1267,6 @@ resource validationApproverJob 'Microsoft.App/jobs@2025-01-01' = if (deployValid
     }
     workloadProfileName: 'Consumption'
   }
-  tags: union(tags, {
-    purpose: 'staging-lifecycle-validation'
-    sentinelRole: 'approver'
-  })
   dependsOn: [
     acrPrivateDnsGroup
     validationAcrPull
@@ -1314,13 +1314,14 @@ resource availabilityAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = if (de
 resource outboxHealthAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = if (deployValidatedMonitoring) {
   name: outboxHealthAlertName
   location: location
+  kind: 'LogAlert'
+  tags: tags
   identity: {
     type: 'UserAssigned'
     userAssignedIdentities: {
       '${monitoringQueryIdentity!.id}': {}
     }
   }
-  kind: 'LogAlert'
   properties: {
     actions: {
       actionGroups: empty(monitoringActionGroupResourceId) ? [] : [
@@ -1360,7 +1361,6 @@ ContainerAppConsoleLogs_CL
     skipQueryValidation: false
     windowSize: 'PT5M'
   }
-  tags: tags
   dependsOn: [
     containerEnvironmentDiagnostics
     monitoringQueryReader
