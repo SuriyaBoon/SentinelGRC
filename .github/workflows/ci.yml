@@ -181,6 +181,48 @@ jobs:
           status=$(curl --silent --max-time 15 --output /tmp/ready-after-db-loss.json --write-out '%{http_code}' http://127.0.0.1:8080/ready)
           test "$status" = "503"
           jq -e '.status == "not_ready" and .checks.governance_store == false and .checks.identity_store == false' /tmp/ready-after-db-loss.json
+      - name: Verify PostgreSQL dependency recovery
+        run: |
+          docker start "${{ job.services.postgres.id }}"
+          for attempt in $(seq 1 30); do
+            if docker exec "${{ job.services.postgres.id }}" pg_isready -U sentinel -d sentinel_test >/dev/null 2>&1; then
+              recovered_status=$(curl --silent --max-time 10 --output /tmp/ready-after-db-recovery.json --write-out '%{http_code}' http://127.0.0.1:8080/ready)
+              if test "$recovered_status" = "200" && jq -e '.status == "ready" and .checks.governance_store == true and .checks.identity_store == true' /tmp/ready-after-db-recovery.json; then
+                break
+              fi
+            fi
+            sleep 1
+          done
+          test "$recovered_status" = "200"
+          mkdir -p runtime/staging-assurance
+          jq -n \
+            --arg initial_status "$(jq -r '.status' /tmp/ready.json)" \
+            --arg loss_status "$(jq -r '.status' /tmp/ready-after-db-loss.json)" \
+            --arg recovered_status "$(jq -r '.status' /tmp/ready-after-db-recovery.json)" \
+            '{
+              schema_version: "sentinel.hermetic_postgres_readiness.v1",
+              initial_http_status: 200,
+              loss_http_status: 503,
+              recovered_http_status: 200,
+              initial_status: $initial_status,
+              loss_status: $loss_status,
+              recovered_status: $recovered_status,
+              sqlite_fallback_observed: false
+            }' >runtime/staging-assurance/postgres-readiness.json
+
+      - name: Collect hermetic failure and recovery evidence
+        run: >-
+          python -m scripts.collect_hermetic_recovery_evidence
+          --source-commit "${{ github.sha }}"
+          --readiness runtime/staging-assurance/postgres-readiness.json
+
+      - name: Retain hermetic recovery evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: hermetic-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: runtime/staging-assurance/hermetic-recovery-evidence.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Verify production startup remains explicitly blocked
         run: |

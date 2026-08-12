@@ -217,7 +217,7 @@ Required live evidence includes Managed Identity authentication, private
 network validation, Service Bus delivery, sidecar restart recovery, dead-letter
 recovery, backup restore, observed monitoring alerts, and rollback rehearsal.
 Store screenshots, command output, resource IDs, timestamps, operator/reviewer
-identity and hashes in an approved private evidence locationâ€”not this public
+identity and hashes in an approved private evidence locationÃ¢â‚¬â€not this public
 repository.
 
 Even when every live staging gate passes, the evaluator returns only
@@ -256,3 +256,19 @@ The collector reports the fixed logical output identity
 succeeds. It does not derive that identity from host-specific canonical path
 spellings, including Windows 8.3 aliases, so the same successful write cannot
 be misclassified as a validation failure on a different runner.
+## Hermetic failure and recovery evidence
+
+The container CI job now proves three repository-controlled properties before
+retaining a sanitized evidence envelope:
+
+1. the pipeline is interrupted at the real
+   `after_pipeline_commit_before_queue_ack` failpoint;
+2. replay completes the leased job without changing committed output hashes or
+   relational finding, governance-event, and outbox counts; and
+3. PostgreSQL readiness changes from ready to fail-closed and back to ready
+   after the CI service is stopped and restarted, without a SQLite fallback.
+
+The retained artifact is canonical, hash-verifiable, bound to the tested source
+commit, and contains no endpoint, credential, container identity, Azure
+identifier, or raw business record. It grants zero Azure live-validation credit
+and preserves `NO_GO_PENDING_LIVE_EVIDENCE`.
