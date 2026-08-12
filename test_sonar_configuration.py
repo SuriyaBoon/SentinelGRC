@@ -75,6 +75,10 @@ class SonarConfigurationTests(unittest.TestCase):
         self.assertEqual("suriyaboon", properties.get("sonar.organization"))
         self.assertEqual("3.12", properties.get("sonar.python.version"))
         self.assertEqual("UTF-8", properties.get("sonar.sourceEncoding"))
+        self.assertEqual(".", properties.get("sonar.sources"))
+        self.assertEqual("test_*.py", properties.get("sonar.exclusions"))
+        self.assertEqual(".", properties.get("sonar.tests"))
+        self.assertEqual("test_*.py", properties.get("sonar.test.inclusions"))
 
     def test_tracked_text_inputs_are_valid_utf8(self) -> None:
         invalid: list[str] = []

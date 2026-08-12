@@ -283,8 +283,9 @@ class AuditArchiveTests(unittest.TestCase):
             self.assertTrue(archive.ready())
 
     def test_tamper_oversize_and_existing_corruption_fail_closed(self):
+        tampered_event = event(details={"severity": "tampered"})
         with self.assertRaises(AuditArchiveIntegrityError):
-            serialize_event(event(details={"severity": "tampered"}))
+            serialize_event(tampered_event)
         oversized = event()
         oversized["details"] = {"content": "x" * MAX_AUDIT_EVENT_BYTES}
         body = {
@@ -309,8 +310,9 @@ class AuditArchiveTests(unittest.TestCase):
             archive = LocalAuditArchive(temp)
             stored = archive.persist_event(event())
             (Path(temp) / stored.object_key).write_bytes(b"tampered")
+            replayed_event = event()
             with self.assertRaises(AuditArchiveIntegrityError):
-                archive.persist_event(event())
+                archive.persist_event(replayed_event)
 
     def test_unicode_chain_hash_is_compatible_with_existing_events(self):
         value = event()
@@ -384,8 +386,9 @@ class AuditArchiveTests(unittest.TestCase):
             "https://account.blob.core.windows.net/audit-archive?sig=secret",
         ):
             with self.subTest(url=url):
+                container = FakeContainer()
                 with self.assertRaises(ValueError):
-                    AzureBlobAuditArchive(url, container_client=FakeContainer())
+                    AzureBlobAuditArchive(url, container_client=container)
         with self.assertRaisesRegex(ValueError, "managed identity client ID"):
             AzureBlobAuditArchive(
                 "https://account.blob.core.windows.net/audit-archive"
@@ -397,8 +400,9 @@ class AuditArchiveTests(unittest.TestCase):
             "https://account.blob.core.windows.net/audit-archive",
             container_client=FakeContainer(blob),
         )
+        replayed_event = event()
         with self.assertRaises(AuditArchiveIntegrityError):
-            archive.persist_event(event())
+            archive.persist_event(replayed_event)
         self.assertFalse(
             AzureBlobAuditArchive(
                 "https://account.blob.core.windows.net/audit-archive",

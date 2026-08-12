@@ -10,6 +10,56 @@ MAIN = ROOT / "infra" / "azure" / "main.bicep"
 PARAMS = ROOT / "infra" / "azure" / "main.staging.bicepparam.example"
 PREFLIGHT = ROOT / "scripts" / "Test-AzureStagingInputs.ps1"
 SECURITY_REMEDIATION = ROOT / "docs" / "sonar-security-remediation.md"
+RESOURCE_ELEMENT_ORDER = {
+    "parent": 0,
+    "scope": 20,
+    "name": 50,
+    "location": 50,
+    "sku": 80,
+    "kind": 90,
+    "identity": 120,
+    "dependson": 140,
+    "tags": 150,
+    "properties": 1000,
+}
+
+
+def _without_bicep_strings(line):
+    return re.sub(r"'(?:[^']|'')*'", "''", line.split("//", 1)[0])
+
+
+def _resource_element_sequences(source):
+    current_name = None
+    depth = 0
+    elements = []
+    for line in source.splitlines():
+        code = _without_bicep_strings(line)
+        if current_name is None:
+            match = re.match(r"\s*resource\s+([A-Za-z][A-Za-z0-9_]*)\b.*=\s*(?:if\s*\([^)]*\)\s*)?\{", code)
+            if match is None:
+                continue
+            current_name = match.group(1)
+            depth = code.count("{") - code.count("}")
+            elements = []
+            continue
+        if depth == 1:
+            match = re.match(r"\s*([A-Za-z][A-Za-z0-9_]*)\s*:", code)
+            if match is not None:
+                elements.append(match.group(1))
+        depth += code.count("{") - code.count("}")
+        if depth == 0:
+            yield current_name, elements
+            current_name = None
+
+
+def _first_resource_order_violation(elements):
+    previous = 0
+    for element in elements:
+        current = RESOURCE_ELEMENT_ORDER.get(element.lower(), 200)
+        if current < previous:
+            return element
+        previous = current
+    return None
 
 
 class AzureIacPolicyTests(unittest.TestCase):
@@ -34,6 +84,14 @@ class AzureIacPolicyTests(unittest.TestCase):
         for resource_type in required_types:
             with self.subTest(resource_type=resource_type):
                 self.assertIn(resource_type, self.source)
+
+    def test_resource_elements_follow_sonar_recommended_order(self):
+        violations = []
+        for resource_name, elements in _resource_element_sequences(self.source):
+            violating_element = _first_resource_order_violation(elements)
+            if violating_element is not None:
+                violations.append(f"{resource_name}: {violating_element} in {elements}")
+        self.assertEqual([], violations)
 
     def test_template_is_staging_only_and_application_is_opt_in(self):
         self.assertRegex(
