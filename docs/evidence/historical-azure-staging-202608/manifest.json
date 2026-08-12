@@ -1,0 +1,91 @@
+{
+  "schema_version": "sentinel.historical_azure_evidence.v1",
+  "archive_id": "AZURE-STAGING-20260804-05",
+  "classification": "historical_sanitized_staging_evidence",
+  "environment": "staging",
+  "captured_from_utc": "2026-08-04T01:20:50Z",
+  "captured_to_utc": "2026-08-05T08:09:28Z",
+  "provenance": {
+    "source_commit_sha": "09e7f50c3c737c42d9b2c6f597cc8cb1faa70e37",
+    "runtime_image_digest": "sha256:ac205a6a8fc9426a80fc99eccef38a5f9538be722af141d10e8fef31808a12f2",
+    "assurance_image_digest": "sha256:22becc5c564adc59830c51263deea43ff9eb21eac143dc9569cbaab61123df13"
+  },
+  "claim_boundary": {
+    "production_ready": false,
+    "current_live_gate_credit": false,
+    "decision": "HISTORICAL_ONLY_NO_CURRENT_GATE_CREDIT",
+    "statement": "Selected controls passed in a private synthetic Azure staging run tied to an older source revision. This archive is not production approval and cannot satisfy current live gates."
+  },
+  "controls": [
+    {
+      "control_id": "managed_identity_initial_audience",
+      "status": "failed",
+      "summary": "The initial role-separated identity rehearsal failed closed because the token audience did not match the deployed verifier contract.",
+      "source_file": "azure-mi-audience-failure-evidence-20260804.json",
+      "source_sha256": "91cfea4be0ae3a52652265c0f0ee4b84197f1268e6dafef7cf6f0f34201d8025"
+    },
+    {
+      "control_id": "authenticated_lifecycle",
+      "status": "passed",
+      "summary": "The corrected role-separated synthetic lifecycle passed 20 of 20 checks and reached a closed finding state.",
+      "source_file": "azure-staging-lifecycle-evidence-20260804.json",
+      "source_sha256": "291caf35c95ab01f89b31c366b4bb69b5f96c5ee59ee7b688e884a712e6d0349"
+    },
+    {
+      "control_id": "service_bus_delivery",
+      "status": "passed",
+      "summary": "Eleven unique canonical messages completed across two synthetic staging sessions.",
+      "source_file": "azure-staging-servicebus-evidence-20260804.json",
+      "source_sha256": "a0732d198ff55c9deb89946df8d27305164d9bd702108b7606f06646c65137cb"
+    },
+    {
+      "control_id": "dead_letter_recovery",
+      "status": "passed",
+      "summary": "Bounded delivery attempts reached the dead-letter path and one message was recovered without residual queue messages.",
+      "source_file": "azure-staging-servicebus-evidence-20260804.json",
+      "source_sha256": "a0732d198ff55c9deb89946df8d27305164d9bd702108b7606f06646c65137cb"
+    },
+    {
+      "control_id": "restart_recovery",
+      "status": "passed",
+      "summary": "A committed synthetic event was delivered after a revision restart and the queue returned to a clean state.",
+      "source_file": "azure-staging-restart-rollback-evidence-20260804.json",
+      "source_sha256": "26e966b9f113fcc6021283ad0799ac957e2052e42f3ff0f850450d38c8998813"
+    },
+    {
+      "control_id": "revision_rollback",
+      "status": "passed",
+      "summary": "The recorded known-good revision returned healthy private health and readiness responses after rollback.",
+      "source_file": "azure-staging-restart-rollback-evidence-20260804.json",
+      "source_sha256": "26e966b9f113fcc6021283ad0799ac957e2052e42f3ff0f850450d38c8998813"
+    },
+    {
+      "control_id": "postgresql_restore",
+      "status": "passed",
+      "summary": "A temporary private point-in-time restore verified eleven required tables and selected lifecycle records before cleanup.",
+      "source_file": "azure-staging-postgres-restore-evidence-20260804.json",
+      "source_sha256": "08dc83668403e04d6869c299ed9cdf43a11165fa9c8b5672601793501b10f544"
+    },
+    {
+      "control_id": "monitoring_alert_firing",
+      "status": "passed",
+      "summary": "A severity-two platform metric alert fired after bounded canonical synthetic queue activity.",
+      "source_file": "azure-staging-monitoring-alert-evidence-20260805.json",
+      "source_sha256": "3735106c1d3c31f5d069d8a69889290a33a07167c89e67cc7d295f8375c0aa30"
+    },
+    {
+      "control_id": "monitoring_auto_resolution",
+      "status": "partial",
+      "summary": "The alert fired, but automatic resolution was not observed within the bounded five-minute wait.",
+      "source_file": "azure-staging-monitoring-alert-evidence-20260805.json",
+      "source_sha256": "3735106c1d3c31f5d069d8a69889290a33a07167c89e67cc7d295f8375c0aa30"
+    },
+    {
+      "control_id": "monitoring_notification_delivery",
+      "status": "not_tested",
+      "summary": "No external notification or escalation receiver was configured for the temporary staging alert.",
+      "source_file": "azure-staging-monitoring-alert-evidence-20260805.json",
+      "source_sha256": "3735106c1d3c31f5d069d8a69889290a33a07167c89e67cc7d295f8375c0aa30"
+    }
+  ]
+}

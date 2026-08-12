@@ -26,7 +26,15 @@ jobs:
         run: python -m unittest test_production_image_closure -v
 
       - name: Run unit tests
-        run: python -m unittest discover -v -p "test_*.py"
+        shell: pwsh
+        run: |
+          $unitModules = Get-ChildItem -File -Filter "test_*.py" |
+            Where-Object { $_.Name -notlike "test_postgres*.py" } |
+            ForEach-Object { $_.BaseName }
+          if (-not $unitModules) {
+            throw "No unit test modules were discovered"
+          }
+          python -m unittest -v @unitModules
 
       - name: Run offline staging assurance
         run: >-

@@ -12,6 +12,17 @@ class SupplyChainPolicyTests(unittest.TestCase):
         self.assertNotIn("requirements.txt", dockerfile)
         self.assertIn("--hash=sha256:", lock)
         self.assertNotRegex(lock, r"(?m)^[a-zA-Z0-9_.-]+\s*(?:>=|~=|>|<)")
+    def test_ci_partitions_unit_and_postgres_integration_suites(self):
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('Where-Object { $_.Name -notlike "test_postgres*.py" }', workflow)
+        self.assertIn("python -m unittest -v @unitModules", workflow)
+        self.assertIn(
+            'python -m unittest discover -v -p "test_postgres*.py"',
+            workflow,
+        )
+
     def test_container_context_uses_explicit_runtime_allowlist(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         assurance = (ROOT / "Dockerfile.assurance").read_text(encoding="utf-8")
