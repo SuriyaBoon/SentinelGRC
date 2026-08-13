@@ -39,15 +39,32 @@ jobs:
           docker buildx build --load --file Dockerfile.assurance \
             --build-arg RUNTIME_IMAGE=sentinelgrc:release \
             --tag sentinelgrc-assurance:release .
+          docker buildx build --load --file Dockerfile.qualification \
+            --build-arg RUNTIME_IMAGE=sentinelgrc:release \
+            --tag sentinelgrc-qualification:release .
           docker run --rm --entrypoint python sentinelgrc:release -c \
-            "import pathlib, runtime_app; assert not pathlib.Path('/app/scripts').exists()"
+            "import importlib.util, pathlib, runtime_app; assert not pathlib.Path('/app/scripts').exists(); assert importlib.util.find_spec('yaml') is None"
+          docker run --rm --entrypoint python sentinelgrc-qualification:release -c \
+            "import yaml; assert yaml.__version__ == '6.0.3'"
           docker run --rm --entrypoint python sentinelgrc-assurance:release -c \
             "import pathlib, scripts.azure_staging_validator; p=[pathlib.Path('/app/scripts/__init__.py'),pathlib.Path('/app/scripts/azure_staging_validator.py')]; assert all(x.stat().st_uid == 0 and (x.stat().st_mode & 0o222) == 0 for x in p)"
+          runtime_test_modules=$(find . -maxdepth 1 -type f -name 'test_*.py' \
+            ! -name 'test_security_assessment.py' \
+            ! -name 'test_supply_chain_policy.py' \
+            ! -name 'test_production_image_closure.py' \
+            -printf '%f\n' | sed 's/\.py$//' | sort)
+          test -n "$runtime_test_modules"
           docker run --rm --network host \
             --mount "type=bind,source=$PWD,target=/src,readonly" --workdir /src \
             --entrypoint python \
             -e SENTINEL_TEST_POSTGRES_URL=postgresql://sentinel:sentinel-test-only@127.0.0.1:5432/sentinel_test \
-            sentinelgrc:release -m unittest discover -v -p "test_*.py"
+            sentinelgrc:release -m unittest -v $runtime_test_modules
+          docker run --rm --network host \
+            --mount "type=bind,source=$PWD,target=/src,readonly" --workdir /src \
+            --entrypoint python \
+            -e SENTINEL_TEST_POSTGRES_URL=postgresql://sentinel:sentinel-test-only@127.0.0.1:5432/sentinel_test \
+            sentinelgrc-qualification:release -m unittest -v \
+              test_security_assessment test_supply_chain_policy test_production_image_closure
           docker run --rm --mount "type=bind,source=$PWD,target=/src,readonly" \
             --entrypoint /bin/sh \
             mcr.microsoft.com/azure-cli@sha256:23b520868509add054d385d90dc3fc5268f10a2f58947a994e30babe938e31ae \

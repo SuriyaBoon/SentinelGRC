@@ -14,10 +14,12 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent
 DOCKERFILE_PATH = REPO_ROOT / "Dockerfile"
 ASSURANCE_DOCKERFILE_PATH = REPO_ROOT / "Dockerfile.assurance"
+QUALIFICATION_DOCKERFILE_PATH = REPO_ROOT / "Dockerfile.qualification"
 MANIFEST_PATH = REPO_ROOT / "docker_image_manifest.txt"
 WHITELIST_PATH = REPO_ROOT / "config" / "runtime-dynamic-import-whitelist.json"
 ASCII_AUDIT_FILES = (
     MANIFEST_PATH,
+    QUALIFICATION_DOCKERFILE_PATH,
     WHITELIST_PATH,
     Path(__file__),
 )
@@ -40,6 +42,29 @@ REQUIRED_WHITELIST_FIELDS = {
     "owner",
     "expiry",
 }
+def _effective_docker_instructions(dockerfile_path: Path) -> list[tuple[str, str]]:
+    """Parse effective Dockerfile instructions, including continuations."""
+    instructions: list[tuple[str, str]] = []
+    current = ""
+    for raw_line in dockerfile_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        continued = line.endswith("\\")
+        fragment = line[:-1].rstrip() if continued else line
+        current = f"{current} {fragment}".strip()
+        if continued:
+            continue
+        directive, separator, argument = current.partition(" ")
+        if not separator:
+            raise AssertionError(f"Dockerfile instruction has no argument: {current}")
+        instructions.append((directive.upper(), argument.strip()))
+        current = ""
+    if current:
+        raise AssertionError("Dockerfile ends with an incomplete continuation")
+    return instructions
+
+
 def _docker_copy_sources(dockerfile_path: Path) -> list[str]:
     sources: list[str] = []
     for line_number, raw_line in enumerate(
@@ -216,6 +241,29 @@ class ProductionImageClosureTests(unittest.TestCase):
             - available
         )
         self.assertEqual(missing, set())
+    def test_qualification_overlay_adds_only_hash_locked_assessment_dependencies(self) -> None:
+        instructions = _effective_docker_instructions(QUALIFICATION_DOCKERFILE_PATH)
+        self.assertEqual(
+            instructions,
+            [
+                ("ARG", "RUNTIME_IMAGE=sentinelgrc:runtime-image-required"),
+                ("FROM", "${RUNTIME_IMAGE}"),
+                ("USER", "root"),
+                (
+                    "COPY",
+                    "--chown=0:0 requirements-assessment-hashed.txt "
+                    "/tmp/requirements-assessment-hashed.txt",
+                ),
+                (
+                    "RUN",
+                    "python -m pip install --no-cache-dir --require-hashes "
+                    "--requirement /tmp/requirements-assessment-hashed.txt "
+                    "&& chmod 0444 /tmp/requirements-assessment-hashed.txt",
+                ),
+                ("USER", "10001:10001"),
+            ],
+        )
+
     def test_local_import_closure_is_complete(self) -> None:
         missing: dict[str, list[str]] = {}
         for relative_path in sorted(self.copied):
