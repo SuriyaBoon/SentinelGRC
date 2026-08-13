@@ -12,6 +12,67 @@ class SupplyChainPolicyTests(unittest.TestCase):
         self.assertNotIn("requirements.txt", dockerfile)
         self.assertIn("--hash=sha256:", lock)
         self.assertNotRegex(lock, r"(?m)^[a-zA-Z0-9_.-]+\s*(?:>=|~=|>|<)")
+    def test_all_ci_actions_are_immutable_and_security_assessment_is_retained(self):
+        from scripts.path_policy import _allowed_output_path
+        from security_assessment import _actions_are_pinned
+
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        pinned, evidence = _actions_are_pinned(ROOT)
+        self.assertTrue(pinned, evidence)
+        self.assertEqual(
+            len(re.findall(r"(?m)^  security-assessment:\s*$", workflow)), 1
+        )
+        self.assertIn(
+            "pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266",
+            workflow,
+        )
+        tail = workflow.split("\n  security-assessment:\n", 1)[1]
+        lines = tail.splitlines()
+        end = next(
+            (
+                index
+                for index, line in enumerate(lines)
+                if line.startswith("  ")
+                and not line.startswith("    ")
+                and line.rstrip().endswith(":")
+            ),
+            len(lines),
+        )
+        assessment = "\n".join(lines[:end])
+        self.assertIn("security-assessment-evidence.json", assessment)
+        self.assertIn("if-no-files-found: error", assessment)
+        self.assertIn("CI_RUN_ID: ${{ github.run_id }}", assessment)
+        self.assertIn("persist-credentials: false", assessment)
+        self.assertIn("requirements-assessment-hashed.txt", assessment)
+        self.assertIn(
+            "inputs: >-\n            requirements-hashed.txt\n"
+            "            requirements-assessment-hashed.txt",
+            assessment,
+        )
+        collect_step = assessment.split(
+            "      - name: Collect pre-live security assessment\n", 1
+        )[1].split("      - name:", 1)[0]
+        self.assertIn("        if: always()", collect_step)
+        expected = (
+            ROOT / "runtime/staging-assurance/security-assessment-evidence.json"
+        ).resolve()
+        self.assertEqual(
+            _allowed_output_path(
+                "runtime/staging-assurance/security-assessment-evidence.json",
+                ROOT,
+                purpose="test security assessment output",
+            ),
+            expected,
+        )
+        with self.assertRaises(ValueError):
+            _allowed_output_path(
+                "runtime/staging-assurance/security-assessment-evidence-copy.json",
+                ROOT,
+                purpose="test neighboring output rejection",
+            )
+
     def test_ci_partitions_unit_and_postgres_integration_suites(self):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
