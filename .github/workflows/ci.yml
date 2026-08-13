@@ -42,6 +42,24 @@ jobs:
           --policy config/staging-assurance.example.json
           --alerts docs/evidence/staging-readiness/logwatcher-security-alert.v1.jsonl
 
+      - name: Collect hermetic load and soak baseline
+        if: always()
+        run: >-
+          python -m scripts.collect_load_soak_evidence
+          --source-commit "${{ github.sha }}"
+          --unique-findings 80
+          --replay-rounds 1
+          --concurrency 4
+          --duration-seconds 1
+
+      - name: Retain hermetic load and soak evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: load-soak-${{ github.run_id }}-${{ github.run_attempt }}
+          path: runtime/staging-assurance/load-soak-evidence.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Parse PowerShell agents
         shell: pwsh
         run: |

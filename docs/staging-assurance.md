@@ -272,3 +272,46 @@ The retained artifact is canonical, hash-verifiable, bound to the tested source
 commit, and contains no endpoint, credential, container identity, Azure
 identifier, or raw business record. It grants zero Azure live-validation credit
 and preserves `NO_GO_PENDING_LIVE_EVIDENCE`.
+
+## Hermetic load and soak baseline
+
+The repository includes a bounded performance baseline that exercises the real
+`GovernanceCore.upsert_finding()` transaction path and drains its transactional
+outbox through `OutboxWorker` and an in-memory publisher. Stable finding IDs are
+replayed deliberately to verify reassessment without duplicate business records.
+
+Run the default CI-sized profile:
+
+```powershell
+python -m scripts.collect_load_soak_evidence `
+  --source-commit <reviewed-40-character-commit-sha> `
+  --unique-findings 80 `
+  --replay-rounds 1 `
+  --concurrency 4 `
+  --duration-seconds 1
+```
+
+The fixed output is
+`runtime/staging-assurance/load-soak-evidence.json`. It reports operation count,
+expected reassessments, persisted finding cardinality, outbox delivery and
+backlog, throughput, p50/p95/p99 latency, process CPU time, peak traced Python
+memory, bounded error classes, gate decisions, and a canonical SHA-256 checksum.
+The validator re-derives throughput from operation count and elapsed time and
+recomputes p50/p95/p99 from the retained bounded latency samples. This provides
+internal consistency checks. The unkeyed checksum detects accidental corruption
+but is not proof that the collector or a person with artifact-write access is
+authentic. No cryptographic attestation or production performance claim is made.
+
+The fixed defaults are intentionally broad CI regression guards: minimum
+throughput 1 operation per second, maximum p95 latency 2000 ms, and maximum
+peak traced memory 128 MiB. The CLI does not expose these thresholds. They are
+not a production SLO or Azure capacity statement. Exit code `0` means all hermetic
+thresholds passed, `1` means a valid evidence document contains a `NO_GO`
+decision, and `2` means configuration or evidence validation failed.
+
+This baseline does not test Azure networking, Service Bus, Blob Storage,
+Managed Identity, PostgreSQL service limits, autoscaling, multi-replica
+coordination, platform throttling, or a real business workload. It performs no
+Azure mutation, grants no live-validation gate credit, makes no production
+capacity claim, and always retains the production boundary
+`NO_GO_PENDING_LIVE_EVIDENCE`.
