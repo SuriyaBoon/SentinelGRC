@@ -12,6 +12,34 @@ class SupplyChainPolicyTests(unittest.TestCase):
         self.assertNotIn("requirements.txt", dockerfile)
         self.assertIn("--hash=sha256:", lock)
         self.assertNotRegex(lock, r"(?m)^[a-zA-Z0-9_.-]+\s*(?:>=|~=|>|<)")
+    def test_all_ci_actions_are_immutable_and_security_assessment_is_retained(self):
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotRegex(
+            workflow, r"(?m)^\s*(?:-\s*)?uses:\s+[^\s]+@v\d+"
+        )
+        self.assertEqual(
+            len(re.findall(r"(?m)^  security-assessment:\s*$", workflow)), 1
+        )
+        self.assertIn(
+            "pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266",
+            workflow,
+        )
+        self.assertIn("security-assessment-evidence.json", workflow)
+        self.assertIn("if-no-files-found: error", workflow)
+        policy_source = (ROOT / "scripts" / "path_policy.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertEqual(
+            len(re.findall(
+                r'(?m)^\s*"runtime/staging-assurance/'
+                r'security-assessment-evidence\.json": Path\($',
+                policy_source,
+            )),
+            1,
+        )
+
     def test_ci_partitions_unit_and_postgres_integration_suites(self):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
