@@ -12,10 +12,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.12"
 
@@ -108,10 +108,10 @@ jobs:
           --health-retries 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.12"
 
@@ -269,3 +269,44 @@ jobs:
       - name: Stop runtime
         if: always()
         run: docker stop sentinelgrc-smoke || true
+
+  security-assessment:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout reviewed source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Audit hash-locked dependencies
+        id: pip_audit
+        continue-on-error: true
+        uses: pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266
+        with:
+          inputs: requirements-hashed.txt
+          require-hashes: true
+          no-deps: true
+      - name: Collect pre-live security assessment
+        if: always()
+        env:
+          CI_RUN_ID: ${{ github.run_id }}
+          DEPENDENCY_SCAN_OUTCOME: ${{ steps.pip_audit.outcome }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: >-
+          python -m scripts.collect_security_assessment
+          --source-commit "$SOURCE_COMMIT"
+          --dependency-scan-outcome "$DEPENDENCY_SCAN_OUTCOME"
+          --ci-run-id "$CI_RUN_ID"
+      - name: Retain pre-live security assessment
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: security-assessment-${{ github.run_id }}-${{ github.run_attempt }}
+          path: runtime/staging-assurance/security-assessment-evidence.json
+          if-no-files-found: error
+          retention-days: 30
