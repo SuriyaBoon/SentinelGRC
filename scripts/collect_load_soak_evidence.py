@@ -14,6 +14,15 @@ OUTPUT_PATH = "runtime/staging-assurance/load-soak-evidence.json"
 
 
 def main(argv: list[str] | None = None) -> int:
+    """
+    Collect and validate load/soak evidence from command-line arguments.
+    
+    Parameters:
+        argv (list[str] | None): Command-line arguments to parse, or None to use the process arguments.
+    
+    Returns:
+        int: 0 for a passing decision, 1 for a non-passing decision, or 2 for a handled input or file error.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--unique-findings", type=int, default=80)

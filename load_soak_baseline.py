@@ -36,6 +36,11 @@ class LoadSoakProfile:
     maximum_peak_traced_bytes: int = 128 * 1024 * 1024
 
     def validate(self) -> None:
+        """Validate the configured load/soak profile limits.
+        
+        Raises:
+            ValueError: If any profile value falls outside its allowed range.
+        """
         if not 1 <= self.unique_findings <= 10_000:
             raise ValueError("unique_findings must be between 1 and 10000")
         if not 0 <= self.replay_rounds <= 10:
@@ -53,6 +58,16 @@ class LoadSoakProfile:
 
 
 def _percentile(values: list[float], percentile: int) -> float:
+    """
+    Compute a rounded percentile from a collection of numeric values.
+    
+    Parameters:
+    	values (list[float]): Values from which to compute the percentile.
+    	percentile (int): Percentile to select, expressed as a percentage.
+    
+    Returns:
+    	float: The selected percentile rounded to three decimal places, or 0.0 when no values are provided.
+    """
     if not values:
         return 0.0
     ordered = sorted(values)
@@ -61,15 +76,43 @@ def _percentile(values: list[float], percentile: int) -> float:
 
 
 def _canonical(value: dict[str, Any]) -> str:
+    """
+    Serialize a dictionary into a deterministic JSON representation.
+    
+    Parameters:
+    	value (dict[str, Any]): The dictionary to serialize.
+    
+    Returns:
+    	str: The JSON representation with sorted keys and stable formatting.
+    """
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
 def _work_items(profile: LoadSoakProfile) -> list[int]:
+    """
+    Create finding identities and their configured replay rounds.
+    
+    Parameters:
+    	profile (LoadSoakProfile): Workload configuration containing the number of unique findings and replay rounds.
+    
+    Returns:
+    	list[int]: Finding identities, followed by one additional copy of all identities for each replay round.
+    """
     identities = list(range(profile.unique_findings))
     return identities + identities * profile.replay_rounds
 
 
 def _run_operations(core: GovernanceCore, profile: LoadSoakProfile) -> tuple[list[float], list[str]]:
+    """
+    Executes the configured finding upsert workload and records operation outcomes.
+    
+    Parameters:
+    	core (GovernanceCore): Governance service used to upsert findings.
+    	profile (LoadSoakProfile): Workload and timing configuration.
+    
+    Returns:
+    	tuple[list[float], list[str]]: Operation latencies in milliseconds and exception class names for failed operations.
+    """
     actor = ActorContext("load-soak-analyst", "analyst", "hermetic_test")
     items = _work_items(profile)
     started = time.perf_counter()
@@ -78,6 +121,12 @@ def _run_operations(core: GovernanceCore, profile: LoadSoakProfile) -> tuple[lis
     errors: list[str] = []
 
     def execute(position_and_identity: tuple[int, int]) -> None:
+        """
+        Execute one scheduled finding upsert and record its latency and any exception class.
+        
+        Parameters:
+            position_and_identity (tuple[int, int]): The operation position and unique finding identity.
+        """
         position, identity = position_and_identity
         target = started + (profile.duration_seconds * position / max(1, len(items) - 1))
         remaining = target - time.perf_counter()
@@ -107,6 +156,16 @@ def _run_operations(core: GovernanceCore, profile: LoadSoakProfile) -> tuple[lis
 
 
 def _drain_outbox(core: GovernanceCore, maximum: int) -> tuple[int, dict[str, int | float]]:
+    """
+    Drains the governance outbox and reports delivery and queue metrics.
+    
+    Parameters:
+    	core (GovernanceCore): Governance instance whose outbox is processed.
+    	maximum (int): Maximum number of worker iterations to perform.
+    
+    Returns:
+    	tuple[int, dict[str, int | float]]: Number of delivered messages and the resulting outbox metrics.
+    """
     queue = GovernanceOutboxQueue(core.database)
     publisher = MemoryOutboxPublisher()
     worker = OutboxWorker(queue, publisher, "hermetic-load-worker")
@@ -121,6 +180,19 @@ def _drain_outbox(core: GovernanceCore, maximum: int) -> tuple[int, dict[str, in
 
 
 def collect_load_soak_evidence(profile: LoadSoakProfile, source_commit: str) -> dict[str, Any]:
+    """
+    Collect hermetic load/soak metrics and produce a checksummed evidence envelope.
+    
+    Parameters:
+    	profile (LoadSoakProfile): Workload and acceptance thresholds for the test.
+    	source_commit (str): Source commit SHA associated with the evidence.
+    
+    Returns:
+    	dict[str, Any]: Evidence document containing the profile, metrics, gate results, decision, claim boundaries, and SHA-256 checksum.
+    
+    Raises:
+    	ValueError: If the profile or source commit SHA is invalid.
+    """
     profile.validate()
     if SOURCE_SHA.fullmatch(source_commit) is None:
         raise ValueError("source commit SHA is invalid")
@@ -188,12 +260,35 @@ def collect_load_soak_evidence(profile: LoadSoakProfile, source_commit: str) -> 
 
 
 def _number(value: Any, field: str) -> float:
+    """
+    Validate and normalize a finite, non-negative numeric value.
+    
+    Parameters:
+        value (Any): Value to validate.
+        field (str): Field name used in the validation error message.
+    
+    Returns:
+        float: The validated value as a floating-point number.
+    
+    Raises:
+        ValueError: If the value is boolean, non-numeric, non-finite, or negative.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
         raise ValueError(f"{field} must be a finite non-negative number")
     return float(value)
 
 
 def _evaluate_gates(metrics: dict[str, Any], profile: LoadSoakProfile) -> dict[str, bool]:
+    """
+    Evaluate load-soak performance, correctness, delivery, and resource thresholds.
+    
+    Parameters:
+        metrics (dict[str, Any]): Collected operation, delivery, latency, throughput, and memory metrics.
+        profile (LoadSoakProfile): Configured workload and acceptance thresholds.
+    
+    Returns:
+        dict[str, bool]: Named pass/fail results for each load-soak acceptance gate.
+    """
     operation_count = profile.unique_findings * (profile.replay_rounds + 1)
     outbox = metrics["outbox"]
     return {
@@ -209,6 +304,18 @@ def _evaluate_gates(metrics: dict[str, Any], profile: LoadSoakProfile) -> dict[s
 
 
 def _validated_profile(value: Any) -> LoadSoakProfile:
+    """
+    Validate and construct a load and soak profile from a mapping.
+    
+    Parameters:
+    	value (Any): Candidate profile data containing exactly the fields defined by `LoadSoakProfile`.
+    
+    Returns:
+    	LoadSoakProfile: The validated load and soak profile.
+    
+    Raises:
+    	ValueError: If the value has invalid fields, types, or configured values.
+    """
     expected = set(LoadSoakProfile.__dataclass_fields__)
     if not isinstance(value, dict) or set(value) != expected:
         raise ValueError("load and soak profile fields are invalid")
@@ -221,6 +328,7 @@ def _validated_profile(value: Any) -> LoadSoakProfile:
 
 
 def _validate_metric_shape(metrics: Any) -> None:
+    """Validate that load-and-soak metrics contain exactly the required fields."""
     expected = {
         "operations", "unique_findings", "expected_reassessments",
         "actual_reassessments", "persisted_findings", "delivered_events",
@@ -232,6 +340,9 @@ def _validate_metric_shape(metrics: Any) -> None:
 
 
 def _validate_integer_metrics(metrics: dict[str, Any]) -> None:
+    """
+    Validate that count-like load and soak metrics are non-negative integers.
+    """
     names = (
         "operations", "unique_findings", "expected_reassessments",
         "actual_reassessments", "persisted_findings", "delivered_events",
@@ -247,6 +358,7 @@ def _validate_integer_metrics(metrics: dict[str, Any]) -> None:
 
 
 def _validate_cardinality(metrics: dict[str, Any], profile: LoadSoakProfile) -> None:
+    """Validate that operation, finding, and reassessment counts match the configured load and replay profile."""
     expected_operations = profile.unique_findings * (profile.replay_rounds + 1)
     if (
         metrics["operations"] != expected_operations
@@ -258,6 +370,9 @@ def _validate_cardinality(metrics: dict[str, Any], profile: LoadSoakProfile) -> 
 
 
 def _validate_error_metrics(metrics: dict[str, Any]) -> None:
+    """
+    Validate error counts and exception class names in load/soak metrics.
+    """
     classes = metrics["error_classes"]
     if not isinstance(classes, list) or any(
         not isinstance(name, str) or ERROR_CLASS.fullmatch(name) is None
@@ -269,6 +384,12 @@ def _validate_error_metrics(metrics: dict[str, Any]) -> None:
 
 
 def _validate_latency(metrics: dict[str, Any]) -> None:
+    """
+    Validate latency percentile metrics and their ordering.
+    
+    Parameters:
+    	metrics (dict[str, Any]): Metrics containing `p50`, `p95`, and `p99` latency values.
+    """
     latency = metrics["latency_ms"]
     if not isinstance(latency, dict) or set(latency) != {"p50", "p95", "p99"}:
         raise ValueError("load and soak latency metrics are invalid")
@@ -279,6 +400,7 @@ def _validate_latency(metrics: dict[str, Any]) -> None:
 
 
 def _validate_outbox(metrics: dict[str, Any]) -> None:
+    """Validate outbox counters, pending age, and delivery-count consistency in load/soak metrics."""
     outbox = metrics["outbox"]
     expected = {"delivered", "pending", "dead", "retrying", "oldest_pending_age_seconds"}
     if not isinstance(outbox, dict) or set(outbox) != expected:
@@ -292,6 +414,13 @@ def _validate_outbox(metrics: dict[str, Any]) -> None:
 
 
 def _validate_metrics(metrics: Any, profile: LoadSoakProfile) -> None:
+    """
+    Validate the structure and values of load/soak performance metrics against a profile.
+    
+    Parameters:
+    	metrics (Any): Metrics mapping to validate.
+    	profile (LoadSoakProfile): Profile whose configured cardinality constraints must be satisfied.
+    """
     _validate_metric_shape(metrics)
     _validate_integer_metrics(metrics)
     _validate_cardinality(metrics, profile)
@@ -302,6 +431,18 @@ def _validate_metrics(metrics: Any, profile: LoadSoakProfile) -> None:
     _validate_outbox(metrics)
 
 def validate_load_soak_evidence(envelope: dict[str, Any]) -> dict[str, Any]:
+    """
+    Validate the structure, metrics, gates, claim boundary, decision, and checksum of load and soak evidence.
+    
+    Parameters:
+        envelope (dict[str, Any]): Evidence envelope containing the document and its SHA-256 checksum.
+    
+    Returns:
+        dict[str, Any]: The validated evidence envelope.
+    
+    Raises:
+        ValueError: If the envelope, document, metrics, gates, claim boundary, decision, or checksum is invalid.
+    """
     if set(envelope) != {"document", "document_sha256"} or not isinstance(envelope["document"], dict):
         raise ValueError("load and soak evidence envelope is invalid")
     document = envelope["document"]
