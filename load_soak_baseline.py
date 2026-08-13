@@ -148,6 +148,7 @@ def collect_load_soak_evidence(profile: LoadSoakProfile, source_commit: str) -> 
             for event in core.list_events(f"LOAD-{identity:08d}")
         )
 
+    elapsed_seconds = round(elapsed, 3)
     metrics = {
         "operations": operation_count,
         "unique_findings": profile.unique_findings,
@@ -157,8 +158,8 @@ def collect_load_soak_evidence(profile: LoadSoakProfile, source_commit: str) -> 
         "delivered_events": delivered,
         "errors": len(errors),
         "error_classes": sorted(set(errors)),
-        "elapsed_seconds": round(elapsed, 3),
-        "throughput_per_second": round(operation_count / elapsed, 3),
+        "elapsed_seconds": elapsed_seconds,
+        "throughput_per_second": round(operation_count / elapsed_seconds, 3),
         "latency_ms": {
             "p50": _percentile(latencies, 50),
             "p95": _percentile(latencies, 95),
@@ -295,8 +296,15 @@ def _validate_metrics(metrics: Any, profile: LoadSoakProfile) -> None:
     _validate_metric_shape(metrics)
     _validate_integer_metrics(metrics)
     _validate_cardinality(metrics, profile)
-    for name in ("elapsed_seconds", "throughput_per_second", "cpu_seconds"):
-        _number(metrics[name], name)
+    elapsed = _number(metrics["elapsed_seconds"], "elapsed_seconds")
+    if elapsed <= 0:
+        raise ValueError("elapsed_seconds must be positive")
+    _number(metrics["cpu_seconds"], "cpu_seconds")
+    # Re-derive throughput and verify consistency
+    stored_throughput = _number(metrics["throughput_per_second"], "throughput_per_second")
+    derived_throughput = round(metrics["operations"] / elapsed, 3)
+    if stored_throughput != derived_throughput:
+        raise ValueError("throughput_per_second is inconsistent with operations and elapsed_seconds")
     _validate_error_metrics(metrics)
     _validate_latency(metrics)
     _validate_outbox(metrics)

@@ -113,6 +113,9 @@ class LoadSoakBaselineTests(unittest.TestCase):
         replay = collect_load_soak_evidence(self.profile(), SOURCE_COMMIT)
         replay["document"]["metrics"]["actual_reassessments"] -= 1
         cases.append((replay, "gates are inconsistent"))
+        throughput = collect_load_soak_evidence(self.profile(), SOURCE_COMMIT)
+        throughput["document"]["metrics"]["throughput_per_second"] *= 2
+        cases.append((throughput, "throughput_per_second is inconsistent"))
         for envelope, message in cases:
             with self.subTest(message=message):
                 self._rehash(envelope)
@@ -130,7 +133,7 @@ class LoadSoakBaselineTests(unittest.TestCase):
             previous = Path.cwd()
             try:
                 os.chdir(temp)
-                self.assertEqual(Path.cwd(), Path(temp).resolve())
+                self.assertTrue(os.path.samefile(Path.cwd(), temp))
                 stdout = StringIO()
                 with redirect_stdout(stdout):
                     result = main([
