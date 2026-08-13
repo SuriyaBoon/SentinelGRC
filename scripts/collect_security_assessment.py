@@ -20,7 +20,17 @@ OUTPUT_PATH = "runtime/staging-assurance/security-assessment-evidence.json"
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Collect, validate, and write the fixed security evidence artifact."""
+    """
+    Collect, validate, and write the security assessment evidence artifact.
+    
+    Parameters:
+        argv (list[str] | None): Optional command-line arguments to parse. If omitted,
+            arguments are read from the command line.
+    
+    Returns:
+        int: `0` for an offline pass, `1` for a non-passing assessment, or `2` for
+            handled input or filesystem errors.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--assessed-on", default=datetime.now(timezone.utc).date().isoformat())

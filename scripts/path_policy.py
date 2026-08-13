@@ -52,7 +52,21 @@ def load_json_under_root(
 
 
 def _allowed_output_path(value: str | Path, root: str | Path, *, purpose: str) -> Path:
-    """Select a fixed output route and validate any worker-owned evidence ID."""
+    """
+    Validate and resolve an approved runtime output path beneath a root directory.
+    
+    Parameters:
+        value: Candidate output path.
+        root: Directory that must contain the resolved output path.
+        purpose: Context used in validation error messages.
+    
+    Returns:
+        The validated output path beneath ``root``.
+    
+    Raises:
+        ValueError: If the path is outside the root or does not match an approved
+            fixed destination or evidence-ID-based output filename.
+    """
     boundary = Path(root).expanduser().resolve(strict=False)
     resolved = resolve_under_root(value, boundary, purpose=purpose)
     relative = resolved.relative_to(boundary).as_posix()

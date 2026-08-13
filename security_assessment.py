@@ -82,7 +82,18 @@ def _canonical(value: dict[str, Any]) -> str:
 
 
 def decode_tool_report(value: str) -> bytes:
-    """Decode a bounded nonempty base64 scanner report."""
+    """
+    Decode a bounded, nonempty base64-encoded scanner report.
+    
+    Parameters:
+        value (str): Base64-encoded report text.
+    
+    Returns:
+        bytes: The decoded scanner report.
+    
+    Raises:
+        ValueError: If the input is not valid base64 or the decoded report is empty or exceeds 1 MiB.
+    """
     if not isinstance(value, str) or len(value) > 1_400_000:
         raise ValueError("dependency scan report is invalid")
     try:
@@ -95,7 +106,17 @@ def decode_tool_report(value: str) -> bytes:
 
 
 def build_ci_scan_receipt(source_commit: str, outcome: str, ci_run_id: str) -> bytes:
-    """Build a bounded source/run receipt when pip-audit exposes no report body."""
+    """
+    Builds a canonical receipt identifying a successful pip-audit run when no report body is available.
+    
+    Parameters:
+    	source_commit (str): Full 40-character source commit SHA.
+    	outcome (str): Scan outcome, which must be `"success"`.
+    	ci_run_id (str): CI run identifier.
+    
+    Returns:
+    	bytes: An ASCII-encoded canonical receipt containing the scan action, run ID, outcome, and source commit SHA.
+    """
     if SOURCE_SHA.fullmatch(source_commit) is None or outcome != "success":
         raise ValueError("dependency scan receipt identity is invalid")
     if CI_RUN_ID.fullmatch(ci_run_id) is None:
@@ -162,7 +183,12 @@ def _collect_mapping_action_references(
     active_nodes: set[int],
     budget: list[int],
 ) -> None:
-    """Reject ambiguous mapping keys and collect every structural uses entry."""
+    """
+    Validate a workflow mapping and collect its structural action references.
+    
+    Raises:
+    	ValueError: If a mapping key is invalid or duplicated, or a ``uses`` value is not a nonempty string scalar.
+    """
     keys: set[tuple[str, str]] = set()
     for key_node, value_node in node.value:
         if not isinstance(key_node, ScalarNode) or key_node.tag not in STANDARD_YAML_TAGS:
@@ -182,7 +208,15 @@ def _collect_mapping_action_references(
 
 
 def workflow_action_references(text: str) -> tuple[list[str], int]:
-    """Parse one workflow structurally and fail closed on unsupported YAML."""
+    """
+    Extracts GitHub Actions references from a workflow document.
+    
+    Parameters:
+        text (str): Workflow YAML content to analyze.
+    
+    Returns:
+        tuple[list[str], int]: A tuple containing the action references and an error indicator. The indicator is 0 for valid input and 1 when the document is malformed, unsupported, oversized, or otherwise fails closed.
+    """
     try:
         if len(text.encode("utf-8")) > 1_048_576:
             raise ValueError("workflow YAML exceeds the byte limit")
@@ -281,7 +315,15 @@ class CopySpec:
 
 
 def _copy_flags(argument: str) -> tuple[str | None, str] | None:
-    """Consume reviewed COPY flags and return source image plus remainder."""
+    """
+    Parse supported Dockerfile COPY flags.
+    
+    Parameters:
+        argument: COPY instruction arguments to parse.
+    
+    Returns:
+        A tuple containing the optional source stage or image reference and the remaining arguments, or `None` if the flags are invalid.
+    """
     remaining = argument.strip()
     from_reference: str | None = None
     value_flags = {"chown", "chmod", "exclude", "from"}
@@ -306,7 +348,15 @@ def _copy_flags(argument: str) -> tuple[str | None, str] | None:
 
 
 def _copy_sources(remaining: str) -> tuple[str, ...] | None:
-    """Parse JSON or shell-form COPY sources without interpreting paths."""
+    """
+    Parse COPY arguments into source paths without normalizing or resolving them.
+    
+    Parameters:
+        remaining (str): The JSON-form or shell-form COPY arguments.
+    
+    Returns:
+        tuple[str, ...] | None: The source paths, excluding the destination, or None if the arguments are malformed or contain fewer than two entries.
+    """
     try:
         if remaining.startswith("["):
             values = json.loads(remaining)
@@ -406,7 +456,18 @@ def _from_reference(
     stage_count: int,
     require_pinned_base: bool,
 ) -> tuple[bool, str | None]:
-    """Validate one FROM reference and return its optional stage alias."""
+    """
+    Validate a container `FROM` reference and identify its optional stage alias.
+    
+    Parameters:
+        argument (str): The `FROM` reference to validate.
+        aliases (set[str]): Previously defined stage aliases.
+        stage_count (int): Number of stages already defined.
+        require_pinned_base (bool): Whether external base images must use a digest.
+    
+    Returns:
+        tuple[bool, str | None]: Whether the reference is immutable and its optional stage alias.
+    """
     parsed = _from_spec(argument)
     if parsed is None:
         return False, None
@@ -436,7 +497,7 @@ def _copy_reference_is_immutable(
 def _container_references_are_immutable(
     instructions: list[tuple[str, str]], require_pinned_base: bool
 ) -> bool:
-    """Require digests for external FROM and COPY --from references."""
+    """Validate that external container image references use immutable digests."""
     aliases: set[str] = set()
     stage_count = 0
     for directive, argument in instructions:
@@ -457,7 +518,16 @@ def _container_references_are_immutable(
 
 
 def _container_file_passes(text: str, require_pinned_base: bool) -> bool:
-    """Evaluate final-stage user and broad-copy behavior from parsed directives."""
+    """
+    Determine whether a container definition satisfies its final-user, copy-scope, and image-reference requirements.
+    
+    Parameters:
+        text (str): Container definition to assess.
+        require_pinned_base (bool): Whether external base images must use immutable references.
+    
+    Returns:
+        bool: `true` if the container definition meets all required controls, `false` otherwise.
+    """
     instructions = _docker_instructions(text)
     if not instructions or not _copy_sources_are_narrow(instructions):
         return False
@@ -486,7 +556,15 @@ def _containers_are_pinned_non_root(root: Path) -> tuple[bool, str]:
 
 
 def _security_decisions_are_bounded(root: Path, assessed_on: str) -> tuple[bool, str]:
-    """Require current, explicitly bounded security decisions."""
+    """
+    Verify that security decisions authorize production and remain current as of the assessment date.
+    
+    Parameters:
+        assessed_on (str): Assessment date in ISO format.
+    
+    Returns:
+        tuple[bool, str]: Whether all security decisions are valid and current, plus a summary message.
+    """
     path = root / "config" / "sonar-security-decisions.json"
     try:
         registry = json.loads(path.read_text(encoding="utf-8"))
@@ -574,7 +652,15 @@ def _control(control_id: str, area: str, outcome: tuple[bool, str], owner: str, 
 
 
 def evaluate_repository_controls(root: str | Path, assessed_on: str) -> list[ControlResult]:
-    """Evaluate deterministic security controls that need no live platform."""
+    """Evaluate deterministic repository security controls that do not require live platform access.
+    
+    Parameters:
+        root (str | Path): Repository root to assess.
+        assessed_on (str): Assessment date in ISO format.
+    
+    Returns:
+        list[ControlResult]: Results for the repository security controls.
+    """
     boundary = Path(root).resolve(strict=True)
     date.fromisoformat(assessed_on)
     return [
@@ -637,7 +723,19 @@ def collect_security_assessment(
     dependency_scan_outcome: str,
     dependency_report: bytes | None,
 ) -> dict[str, Any]:
-    """Collect a source-bound assessment while preserving live boundaries."""
+    """
+    Collect a source-bound pre-live security assessment for the repository.
+    
+    Parameters:
+        root (str | Path): Repository root to assess.
+        source_commit (str): Full source commit SHA associated with the assessment.
+        assessed_on (str): Assessment date.
+        dependency_scan_outcome (str): Trusted dependency-scan outcome.
+        dependency_report (bytes | None): Dependency-scan report, when available.
+    
+    Returns:
+        dict[str, Any]: Assessment document and its SHA-256 checksum.
+    """
     if SOURCE_SHA.fullmatch(source_commit) is None:
         raise ValueError("security assessment source commit SHA is invalid")
     controls = evaluate_repository_controls(root, assessed_on)
@@ -672,7 +770,19 @@ def collect_security_assessment(
 def _validate_document_identity(
     envelope: dict[str, Any], trusted_source_commit: str, trusted_assessed_on: str
 ) -> dict[str, Any]:
-    """Validate envelope shape, schema identity, source SHA, and date."""
+    """Validate the identity, structure, and trusted source binding of a security assessment envelope.
+    
+    Parameters:
+        envelope (dict[str, Any]): Assessment envelope to validate.
+        trusted_source_commit (str): Expected source commit SHA.
+        trusted_assessed_on (str): Expected assessment date.
+    
+    Returns:
+        dict[str, Any]: Validated assessment document.
+    
+    Raises:
+        ValueError: If the envelope, document fields, schema identity, source commit, date, or scope is invalid.
+    """
     if set(envelope) != {"document", "document_sha256"} or not isinstance(envelope["document"], dict):
         raise ValueError("security assessment envelope is invalid")
     document = envelope["document"]
@@ -700,7 +810,20 @@ def _validate_controls(
     dependency_scan_outcome: str,
     dependency_report: bytes | None,
 ) -> list[dict[str, Any]]:
-    """Recompute controls from repository state and trusted CI inputs."""
+    """Recompute and validate the assessment controls against the repository state and trusted dependency-scan inputs.
+    
+    Parameters:
+    	document (dict[str, Any]): Security assessment document containing the controls to validate.
+    	root (str | Path): Repository root to assess.
+    	dependency_scan_outcome (str): Trusted dependency-scan result.
+    	dependency_report (bytes | None): Dependency-scan report associated with the outcome.
+    
+    Returns:
+    	list[dict[str, Any]]: The validated control records.
+    
+    Raises:
+    	ValueError: If the document controls are missing, have an unexpected length, or differ from the recomputed controls.
+    """
     controls = document["controls"]
     static = evaluate_repository_controls(root, document["assessed_on"])
     expected_controls = [control.__dict__ for control in static]
@@ -734,7 +857,7 @@ def _validate_dependency_evidence(dependency: dict[str, Any]) -> None:
 def _validate_document_invariants(
     document: dict[str, Any], controls: list[dict[str, Any]]
 ) -> None:
-    """Validate findings, live boundaries, decision, and immutable claims."""
+    """Validate security assessment findings, live-control statuses, decision, and claim boundaries."""
     result_objects = [ControlResult(**item) for item in controls]
     if document["findings"] != _findings(result_objects):
         raise ValueError("security assessment findings are inconsistent")
@@ -763,7 +886,23 @@ def validate_security_assessment(
     trusted_source_commit: str,
     trusted_assessed_on: str,
 ) -> dict[str, Any]:
-    """Validate a complete assessment against repository and trusted CI state."""
+    """
+    Validate an assessment envelope against trusted CI state and the repository contents.
+    
+    Parameters:
+        envelope (dict[str, Any]): Assessment envelope to validate.
+        root (str | Path): Repository root used to recompute repository controls.
+        dependency_scan_outcome (str): Trusted dependency-scan outcome.
+        dependency_report (bytes | None): Dependency-scan report associated with the outcome.
+        trusted_source_commit (str): Expected source commit SHA.
+        trusted_assessed_on (str): Expected assessment date.
+    
+    Returns:
+        dict[str, Any]: The validated assessment envelope.
+    
+    Raises:
+        ValueError: If the envelope, trusted inputs, repository controls, dependency evidence, invariants, or checksum is invalid.
+    """
     if SOURCE_SHA.fullmatch(trusted_source_commit) is None:
         raise ValueError("trusted security assessment source commit is invalid")
     date.fromisoformat(trusted_assessed_on)
