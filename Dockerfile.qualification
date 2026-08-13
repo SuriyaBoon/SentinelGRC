@@ -1,0 +1,7 @@
+ARG RUNTIME_IMAGE=sentinelgrc:runtime-image-required
+FROM ${RUNTIME_IMAGE}
+USER root
+COPY --chown=0:0 requirements-assessment-hashed.txt /tmp/requirements-assessment-hashed.txt
+RUN python -m pip install --no-cache-dir --require-hashes --requirement /tmp/requirements-assessment-hashed.txt \
+    && chmod 0444 /tmp/requirements-assessment-hashed.txt
+USER 10001:10001
