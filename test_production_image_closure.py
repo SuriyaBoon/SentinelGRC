@@ -14,10 +14,12 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent
 DOCKERFILE_PATH = REPO_ROOT / "Dockerfile"
 ASSURANCE_DOCKERFILE_PATH = REPO_ROOT / "Dockerfile.assurance"
+QUALIFICATION_DOCKERFILE_PATH = REPO_ROOT / "Dockerfile.qualification"
 MANIFEST_PATH = REPO_ROOT / "docker_image_manifest.txt"
 WHITELIST_PATH = REPO_ROOT / "config" / "runtime-dynamic-import-whitelist.json"
 ASCII_AUDIT_FILES = (
     MANIFEST_PATH,
+    QUALIFICATION_DOCKERFILE_PATH,
     WHITELIST_PATH,
     Path(__file__),
 )
@@ -216,6 +218,17 @@ class ProductionImageClosureTests(unittest.TestCase):
             - available
         )
         self.assertEqual(missing, set())
+    def test_qualification_overlay_adds_only_hash_locked_assessment_dependencies(self) -> None:
+        dockerfile = QUALIFICATION_DOCKERFILE_PATH.read_text(encoding="ascii")
+        self.assertEqual(
+            _docker_copy_sources(QUALIFICATION_DOCKERFILE_PATH),
+            ["requirements-assessment-hashed.txt"],
+        )
+        self.assertIn("ARG RUNTIME_IMAGE", dockerfile)
+        self.assertIn("FROM ${RUNTIME_IMAGE}", dockerfile)
+        self.assertIn("--require-hashes", dockerfile)
+        self.assertIn("USER 10001:10001", dockerfile)
+
     def test_local_import_closure_is_complete(self) -> None:
         missing: dict[str, list[str]] = {}
         for relative_path in sorted(self.copied):
