@@ -11,6 +11,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 from typing import Any
+from security_assessment import _docker_parser_directive
 REPO_ROOT = Path(__file__).resolve().parent
 DOCKERFILE_PATH = REPO_ROOT / "Dockerfile"
 ASSURANCE_DOCKERFILE_PATH = REPO_ROOT / "Dockerfile.assurance"
@@ -43,18 +44,22 @@ REQUIRED_WHITELIST_FIELDS = {
     "expiry",
 }
 def _docker_escape_character(lines: list[str]) -> str:
-    """Return the supported initial Docker parser escape directive."""
+    """Return the initial escape directive using the shared Docker grammar."""
     for raw_line in lines:
-        line = raw_line.strip()
+        line = raw_line.strip(" \t\f\r")
         if not line:
-            return "\\"
-        if not line.lower().startswith("# escape="):
-            return "\\"
-        escape_character = line.partition("=")[2].strip()
-        if escape_character not in {"\\", "`"}:
-            raise AssertionError("Dockerfile escape directive is unsupported")
-        return escape_character
-    return "\\"
+            return chr(92)
+        directive = _docker_parser_directive(line)
+        if directive is None:
+            return chr(92)
+        key, value = directive
+        if key == "escape":
+            if value not in {chr(92), "`"}:
+                raise AssertionError("Dockerfile escape directive is unsupported")
+            return value
+        if key not in {"syntax", "check"}:
+            return chr(92)
+    return chr(92)
 
 
 def _effective_docker_instructions(dockerfile_path: Path) -> list[tuple[str, str]]:
@@ -231,6 +236,24 @@ class ProductionImageClosureTests(unittest.TestCase):
         cls.whitelist = _read_whitelist(WHITELIST_PATH)
     def test_escape_directive_after_blank_line_is_ignored(self) -> None:
         self.assertEqual(_docker_escape_character(["", "# escape=`"]), "\\")
+
+    def test_escape_directive_uses_shared_buildkit_whitespace_grammar(self) -> None:
+        self.assertEqual(_docker_escape_character(["#\u00a0escape=`"]), "`")
+        self.assertEqual(_docker_escape_character(["# escape\t=\t`"]), "`")
+        self.assertEqual(
+            _docker_escape_character(["# escape\u00a0=`", "# escape=`"]),
+            chr(92),
+        )
+        self.assertEqual(
+            _docker_escape_character(["# escapet=`", "# escape=`"]),
+            chr(92),
+        )
+
+    def test_escape_directive_rejects_trailing_unicode_whitespace(self) -> None:
+        with self.assertRaisesRegex(
+            AssertionError, "Dockerfile escape directive is unsupported"
+        ):
+            _docker_escape_character(["# escape=`\u00a0"])
 
     def test_declared_backtick_escape_joins_dockerfile_continuations(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
