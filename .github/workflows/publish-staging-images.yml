@@ -39,15 +39,36 @@ jobs:
           docker buildx build --load --file Dockerfile.assurance \
             --build-arg RUNTIME_IMAGE=sentinelgrc:release \
             --tag sentinelgrc-assurance:release .
+          docker buildx build --load --platform linux/amd64 \
+            --file Dockerfile.qualification \
+            --build-arg RUNTIME_IMAGE=sentinelgrc:release \
+            --tag sentinelgrc-qualification:release .
           docker run --rm --entrypoint python sentinelgrc:release -c \
-            "import pathlib, runtime_app; assert not pathlib.Path('/app/scripts').exists()"
+            "import importlib.util, pathlib, runtime_app; assert not pathlib.Path('/app/scripts').exists(); assert importlib.util.find_spec('yaml') is None"
+          docker run --rm --entrypoint python sentinelgrc-qualification:release -c \
+            "import yaml; assert yaml.__version__ == '6.0.3'"
           docker run --rm --entrypoint python sentinelgrc-assurance:release -c \
             "import pathlib, scripts.azure_staging_validator; p=[pathlib.Path('/app/scripts/__init__.py'),pathlib.Path('/app/scripts/azure_staging_validator.py')]; assert all(x.stat().st_uid == 0 and (x.stat().st_mode & 0o222) == 0 for x in p)"
+          runtime_test_modules=(
+            test_agent_keys test_audit_archive test_audit_delivery test_audit_log test_azure_iac_policy test_azure_staging_validator test_bridge_jml test_bridge_minisoar test_connectors
+            test_crypto_agility test_crypto_import_isolation test_deployment_contract test_domain_packs test_enterprise_safety test_evidence_metadata test_evidence_store test_governance test_governance_api
+            test_governance_core test_governance_http test_hermetic_recovery test_historical_evidence_archive test_human_identity test_ingestion_api test_job_queue test_load_soak_baseline test_migrate_json
+            test_migration_runner test_observability test_offline_evidence test_oidc_auth test_oidc_contract test_outbox_delivery test_path_policy test_path_security test_persistence test_pipeline test_pipeline_worker
+            test_postgres_integration test_postgres_runtime_state test_pre_live_reliability test_production_contract test_reporting test_runtime_app test_security_alert_contract test_security_event_connector
+            test_security_pack test_sentinelgrc test_sonar_configuration test_sonar_security_decisions test_staging_assurance test_staging_logwatcher test_state_store test_workflow
+          )
+          test "${#runtime_test_modules[@]}" -gt 0
           docker run --rm --network host \
             --mount "type=bind,source=$PWD,target=/src,readonly" --workdir /src \
             --entrypoint python \
             -e SENTINEL_TEST_POSTGRES_URL=postgresql://sentinel:sentinel-test-only@127.0.0.1:5432/sentinel_test \
-            sentinelgrc:release -m unittest discover -v -p "test_*.py"
+            sentinelgrc:release -m unittest -v "${runtime_test_modules[@]}"
+          docker run --rm --network host \
+            --mount "type=bind,source=$PWD,target=/src,readonly" --workdir /src \
+            --entrypoint python \
+            -e SENTINEL_TEST_POSTGRES_URL=postgresql://sentinel:sentinel-test-only@127.0.0.1:5432/sentinel_test \
+            sentinelgrc-qualification:release -m unittest -v \
+              test_security_assessment test_supply_chain_policy test_production_image_closure
           docker run --rm --mount "type=bind,source=$PWD,target=/src,readonly" \
             --entrypoint /bin/sh \
             mcr.microsoft.com/azure-cli@sha256:23b520868509add054d385d90dc3fc5268f10a2f58947a994e30babe938e31ae \
