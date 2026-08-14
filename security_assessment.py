@@ -69,7 +69,11 @@ SECRET_PATTERNS = (
 )
 COPY_VALUE_FLAGS = frozenset({"chown", "chmod", "exclude", "from"})
 COPY_BOOLEAN_FLAGS = frozenset({"link", "parents"})
-DOCKER_ESCAPE_DIRECTIVE = re.compile(r"^#\s*escape\s*=\s*([\\`])\s*$", re.IGNORECASE)
+DOCKER_PARSER_DIRECTIVE = re.compile(
+    r"^#\s*(?P<key>[A-Za-z][A-Za-z0-9]*)"
+    r"[ \t\f\r]*=[ \t\f\r]*"
+    r"(?P<value>.+?)[ \t\f\r]*$"
+)
 
 
 @dataclass(frozen=True)
@@ -268,6 +272,14 @@ def _dependency_lock_is_hashed(root: Path) -> tuple[bool, str]:
     )
 
 
+def _docker_parser_directive(line: str) -> tuple[str, str] | None:
+    """Parse one Docker parser directive with BuildKit-compatible grammar."""
+    matched = DOCKER_PARSER_DIRECTIVE.fullmatch(line)
+    if matched is None:
+        return None
+    return matched.group("key").lower(), matched.group("value")
+
+
 def _docker_comment_state(
     line: str,
     escape_character: str,
@@ -277,12 +289,15 @@ def _docker_comment_state(
     """Apply an escape directive only while Docker's parser window is open."""
     if not parser_window_open:
         return escape_character, directive_seen, False
-    matched = DOCKER_ESCAPE_DIRECTIVE.fullmatch(line)
-    if matched is not None:
-        if directive_seen:
+    directive = _docker_parser_directive(line)
+    if directive is None:
+        return escape_character, directive_seen, False
+    key, value = directive
+    if key == "escape":
+        if directive_seen or value not in {chr(92), "`"}:
             return None
-        return matched.group(1), True, True
-    if re.match(r"^#\s*escape\b", line, re.IGNORECASE):
+        return value, True, True
+    if key in {"syntax", "check"}:
         return None
     return escape_character, directive_seen, False
 
@@ -310,7 +325,7 @@ def _docker_instructions(text: str) -> DockerfileSpec | None:
     escape_directive_seen = False
     parser_window_open = True
     for raw_line in text.splitlines():
-        line = raw_line.strip()
+        line = raw_line.lstrip().rstrip(" \t\f\r")
         if not line:
             parser_window_open = False
             continue
