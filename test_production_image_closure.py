@@ -14,10 +14,12 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent
 DOCKERFILE_PATH = REPO_ROOT / "Dockerfile"
 ASSURANCE_DOCKERFILE_PATH = REPO_ROOT / "Dockerfile.assurance"
+QUALIFICATION_DOCKERFILE_PATH = REPO_ROOT / "Dockerfile.qualification"
 MANIFEST_PATH = REPO_ROOT / "docker_image_manifest.txt"
 WHITELIST_PATH = REPO_ROOT / "config" / "runtime-dynamic-import-whitelist.json"
 ASCII_AUDIT_FILES = (
     MANIFEST_PATH,
+    QUALIFICATION_DOCKERFILE_PATH,
     WHITELIST_PATH,
     Path(__file__),
 )
@@ -40,6 +42,47 @@ REQUIRED_WHITELIST_FIELDS = {
     "owner",
     "expiry",
 }
+def _docker_escape_character(lines: list[str]) -> str:
+    """Return the supported initial Docker parser escape directive."""
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+        if not line.lower().startswith("# escape="):
+            return "\\"
+        escape_character = line.partition("=")[2].strip()
+        if escape_character not in {"\\", "`"}:
+            raise AssertionError("Dockerfile escape directive is unsupported")
+        return escape_character
+    return "\\"
+
+
+def _effective_docker_instructions(dockerfile_path: Path) -> list[tuple[str, str]]:
+    """Parse effective Dockerfile instructions using its declared escape."""
+    instructions: list[tuple[str, str]] = []
+    current = ""
+    lines = dockerfile_path.read_text(encoding="utf-8").splitlines()
+    escape_character = _docker_escape_character(lines)
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        trailing_escapes = len(line) - len(line.rstrip(escape_character))
+        continued = trailing_escapes % 2 == 1
+        fragment = line[:-1].rstrip() if continued else line
+        current = f"{current} {fragment}".strip()
+        if continued:
+            continue
+        directive, separator, argument = current.partition(" ")
+        if not separator:
+            raise AssertionError(f"Dockerfile instruction has no argument: {current}")
+        instructions.append((directive.upper(), argument.strip()))
+        current = ""
+    if current:
+        raise AssertionError("Dockerfile ends with an incomplete continuation")
+    return instructions
+
+
 def _docker_copy_sources(dockerfile_path: Path) -> list[str]:
     sources: list[str] = []
     for line_number, raw_line in enumerate(
@@ -186,6 +229,18 @@ class ProductionImageClosureTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.copied = _copied_python_files(REPO_ROOT, DOCKERFILE_PATH)
         cls.whitelist = _read_whitelist(WHITELIST_PATH)
+    def test_declared_backtick_escape_joins_dockerfile_continuations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            dockerfile = Path(temporary_directory) / "Dockerfile"
+            dockerfile.write_text(
+                "# escape=`\nRUN echo first `\n  && echo second\nCOPY app.py /app/app.py\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                _effective_docker_instructions(dockerfile),
+                [("RUN", "echo first && echo second"), ("COPY", "app.py /app/app.py")],
+            )
+
     def test_no_staging_test_sample_or_dev_modules_ship(self) -> None:
         offenders = sorted(
             path
@@ -216,6 +271,29 @@ class ProductionImageClosureTests(unittest.TestCase):
             - available
         )
         self.assertEqual(missing, set())
+    def test_qualification_overlay_adds_only_hash_locked_assessment_dependencies(self) -> None:
+        instructions = _effective_docker_instructions(QUALIFICATION_DOCKERFILE_PATH)
+        self.assertEqual(
+            instructions,
+            [
+                ("ARG", "RUNTIME_IMAGE=sentinelgrc:runtime-image-required"),
+                ("FROM", "${RUNTIME_IMAGE}"),
+                ("USER", "root"),
+                (
+                    "COPY",
+                    "--chown=0:0 requirements-assessment-hashed.txt "
+                    "/tmp/requirements-assessment-hashed.txt",
+                ),
+                (
+                    "RUN",
+                    "python -m pip install --no-cache-dir --require-hashes "
+                    "--requirement /tmp/requirements-assessment-hashed.txt "
+                    "&& chmod 0444 /tmp/requirements-assessment-hashed.txt",
+                ),
+                ("USER", "10001:10001"),
+            ],
+        )
+
     def test_local_import_closure_is_complete(self) -> None:
         missing: dict[str, list[str]] = {}
         for relative_path in sorted(self.copied):

@@ -1,7 +1,12 @@
 import re
 import unittest
 from pathlib import Path
+try:
+    import yaml
+except ImportError:
+    yaml = None
 ROOT = Path(__file__).resolve().parent
+@unittest.skipUnless(yaml is not None, "requires hash-locked PyYAML")
 class SupplyChainPolicyTests(unittest.TestCase):
     def test_runtime_dependencies_are_hash_locked_in_build_and_ci(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
@@ -12,6 +17,66 @@ class SupplyChainPolicyTests(unittest.TestCase):
         self.assertNotIn("requirements.txt", dockerfile)
         self.assertIn("--hash=sha256:", lock)
         self.assertNotRegex(lock, r"(?m)^[a-zA-Z0-9_.-]+\s*(?:>=|~=|>|<)")
+    def test_all_ci_actions_are_immutable_and_security_assessment_is_retained(self):
+        from scripts.path_policy import _allowed_output_path
+        from security_assessment import _actions_are_pinned
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+        pinned, evidence = _actions_are_pinned(ROOT)
+        self.assertTrue(pinned, evidence)
+        self.assertEqual(
+            len(re.findall(r"(?m)^  security-assessment:\s*$", workflow)), 1
+        )
+        self.assertIn(
+            "pypa/gh-action-pip-audit@1220774d901786e6f652ae159f7b6bc8fea6d266",
+            workflow,
+        )
+        parsed_workflow = yaml.safe_load(workflow)
+        assessment = parsed_workflow["jobs"]["security-assessment"]
+        steps = {step["name"]: step for step in assessment["steps"]}
+        checkout = steps["Checkout reviewed source"]
+        dependency_setup = steps["Install assessment dependencies"]
+        audit = steps["Audit hash-locked dependencies"]
+        collect = steps["Collect pre-live security assessment"]
+        upload = steps["Retain pre-live security assessment"]
+        self.assertFalse(checkout["with"]["persist-credentials"])
+        self.assertTrue(dependency_setup["continue-on-error"])
+        self.assertEqual(
+            audit["if"], "steps.assessment_dependencies.outcome == 'success'"
+        )
+        self.assertEqual(
+            audit["with"]["inputs"].split(),
+            ["requirements-hashed.txt", "requirements-assessment-hashed.txt"],
+        )
+        self.assertEqual(collect["if"], "always()")
+        self.assertEqual(collect["env"]["CI_RUN_ID"], "${{ github.run_id }}")
+        self.assertEqual(
+            collect["env"]["DEPENDENCY_SCAN_OUTCOME"],
+            "${{ steps.pip_audit.outcome || 'skipped' }}",
+        )
+        self.assertEqual(upload["with"]["if-no-files-found"], "error")
+        self.assertEqual(
+            upload["with"]["path"],
+            "runtime/staging-assurance/security-assessment-evidence.json",
+        )
+        expected = (
+            ROOT / "runtime/staging-assurance/security-assessment-evidence.json"
+        ).resolve()
+        self.assertEqual(
+            _allowed_output_path(
+                "runtime/staging-assurance/security-assessment-evidence.json",
+                ROOT,
+                purpose="test security assessment output",
+            ),
+            expected,
+        )
+        with self.assertRaises(ValueError):
+            _allowed_output_path(
+                "runtime/staging-assurance/security-assessment-evidence-copy.json",
+                ROOT,
+                purpose="test neighboring output rejection",
+            )
     def test_ci_partitions_unit_and_postgres_integration_suites(self):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
@@ -26,6 +91,7 @@ class SupplyChainPolicyTests(unittest.TestCase):
     def test_container_context_uses_explicit_runtime_allowlist(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         assurance = (ROOT / "Dockerfile.assurance").read_text(encoding="utf-8")
+        qualification = (ROOT / "Dockerfile.qualification").read_text(encoding="utf-8")
         self.assertNotIn("COPY . .", dockerfile)
         self.assertNotRegex(dockerfile, r"(?m)^COPY\s+[^\n]*\*")
         self.assertNotRegex(dockerfile, r"(?m)^COPY\s+(?:tests?|docs|\.git|\.github)(?:/|\s)")
@@ -45,6 +111,10 @@ class SupplyChainPolicyTests(unittest.TestCase):
         self.assertIn("chmod 0444", assurance)
         self.assertNotIn("--chown=10001:10001", assurance)
         self.assertNotIn("COPY . .", assurance)
+        self.assertIn("requirements-assessment-hashed.txt", qualification)
+        self.assertIn("--require-hashes", qualification)
+        self.assertNotIn("COPY . .", qualification)
+        self.assertIn("USER 10001:10001", qualification)
     def test_runtime_tmpfs_is_private_and_owned_by_the_non_root_user(self):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
@@ -78,7 +148,7 @@ class SupplyChainPolicyTests(unittest.TestCase):
             workflow,
         )
         self.assertNotRegex(workflow, r"(?m)^\s*uses:\s+[^\s]+@v\d+")
-        self.assertEqual(workflow.count("docker buildx build --load"), 2)
+        self.assertEqual(workflow.count("docker buildx build --load"), 3)
         self.assertIn("--build-arg RUNTIME_IMAGE=sentinelgrc:release", workflow)
         self.assertIn("Push exact qualified layers and resolve digests", workflow)
         self.assertIn("az acr repository show", workflow)
@@ -99,7 +169,8 @@ class SupplyChainPolicyTests(unittest.TestCase):
         self.assertNotIn("az acr login", qualify)
         for gate in (
             "SENTINEL_TEST_POSTGRES_URL=postgresql://sentinel:",
-            "-m unittest discover -v",
+            'sentinelgrc:release -m unittest -v "${runtime_test_modules[@]}"',
+            "sentinelgrc-qualification:release -m unittest -v",
             "az bicep build --file /src/infra/azure/main.bicep",
             "curl --fail --silent --max-time 10 http://127.0.0.1:8080/ready",
             'test "$status" = "503"',
@@ -108,7 +179,28 @@ class SupplyChainPolicyTests(unittest.TestCase):
         ):
             with self.subTest(gate=gate):
                 self.assertIn(gate, qualify)
-        self.assertIn('-p "test_*.py"', qualify)
+        partition = re.search(
+            r"runtime_test_modules=\(\s*(.*?)\s*\)", qualify, re.DOTALL
+        )
+        self.assertIsNotNone(partition)
+        expected_runtime_modules = (
+            "test_agent_keys test_audit_archive test_audit_delivery test_audit_log test_azure_iac_policy test_azure_staging_validator test_bridge_jml test_bridge_minisoar test_connectors "
+            "test_crypto_agility test_crypto_import_isolation test_deployment_contract test_domain_packs test_enterprise_safety test_evidence_metadata test_evidence_store test_governance test_governance_api "
+            "test_governance_core test_governance_http test_hermetic_recovery test_historical_evidence_archive test_human_identity test_ingestion_api test_job_queue test_load_soak_baseline test_migrate_json "
+            "test_migration_runner test_observability test_offline_evidence test_oidc_auth test_oidc_contract test_outbox_delivery test_path_policy test_path_security test_persistence test_pipeline test_pipeline_worker "
+            "test_postgres_integration test_postgres_runtime_state test_pre_live_reliability test_production_contract test_reporting test_runtime_app test_security_alert_contract test_security_event_connector "
+            "test_security_pack test_sentinelgrc test_sonar_configuration test_sonar_security_decisions test_staging_assurance test_staging_logwatcher test_state_store test_workflow"
+        ).split()
+        self.assertEqual(partition.group(1).split(), expected_runtime_modules)
+        self.assertNotIn("find . -maxdepth 1 -type f -name 'test_*.py'", qualify)
+        self.assertIn("--platform linux/amd64", qualify)
+        self.assertIn(
+            "test_security_assessment test_supply_chain_policy "
+            "test_production_image_closure",
+            qualify,
+        )
+        self.assertNotIn("-m unittest discover", qualify)
+        self.assertIn("find_spec('yaml') is None", qualify)
         self.assertIn("docker image save --output qualified-images.tar", qualify)
         self.assertIn("bundle_sha256", qualify)
         self.assertIn("needs: qualify", publish)
