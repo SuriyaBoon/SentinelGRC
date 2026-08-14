@@ -70,6 +70,10 @@ SECRET_PATTERNS = (
 COPY_VALUE_FLAGS = frozenset({"chown", "chmod", "exclude", "from"})
 COPY_BOOLEAN_FLAGS = frozenset({"link", "parents"})
 DOCKER_ESCAPE_DIRECTIVE = re.compile(r"^#\s*escape\s*=\s*([\\`])\s*$", re.IGNORECASE)
+DOCKER_PARSER_DIRECTIVE = re.compile(
+    r"^#\s*(?P<key>[A-Za-z][\w.-]*)\s*=.*$", re.ASCII
+)
+UNSUPPORTED_DOCKER_PARSER_DIRECTIVES = frozenset({"check", "syntax"})
 
 
 @dataclass(frozen=True)
@@ -274,7 +278,7 @@ def _docker_comment_state(
     directive_seen: bool,
     parser_window_open: bool,
 ) -> tuple[str, bool, bool] | None:
-    """Apply an escape directive only while Docker's parser window is open."""
+    """Apply the supported escape directive inside Docker's parser window."""
     if not parser_window_open:
         return escape_character, directive_seen, False
     matched = DOCKER_ESCAPE_DIRECTIVE.fullmatch(line)
@@ -283,6 +287,13 @@ def _docker_comment_state(
             return None
         return matched.group(1), True, True
     if re.match(r"^#\s*escape\b", line, re.IGNORECASE):
+        return None
+    directive = DOCKER_PARSER_DIRECTIVE.fullmatch(line)
+    if (
+        directive is not None
+        and directive.group("key").lower()
+        in UNSUPPORTED_DOCKER_PARSER_DIRECTIVES
+    ):
         return None
     return escape_character, directive_seen, False
 

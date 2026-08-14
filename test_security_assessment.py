@@ -370,12 +370,54 @@ class SecurityAssessmentTests(unittest.TestCase):
             "# ordinary comment\n# escape=`\n" + base,
             "\n# escape=`\n" + base,
             "# ordinary comment\n# escape=!\n" + base,
+            "# ordinary comment\n# syntax=docker/dockerfile:1\n" + base,
+            "\n# check=skip=JSONArgsRecommended\n" + base,
         )
         for dockerfile in cases:
             with self.subTest(dockerfile=dockerfile):
                 parsed = _docker_instructions(dockerfile)
                 self.assertIsNotNone(parsed)
                 self.assertEqual(parsed.escape_character, "\\")
+
+    def test_recognized_unsupported_parser_directives_fail_closed(self):
+        digest = "a" * 64
+        base = f"FROM python@sha256:{digest}\nUSER 10001:10001\n"
+        directives = (
+            "# syntax=docker/dockerfile:1",
+            "# CHECK = skip=JSONArgsRecommended",
+        )
+        for directive in directives:
+            with self.subTest(directive=directive):
+                self.assertIsNone(_docker_instructions(directive + "\n" + base))
+
+    def test_unknown_directive_shaped_comment_closes_parser_window(self):
+        digest = "a" * 64
+        parsed = _docker_instructions(
+            "# owner=security\n"
+            "# escape=`\n"
+            f"FROM python@sha256:{digest}\n"
+            "USER 10001:10001\n"
+        )
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.escape_character, "\\")
+
+    def test_escape_directive_accepts_spacing_and_rejects_duplicates(self):
+        digest = "a" * 64
+        parsed = _docker_instructions(
+            "# EsCaPe = `\n"
+            f"FROM python@sha256:{digest}\n"
+            "USER 10001:10001\n"
+        )
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.escape_character, "`")
+        self.assertIsNone(
+            _docker_instructions(
+                "# escape=\\\n"
+                "# escape=`\n"
+                f"FROM python@sha256:{digest}\n"
+                "USER 10001:10001\n"
+            )
+        )
 
     def test_parser_directive_is_honored_only_at_the_top(self):
         digest = "a" * 64
