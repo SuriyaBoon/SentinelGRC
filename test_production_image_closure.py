@@ -11,6 +11,13 @@ import unittest
 from datetime import date
 from pathlib import Path
 from typing import Any
+from security_assessment import (
+    _docker_instructions,
+    _docker_parser_directive,
+    _lstrip_buildkit_whitespace,
+)
+
+
 REPO_ROOT = Path(__file__).resolve().parent
 DOCKERFILE_PATH = REPO_ROOT / "Dockerfile"
 ASSURANCE_DOCKERFILE_PATH = REPO_ROOT / "Dockerfile.assurance"
@@ -43,60 +50,49 @@ REQUIRED_WHITELIST_FIELDS = {
     "expiry",
 }
 def _docker_escape_character(lines: list[str]) -> str:
-    """Return the supported initial Docker parser escape directive."""
+    """Return the initial escape directive using the shared Docker grammar."""
+    escape_character = chr(92)
+    escape_seen = False
     for raw_line in lines:
-        line = raw_line.strip()
+        line = _lstrip_buildkit_whitespace(raw_line).rstrip(" \t\f\r")
         if not line:
-            return "\\"
-        if not line.lower().startswith("# escape="):
-            return "\\"
-        escape_character = line.partition("=")[2].strip()
-        if escape_character not in {"\\", "`"}:
-            raise AssertionError("Dockerfile escape directive is unsupported")
-        return escape_character
-    return "\\"
+            return escape_character
+        directive = _docker_parser_directive(line)
+        if directive is None:
+            return escape_character
+        key, value = directive
+        if key == "escape":
+            if escape_seen or value not in {chr(92), "`"}:
+                raise AssertionError("Dockerfile escape directive is unsupported")
+            escape_character, escape_seen = value, True
+            continue
+        if key not in {"syntax", "check"}:
+            return escape_character
+    return escape_character
 
 
 def _effective_docker_instructions(dockerfile_path: Path) -> list[tuple[str, str]]:
-    """Parse effective Dockerfile instructions using its declared escape."""
-    instructions: list[tuple[str, str]] = []
-    current = ""
-    lines = dockerfile_path.read_text(encoding="utf-8").splitlines()
-    escape_character = _docker_escape_character(lines)
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        trailing_escapes = len(line) - len(line.rstrip(escape_character))
-        continued = trailing_escapes % 2 == 1
-        fragment = line[:-1].rstrip() if continued else line
-        current = f"{current} {fragment}".strip()
-        if continued:
-            continue
-        directive, separator, argument = current.partition(" ")
-        if not separator:
-            raise AssertionError(f"Dockerfile instruction has no argument: {current}")
-        instructions.append((directive.upper(), argument.strip()))
-        current = ""
-    if current:
-        raise AssertionError("Dockerfile ends with an incomplete continuation")
-    return instructions
+    """Parse effective instructions through the shared fail-closed parser."""
+    parsed = _docker_instructions(dockerfile_path.read_text(encoding="utf-8"))
+    if parsed is None:
+        raise AssertionError("Dockerfile instruction parsing failed closed")
+    return list(parsed.instructions)
 
 
 def _docker_copy_sources(dockerfile_path: Path) -> list[str]:
     sources: list[str] = []
-    for line_number, raw_line in enumerate(
-        dockerfile_path.read_text(encoding="utf-8").splitlines(), start=1
+    for instruction_number, (directive, argument) in enumerate(
+        _effective_docker_instructions(dockerfile_path), start=1
     ):
-        line = raw_line.strip()
-        if not line or line.startswith("#") or not line.upper().startswith("COPY "):
+        if directive != "COPY":
             continue
-        arguments = shlex.split(line[5:].strip(), posix=True)
+        arguments = shlex.split(argument, posix=True)
         while arguments and arguments[0].startswith("--"):
             arguments.pop(0)
         if len(arguments) < 2 or arguments[0].startswith("["):
             raise AssertionError(
-                f"Dockerfile COPY on line {line_number} uses unsupported syntax"
+                "Dockerfile COPY instruction "
+                f"{instruction_number} uses unsupported syntax"
             )
         sources.extend(arguments[:-1])
     return sources
@@ -231,6 +227,83 @@ class ProductionImageClosureTests(unittest.TestCase):
         cls.whitelist = _read_whitelist(WHITELIST_PATH)
     def test_escape_directive_after_blank_line_is_ignored(self) -> None:
         self.assertEqual(_docker_escape_character(["", "# escape=`"]), "\\")
+
+    def test_escape_directive_uses_shared_buildkit_whitespace_grammar(self) -> None:
+        self.assertEqual(_docker_escape_character(["#\u00a0escape=`"]), "`")
+        self.assertEqual(_docker_escape_character(["# escape\t=\t`"]), "`")
+        self.assertEqual(
+            _docker_escape_character(["# escape\u00a0=`", "# escape=`"]),
+            chr(92),
+        )
+        self.assertEqual(
+            _docker_escape_character(["# escapet=`", "# escape=`"]),
+            chr(92),
+        )
+
+    def test_escape_directive_rejects_trailing_unicode_whitespace(self) -> None:
+        with self.assertRaisesRegex(
+            AssertionError, "Dockerfile escape directive is unsupported"
+        ):
+            _docker_escape_character(["# escape=`\u00a0"])
+
+    def test_escape_directive_rejects_duplicates(self) -> None:
+        # _docker_escape_character must reject a second escape directive the
+        # same way _docker_instructions does, instead of silently returning
+        # the first value it sees.
+        cases = (
+            ["# escape=`", "# escape=`"],
+            ["# escape=`", "# escape=\\"],
+            ["# escape=\\", "# escape=`"],
+        )
+        for lines in cases:
+            with self.subTest(lines=lines):
+                with self.assertRaisesRegex(
+                    AssertionError, "Dockerfile escape directive is unsupported"
+                ):
+                    _docker_escape_character(lines)
+
+    def test_leading_unicode_whitespace_before_hash_is_trimmed(self) -> None:
+        self.assertEqual(_docker_escape_character(["\u00a0# escape=`"]), "`")
+
+    def test_python_only_control_separators_are_not_buildkit_whitespace(self) -> None:
+        for separator in ("\x1c", "\x1d", "\x1e", "\x1f"):
+            with self.subTest(position="before_hash", separator=ord(separator)):
+                self.assertEqual(
+                    _docker_escape_character([f"{separator}# escape=`"]),
+                    chr(92),
+                )
+            with self.subTest(position="after_hash", separator=ord(separator)):
+                self.assertEqual(
+                    _docker_escape_character([f"#{separator}escape=`"]),
+                    chr(92),
+                )
+
+    def test_control_separators_do_not_prefix_closure_instructions(self) -> None:
+        for separator in ("\x1c", "\x1d", "\x1e", "\x1f"):
+            with self.subTest(separator=ord(separator)):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    dockerfile = Path(temporary_directory) / "Dockerfile"
+                    dockerfile.write_text(
+                        "FROM scratch\n" + separator + "USER 10001:10001\n",
+                        encoding="utf-8",
+                    )
+                    with self.assertRaisesRegex(
+                        AssertionError, "instruction parsing failed closed"
+                    ):
+                        _effective_docker_instructions(dockerfile)
+
+    def test_closure_instruction_arguments_preserve_control_separators(self) -> None:
+        separator = "\x1f"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            dockerfile = Path(temporary_directory) / "Dockerfile"
+            dockerfile.write_text(
+                "FROM scratch\nRUN " + separator + "payload" + separator + "\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                _effective_docker_instructions(dockerfile),
+                [("FROM", "scratch"), ("RUN", separator + "payload" + separator)],
+            )
 
     def test_declared_backtick_escape_joins_dockerfile_continuations(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

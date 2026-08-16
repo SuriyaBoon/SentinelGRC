@@ -69,7 +69,17 @@ SECRET_PATTERNS = (
 )
 COPY_VALUE_FLAGS = frozenset({"chown", "chmod", "exclude", "from"})
 COPY_BOOLEAN_FLAGS = frozenset({"link", "parents"})
-DOCKER_ESCAPE_DIRECTIVE = re.compile(r"^#\s*escape\s*=\s*([\\`])\s*$", re.IGNORECASE)
+BUILDKIT_WHITESPACE = (
+    "\t\n\v\f\r \x85\xa0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000"
+)
+DOCKER_ASCII_TRIM = " \t\f\r"
+DOCKER_PARSER_DIRECTIVE = re.compile(
+    r"^(?P<key>[A-Za-z][A-Za-z0-9]*)"
+    r"[ \t\f\r]*=[ \t\f\r]*"
+    r"(?P<value>.+?)[ \t\f\r]*$"
+)
 
 
 @dataclass(frozen=True)
@@ -268,6 +278,28 @@ def _dependency_lock_is_hashed(root: Path) -> tuple[bool, str]:
     )
 
 
+def _lstrip_buildkit_whitespace(value: str) -> str:
+    """Remove exactly the Unicode White_Space runes accepted by Go."""
+    return value.lstrip(BUILDKIT_WHITESPACE)
+
+
+def _docker_physical_lines(value: str) -> list[str]:
+    """Split Dockerfile input only at LF, matching BuildKit's scanner."""
+    return value.split("\n")
+
+
+def _docker_parser_directive(line: str) -> tuple[str, str] | None:
+    """Parse one Docker parser directive with BuildKit-compatible grammar."""
+    normalized = _lstrip_buildkit_whitespace(line)
+    if not normalized.startswith("#"):
+        return None
+    directive = _lstrip_buildkit_whitespace(normalized[1:])
+    matched = DOCKER_PARSER_DIRECTIVE.fullmatch(directive)
+    if matched is None:
+        return None
+    return matched.group("key").lower(), matched.group("value")
+
+
 def _docker_comment_state(
     line: str,
     escape_character: str,
@@ -277,12 +309,15 @@ def _docker_comment_state(
     """Apply an escape directive only while Docker's parser window is open."""
     if not parser_window_open:
         return escape_character, directive_seen, False
-    matched = DOCKER_ESCAPE_DIRECTIVE.fullmatch(line)
-    if matched is not None:
-        if directive_seen:
+    directive = _docker_parser_directive(line)
+    if directive is None:
+        return escape_character, directive_seen, False
+    key, value = directive
+    if key == "escape":
+        if directive_seen or value not in {chr(92), "`"}:
             return None
-        return matched.group(1), True, True
-    if re.match(r"^#\s*escape\b", line, re.IGNORECASE):
+        return value, True, True
+    if key in {"syntax", "check"}:
         return None
     return escape_character, directive_seen, False
 
@@ -295,11 +330,12 @@ def _docker_instruction_fragment(
     continued = trailing_escapes % 2 == 1
     combined = current + (line[:-1] if continued else line)
     if continued:
-        return combined + " ", None
-    directive, separator, argument = combined.strip().partition(" ")
-    if not separator or not directive.isalpha() or not argument.strip():
+        return combined.rstrip(DOCKER_ASCII_TRIM) + " ", None
+    directive, separator, argument = combined.partition(" ")
+    normalized_argument = argument.strip(DOCKER_ASCII_TRIM)
+    if not separator or not directive.isalpha() or not normalized_argument:
         return None
-    return "", (directive.upper(), argument.strip())
+    return "", (directive.upper(), normalized_argument)
 
 
 def _docker_instructions(text: str) -> DockerfileSpec | None:
@@ -309,8 +345,8 @@ def _docker_instructions(text: str) -> DockerfileSpec | None:
     escape_character = chr(92)
     escape_directive_seen = False
     parser_window_open = True
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
+    for raw_line in _docker_physical_lines(text):
+        line = _lstrip_buildkit_whitespace(raw_line).rstrip(" \t\f\r")
         if not line:
             parser_window_open = False
             continue
@@ -355,7 +391,7 @@ def _copy_flag_value(flag: str) -> tuple[str, str] | None:
 
 def _copy_flags(argument: str) -> tuple[str | None, str] | None:
     """Consume reviewed COPY flags and return source image plus remainder."""
-    remaining = argument.strip()
+    remaining = argument.strip(DOCKER_ASCII_TRIM)
     from_reference: str | None = None
     while remaining.startswith("--"):
         flag, separator, remaining = remaining.partition(" ")
@@ -369,7 +405,7 @@ def _copy_flags(argument: str) -> tuple[str | None, str] | None:
             if from_reference is not None:
                 return None
             from_reference = value
-        remaining = remaining.lstrip()
+        remaining = remaining.lstrip(DOCKER_ASCII_TRIM)
     return from_reference, remaining
 
 

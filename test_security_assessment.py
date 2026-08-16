@@ -388,6 +388,108 @@ class SecurityAssessmentTests(unittest.TestCase):
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed.escape_character, "`")
 
+    def test_unsupported_directives_accept_unicode_whitespace_after_hash(self):
+        digest = "a" * 64
+        base = f"FROM python@sha256:{digest}\nUSER 10001:10001\n"
+        for directive in (
+            "#\u00a0syntax=docker/dockerfile:1",
+            "#\u00a0check=skip=all",
+        ):
+            with self.subTest(directive=directive):
+                self.assertIsNone(_docker_instructions(directive + "\n" + base))
+
+    def test_escape_directive_accepts_buildkit_whitespace_grammar(self):
+        digest = "a" * 64
+        for directive in ("#\u00a0escape=`", "# escape\t=\t`"):
+            with self.subTest(directive=directive):
+                parsed = _docker_instructions(
+                    directive
+                    + "\n"
+                    + f"FROM python@sha256:{digest}\nUSER 10001:10001\n"
+                )
+                self.assertIsNotNone(parsed)
+                self.assertEqual(parsed.escape_character, "`")
+
+    def test_internal_unicode_whitespace_and_unicode_keys_close_window(self):
+        digest = "a" * 64
+        base = f"FROM python@sha256:{digest}\nUSER 10001:10001\n"
+        for comment in ("# syntax\u00a0=value", "# sy\u00f1tax=value"):
+            with self.subTest(comment=comment):
+                parsed = _docker_instructions(comment + "\n# escape=`\n" + base)
+                self.assertIsNotNone(parsed)
+                self.assertEqual(parsed.escape_character, chr(92))
+
+    def test_escape_directive_rejects_overescaped_ascii_classes(self):
+        digest = "a" * 64
+        base = f"FROM python@sha256:{digest}\nUSER 10001:10001\n"
+        parsed = _docker_instructions("# escapet=`\n# escape=`\n" + base)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.escape_character, chr(92))
+
+    def test_escape_directive_does_not_trim_internal_or_trailing_unicode(self):
+        digest = "a" * 64
+        base = f"FROM python@sha256:{digest}\nUSER 10001:10001\n"
+        internal = _docker_instructions(
+            "# escape\u00a0=`\n# escape=`\n" + base
+        )
+        self.assertIsNotNone(internal)
+        self.assertEqual(internal.escape_character, chr(92))
+        self.assertIsNone(_docker_instructions("# escape=`\u00a0\n" + base))
+
+    def test_leading_unicode_whitespace_before_hash_is_trimmed(self):
+        # BuildKit trims Unicode whitespace (unicode.IsSpace) before
+        # checking whether a line starts a comment/directive, not just
+        # ASCII whitespace. A Dockerfile with a leading non-breaking space
+        # or em space before "#" is still a valid directive line to
+        # BuildKit and must parse the same way here.
+        digest = "a" * 64
+        base = f"FROM python@sha256:{digest}\nUSER 10001:10001\n"
+        for leading in ("\u00a0", "\u2003", "  \u00a0"):
+            with self.subTest(leading=repr(leading)):
+                parsed = _docker_instructions(f"{leading}# escape=`\n" + base)
+                self.assertIsNotNone(parsed)
+                self.assertEqual(parsed.escape_character, "`")
+
+    def test_leading_unicode_whitespace_does_not_hide_unsupported_directives(self):
+        digest = "a" * 64
+        base = f"FROM python@sha256:{digest}\nUSER 10001:10001\n"
+        for directive in ("\u00a0# syntax=docker/dockerfile:1", "\u2003# check=skip=all"):
+            with self.subTest(directive=directive):
+                self.assertIsNone(_docker_instructions(directive + "\n" + base))
+
+    def test_python_only_control_separators_are_not_buildkit_whitespace(self):
+        digest = "a" * 64
+        base = f"FROM python@sha256:{digest}\nUSER 10001:10001\n"
+        for separator in ("\x1c", "\x1d", "\x1e", "\x1f"):
+            with self.subTest(position="before_hash", separator=ord(separator)):
+                self.assertIsNone(
+                    _docker_instructions(f"{separator}# escape=`\n" + base)
+                )
+            with self.subTest(position="after_hash", separator=ord(separator)):
+                parsed = _docker_instructions(f"#{separator}escape=`\n" + base)
+                self.assertIsNotNone(parsed)
+                self.assertEqual(parsed.escape_character, chr(92))
+
+    def test_control_separators_do_not_prefix_docker_instructions(self):
+        for separator in ("\x1c", "\x1d", "\x1e", "\x1f"):
+            with self.subTest(separator=ord(separator)):
+                self.assertIsNone(
+                    _docker_instructions(
+                        "FROM scratch\n" + separator + "USER 10001:10001\n"
+                    )
+                )
+
+    def test_docker_instruction_arguments_preserve_control_separators(self):
+        separator = "\x1f"
+        parsed = _docker_instructions(
+            "FROM scratch\nRUN " + separator + "payload" + separator + "\n"
+        )
+        self.assertIsNotNone(parsed)
+        self.assertEqual(
+            parsed.instructions,
+            (("FROM", "scratch"), ("RUN", separator + "payload" + separator)),
+        )
+
     def test_docker_continuations_require_odd_trailing_escape_count(self):
         escape = chr(92)
         odd = _docker_instruction_fragment("", "RUN echo " + escape, escape)
@@ -398,7 +500,7 @@ class SecurityAssessmentTests(unittest.TestCase):
             "", "RUN echo " + (escape * 3), escape
         )
         self.assertIsNone(odd[1])
-        self.assertTrue(odd[0].endswith("  "))
+        self.assertEqual(odd[0], "RUN echo ")
         self.assertEqual(doubled, ("", ("RUN", "echo " + (escape * 2))))
         self.assertIsNone(tripled[1])
         self.assertTrue(tripled[0].endswith((escape * 2) + " "))
