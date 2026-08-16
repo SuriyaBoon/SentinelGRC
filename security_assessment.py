@@ -69,7 +69,28 @@ SECRET_PATTERNS = (
 )
 COPY_VALUE_FLAGS = frozenset({"chown", "chmod", "exclude", "from"})
 COPY_BOOLEAN_FLAGS = frozenset({"link", "parents"})
-DOCKER_ESCAPE_DIRECTIVE = re.compile(r"^#\s*escape\s*=\s*([\\`])\s*$", re.IGNORECASE)
+BUILDKIT_WHITESPACE = (
+    "\t\n\v\f\r \x85\xa0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000"
+)
+BUILDKIT_WHITESPACE_SET = frozenset(BUILDKIT_WHITESPACE)
+DOCKER_COMMAND_SEPARATORS = "\t\v\f\r "
+DOCKER_TOKEN_SPLIT = re.compile(
+    f"[{re.escape(DOCKER_COMMAND_SEPARATORS)}]+"
+)
+DOCKER_PARSER_DIRECTIVE = re.compile(
+    r"^(?P<key>[A-Za-z][A-Za-z0-9]*)"
+    r"[ \t\f\r]*=[ \t\f\r]*"
+    r"(?P<value>.+?)[ \t\f\r]*$"
+)
+DOCKER_CONTINUATION_PATTERNS = {
+    character: re.compile(
+        rf"([^{re.escape(character)}]){re.escape(character)}[ \t]*$"
+        rf"|^{re.escape(character)}[ \t]*$"
+    )
+    for character in (chr(92), "`")
+}
 
 
 @dataclass(frozen=True)
@@ -268,6 +289,46 @@ def _dependency_lock_is_hashed(root: Path) -> tuple[bool, str]:
     )
 
 
+def _is_buildkit_whitespace(character: str) -> bool:
+    """Return whether one character has Go's Unicode White_Space property."""
+    return character in BUILDKIT_WHITESPACE_SET
+
+
+def _trim_buildkit_whitespace(value: str) -> str:
+    """Mirror Go strings.TrimSpace without Python-only control separators."""
+    return value.strip(BUILDKIT_WHITESPACE)
+
+
+def _lstrip_buildkit_whitespace(value: str) -> str:
+    """Mirror BuildKit's Unicode-aware leading-whitespace trim."""
+    return value.lstrip(BUILDKIT_WHITESPACE)
+
+
+def _docker_physical_lines(value: str) -> list[str]:
+    """Split only at LF and remove CR newline bytes like BuildKit's scanner."""
+    return [line.rstrip("\r") for line in value.split("\n")]
+
+
+def _read_dockerfile_text(path: Path) -> str:
+    """Decode UTF-8 without universal-newline translation of token CR bytes."""
+    return path.read_bytes().decode("utf-8")
+
+
+def _docker_parser_directive(line: str) -> tuple[str, str] | None:
+    """Parse one recognized Docker parser-directive-shaped comment."""
+    normalized = _lstrip_buildkit_whitespace(line)
+    if not normalized.startswith("#"):
+        return None
+    directive = _lstrip_buildkit_whitespace(normalized[1:])
+    matched = DOCKER_PARSER_DIRECTIVE.fullmatch(directive)
+    if matched is None:
+        return None
+    key = matched.group("key").lower()
+    if key not in {"escape", "syntax", "check"}:
+        return None
+    return key, matched.group("value")
+
+
 def _docker_comment_state(
     line: str,
     escape_character: str,
@@ -277,40 +338,110 @@ def _docker_comment_state(
     """Apply an escape directive only while Docker's parser window is open."""
     if not parser_window_open:
         return escape_character, directive_seen, False
-    matched = DOCKER_ESCAPE_DIRECTIVE.fullmatch(line)
-    if matched is not None:
-        if directive_seen:
+    directive = _docker_parser_directive(line)
+    if directive is None:
+        comment = _lstrip_buildkit_whitespace(line)
+        comment = _lstrip_buildkit_whitespace(comment[1:])
+        if re.match(r"^escape\b", comment, re.IGNORECASE):
             return None
-        return matched.group(1), True, True
-    if re.match(r"^#\s*escape\b", line, re.IGNORECASE):
+        return escape_character, directive_seen, False
+    key, value = directive
+    if key == "escape":
+        if directive_seen or value not in {chr(92), "`"}:
+            return None
+        return value, True, True
+    if key in {"syntax", "check"}:
         return None
     return escape_character, directive_seen, False
+
+
+def _trim_continuation_character(
+    line: str, escape_character: str
+) -> tuple[str, bool]:
+    """Remove one BuildKit continuation token and following space or tab."""
+    pattern = DOCKER_CONTINUATION_PATTERNS.get(escape_character)
+    if pattern is None:
+        return line, True
+    matched = pattern.search(line)
+    if matched is None:
+        return line, True
+    retained = matched.group(1) or ""
+    return line[: matched.start()] + retained, False
+
+
+def _split_docker_command(line: str) -> tuple[str, str] | None:
+    """Split an assembled line using BuildKit's command-token grammar."""
+    normalized = _trim_buildkit_whitespace(line)
+    parts = DOCKER_TOKEN_SPLIT.split(normalized, maxsplit=1)
+    if len(parts) != 2 or not parts[0].isalpha():
+        return None
+    argument = _trim_buildkit_whitespace(parts[1])
+    return None if not argument else (parts[0].upper(), argument)
 
 
 def _docker_instruction_fragment(
     current: str, line: str, escape_character: str
 ) -> tuple[str, tuple[str, str] | None] | None:
     """Join one physical line and emit a complete Docker instruction."""
-    trailing_escapes = len(line) - len(line.rstrip(escape_character))
-    continued = trailing_escapes % 2 == 1
-    combined = current + (line[:-1] if continued else line)
-    if continued:
-        return combined + " ", None
-    directive, separator, argument = combined.strip().partition(" ")
-    if not separator or not directive.isalpha() or not argument.strip():
+    fragment, is_end_of_line = _trim_continuation_character(
+        line, escape_character
+    )
+    combined = current + fragment
+    if not is_end_of_line:
+        return combined, None
+    instruction = _split_docker_command(combined)
+    return None if instruction is None else ("", instruction)
+
+
+def _next_docker_continuation(
+    physical_lines: list[str], index: int
+) -> tuple[str | None, int]:
+    """Return the next effective continuation line and its successor index."""
+    while index < len(physical_lines):
+        continuation = physical_lines[index]
+        index += 1
+        normalized = _lstrip_buildkit_whitespace(continuation)
+        if normalized.startswith("#") or not normalized:
+            continue
+        return continuation, index
+    return None, index
+
+
+def _collect_docker_instruction(
+    physical_lines: list[str],
+    index: int,
+    first_line: str,
+    escape_character: str,
+) -> tuple[tuple[str, str], int] | None:
+    """Assemble one instruction while preserving continuation whitespace."""
+    parsed = _docker_instruction_fragment("", first_line, escape_character)
+    if parsed is None:
         return None
-    return "", (directive.upper(), argument.strip())
+    current, instruction = parsed
+    while instruction is None:
+        continuation, index = _next_docker_continuation(physical_lines, index)
+        if continuation is None:
+            return None
+        parsed = _docker_instruction_fragment(
+            current, continuation, escape_character
+        )
+        if parsed is None:
+            return None
+        current, instruction = parsed
+    return instruction, index
 
 
 def _docker_instructions(text: str) -> DockerfileSpec | None:
     """Parse Dockerfile instructions using Docker's directive-window rules."""
     instructions: list[tuple[str, str]] = []
-    current = ""
     escape_character = chr(92)
     escape_directive_seen = False
     parser_window_open = True
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
+    physical_lines = _docker_physical_lines(text)
+    index = 0
+    while index < len(physical_lines):
+        line = _lstrip_buildkit_whitespace(physical_lines[index])
+        index += 1
         if not line:
             parser_window_open = False
             continue
@@ -326,13 +457,14 @@ def _docker_instructions(text: str) -> DockerfileSpec | None:
             escape_character, escape_directive_seen, parser_window_open = state
             continue
         parser_window_open = False
-        parsed = _docker_instruction_fragment(current, line, escape_character)
-        if parsed is None:
+        collected = _collect_docker_instruction(
+            physical_lines, index, line, escape_character
+        )
+        if collected is None:
             return None
-        current, instruction = parsed
-        if instruction is not None:
-            instructions.append(instruction)
-    if current or not instructions:
+        instruction, index = collected
+        instructions.append(instruction)
+    if not instructions:
         return None
     return DockerfileSpec(tuple(instructions), escape_character)
 
@@ -341,6 +473,23 @@ def _docker_instructions(text: str) -> DockerfileSpec | None:
 class CopySpec:
     sources: tuple[str, ...]
     from_reference: str | None
+
+
+_FLAG_SPACES, _FLAG_WORD, _FLAG_QUOTE = range(3)
+
+
+@dataclass
+class _BuilderFlagScanState:
+    """Mutable state for the BuildKit-compatible builder-flag scanner."""
+
+    argument: str
+    escape_character: str
+    words: list[str]
+    phase: int
+    buffer: list[str]
+    quote: str
+    blank_ok: bool
+    position: int
 
 
 def _copy_flag_value(flag: str) -> tuple[str, str] | None:
@@ -353,14 +502,113 @@ def _copy_flag_value(flag: str) -> tuple[str, str] | None:
     return None
 
 
-def _copy_flags(argument: str) -> tuple[str | None, str] | None:
-    """Consume reviewed COPY flags and return source image plus remainder."""
-    remaining = argument.strip()
-    from_reference: str | None = None
-    while remaining.startswith("--"):
-        flag, separator, remaining = remaining.partition(" ")
-        if not separator:
+def _finish_builder_flag_scan(
+    state: _BuilderFlagScanState,
+) -> tuple[tuple[str, ...], str]:
+    """Finalize the current word at end of input."""
+    word = "".join(state.buffer)
+    if word != "--" and (state.blank_ok or word):
+        state.words.append(word)
+    return tuple(state.words), ""
+
+
+def _scan_builder_spaces(
+    state: _BuilderFlagScanState, character: str
+) -> tuple[tuple[str, ...], str] | None:
+    """Skip spaces or stop before the first non-flag token."""
+    if _is_buildkit_whitespace(character):
+        state.position += 1
+        return None
+    if (
+        character != "-"
+        or state.position + 1 == len(state.argument)
+        or state.argument[state.position + 1] != "-"
+    ):
+        return tuple(state.words), state.argument[state.position :]
+    state.phase = _FLAG_WORD
+    return None
+
+
+def _scan_builder_word(
+    state: _BuilderFlagScanState, character: str
+) -> tuple[tuple[str, ...], str] | None:
+    """Consume one unquoted builder-flag word."""
+    if _is_buildkit_whitespace(character):
+        word = "".join(state.buffer)
+        state.phase = _FLAG_SPACES
+        if word == "--":
+            return tuple(state.words), state.argument[state.position :]
+        if state.blank_ok or word:
+            state.words.append(word)
+        state.buffer.clear()
+        state.blank_ok = False
+        state.position += 1
+        return None
+    if character in {"'", '"'}:
+        state.quote = character
+        state.blank_ok = True
+        state.phase = _FLAG_QUOTE
+        state.position += 1
+        return None
+    if character == state.escape_character:
+        if state.position + 1 == len(state.argument):
+            state.position += 1
             return None
+        state.position += 1
+        character = state.argument[state.position]
+    state.buffer.append(character)
+    state.position += 1
+    return None
+
+
+def _scan_builder_quote(
+    state: _BuilderFlagScanState, character: str
+) -> tuple[tuple[str, ...], str] | None:
+    """Consume a quoted portion of a builder-flag word."""
+    if character == state.quote:
+        state.phase = _FLAG_WORD
+        state.position += 1
+        return None
+    if character == state.escape_character:
+        if state.position + 1 == len(state.argument):
+            state.phase = _FLAG_WORD
+            state.position += 1
+            return None
+        state.position += 1
+        character = state.argument[state.position]
+    state.buffer.append(character)
+    state.position += 1
+    return None
+
+
+_BUILDER_FLAG_HANDLERS = {
+    _FLAG_SPACES: _scan_builder_spaces,
+    _FLAG_WORD: _scan_builder_word,
+    _FLAG_QUOTE: _scan_builder_quote,
+}
+
+
+def _extract_builder_flags(
+    argument: str, escape_character: str
+) -> tuple[tuple[str, ...], str]:
+    """Port BuildKit's builder-flag scanner without applying COPY policy."""
+    state = _BuilderFlagScanState(
+        argument, escape_character, [], _FLAG_SPACES, [], "", False, 0
+    )
+    while state.position < len(argument):
+        character = argument[state.position]
+        outcome = _BUILDER_FLAG_HANDLERS[state.phase](state, character)
+        if outcome is not None:
+            return outcome
+    return _finish_builder_flag_scan(state)
+
+
+def _validate_copy_flags(
+    flags: tuple[str, ...], remaining: str
+) -> tuple[str | None, str] | None:
+    """Apply the existing COPY flag allowlist to extracted builder flags."""
+    from_reference: str | None = None
+    for flag in flags:
         parsed = _copy_flag_value(flag)
         if parsed is None:
             return None
@@ -369,8 +617,15 @@ def _copy_flags(argument: str) -> tuple[str | None, str] | None:
             if from_reference is not None:
                 return None
             from_reference = value
-        remaining = remaining.lstrip()
     return from_reference, remaining
+
+
+def _copy_flags(
+    argument: str, escape_character: str = chr(92)
+) -> tuple[str | None, str] | None:
+    """Consume reviewed COPY flags and return source image plus remainder."""
+    flags, remaining = _extract_builder_flags(argument, escape_character)
+    return _validate_copy_flags(flags, remaining)
 
 
 def _copy_sources(
@@ -397,7 +652,7 @@ def _copy_sources(
 
 def _copy_spec(argument: str, escape_character: str = chr(92)) -> CopySpec | None:
     """Parse reviewed Docker COPY flags, sources, and optional source image."""
-    parsed_flags = _copy_flags(argument)
+    parsed_flags = _copy_flags(argument, escape_character)
     if parsed_flags is None:
         return None
     from_reference, remaining = parsed_flags
@@ -582,11 +837,9 @@ def _container_file_passes(
 def _containers_are_pinned_non_root(root: Path) -> tuple[bool, str]:
     """Check immutable runtime base, effective non-root user, and narrow copies."""
     try:
-        dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
-        assurance = (root / "Dockerfile.assurance").read_text(encoding="utf-8")
-        qualification = (root / "Dockerfile.qualification").read_text(
-            encoding="utf-8"
-        )
+        dockerfile = _read_dockerfile_text(root / "Dockerfile")
+        assurance = _read_dockerfile_text(root / "Dockerfile.assurance")
+        qualification = _read_dockerfile_text(root / "Dockerfile.qualification")
     except (OSError, UnicodeError):
         return False, "container build definitions missing or unreadable"
     checks = (
@@ -906,3 +1159,5 @@ def validate_security_assessment(
     if envelope["document_sha256"] != digest:
         raise ValueError("security assessment checksum mismatch")
     return envelope
+
+

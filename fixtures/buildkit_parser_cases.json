@@ -1,0 +1,143 @@
+{
+  "schema_version": "1.0",
+  "upstream": {
+    "repository": "https://github.com/moby/buildkit",
+    "commit": "30fe6a5116cf8d595a4ffcc96f22464dcf04d1c4",
+    "derivation": "manually_transcribed_from_pinned_sources",
+    "source_paths": [
+      "frontend/dockerfile/parser/directives.go",
+      "frontend/dockerfile/parser/parser.go",
+      "frontend/dockerfile/parser/split_command.go"
+    ]
+  },
+  "instruction_cases": [
+    {
+      "name": "tab_command_separator",
+      "dockerfile": "FROM\tscratch\n",
+      "escape_character": "\\",
+      "instructions": [["FROM", "scratch"]]
+    },
+    {
+      "name": "vertical_tab_command_separator",
+      "dockerfile": "FROM\u000bscratch\n",
+      "escape_character": "\\",
+      "instructions": [["FROM", "scratch"]]
+    },
+    {
+      "name": "form_feed_command_separator",
+      "dockerfile": "FROM\fscratch\n",
+      "escape_character": "\\",
+      "instructions": [["FROM", "scratch"]]
+    },
+    {
+      "name": "unicode_leading_whitespace",
+      "dockerfile": "\u00a0\u2003FROM scratch\n",
+      "escape_character": "\\",
+      "instructions": [["FROM", "scratch"]]
+    },
+    {
+      "name": "continuation_indentation_preserved",
+      "dockerfile": "RUN echo first \\\n  && echo second\n",
+      "escape_character": "\\",
+      "instructions": [["RUN", "echo first   && echo second"]]
+    },
+    {
+      "name": "pre_escape_spaces_preserved",
+      "dockerfile": "RUN echo first   \\\n&& echo second\n",
+      "escape_character": "\\",
+      "instructions": [["RUN", "echo first   && echo second"]]
+    },
+    {
+      "name": "continuation_comment_is_ignored",
+      "dockerfile": "COPY app.py \\\n  # ignored comment\n  helper.py /app/\n",
+      "escape_character": "\\",
+      "instructions": [["COPY", "app.py   helper.py /app/"]]
+    },
+    {
+      "name": "control_separator_preserved_in_argument",
+      "dockerfile": "FROM scratch\nRUN \u001fpayload\u001f\n",
+      "escape_character": "\\",
+      "instructions": [["FROM", "scratch"], ["RUN", "\u001fpayload\u001f"]]
+    },
+    {
+      "name": "backtick_continuation",
+      "dockerfile": "# escape=`\nRUN echo first `\n  && echo second\n",
+      "escape_character": "`",
+      "instructions": [["RUN", "echo first   && echo second"]]
+    }
+  ],
+  "rejected_instruction_cases": [
+    {
+      "name": "python_only_control_prefix",
+      "dockerfile": "\u001cFROM scratch\n"
+    },
+    {
+      "name": "unfinished_continuation",
+      "dockerfile": "RUN echo unfinished \\\n"
+    },
+    {
+      "name": "unsupported_syntax_frontend",
+      "dockerfile": "# syntax=docker/dockerfile:1\nFROM scratch\n",
+      "deviation": "local_fail_closed_policy"
+    },
+    {
+      "name": "unsupported_check_frontend",
+      "dockerfile": "# check=skip=all\nFROM scratch\n",
+      "deviation": "local_fail_closed_policy"
+    }
+  ],
+  "copy_cases": [
+    {
+      "name": "tab_after_from_flag",
+      "argument": "--from=stage\t/src /dst",
+      "from_reference": "stage",
+      "sources": ["/src"]
+    },
+    {
+      "name": "vertical_tab_after_from_flag",
+      "argument": "--from=stage\u000b/src /dst",
+      "from_reference": "stage",
+      "sources": ["/src"]
+    },
+    {
+      "name": "form_feed_after_from_flag",
+      "argument": "--from=stage\f/src /dst",
+      "from_reference": "stage",
+      "sources": ["/src"]
+    },
+    {
+      "name": "multiple_allowed_flags",
+      "argument": "--chown=0:0 --chmod=0444 --link app.py /app/",
+      "from_reference": null,
+      "sources": ["app.py"]
+    },
+    {
+      "name": "quoted_flag_value",
+      "argument": "--chown=\"0:0\" app.py /app/",
+      "from_reference": null,
+      "sources": ["app.py"]
+    },
+    {
+      "name": "double_dash_stops_flag_scanning",
+      "argument": "--link -- app.py /app/",
+      "from_reference": null,
+      "sources": ["app.py"]
+    }
+  ],
+  "rejected_copy_cases": [
+    {
+      "name": "unknown_flag",
+      "argument": "--unknown=value app.py /app/"
+    },
+    {
+      "name": "duplicate_from_flag",
+      "argument": "--from=one --from=two /src /dst"
+    },
+    {
+      "name": "blank_quoted_value_is_preserved_then_rejected_by_policy",
+      "argument": "--chown=\"\" app.py /app/"
+    }
+  ]
+}
+
+
