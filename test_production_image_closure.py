@@ -5,12 +5,16 @@ Run with: python -m unittest test_production_image_closure -v
 from __future__ import annotations
 import ast
 import json
-import shlex
 import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
 from typing import Any
+from security_assessment import (
+    _copy_spec,
+    _docker_instructions,
+    _read_dockerfile_text,
+)
 REPO_ROOT = Path(__file__).resolve().parent
 DOCKERFILE_PATH = REPO_ROOT / "Dockerfile"
 ASSURANCE_DOCKERFILE_PATH = REPO_ROOT / "Dockerfile.assurance"
@@ -42,63 +46,34 @@ REQUIRED_WHITELIST_FIELDS = {
     "owner",
     "expiry",
 }
-def _docker_escape_character(lines: list[str]) -> str:
-    """Return the supported initial Docker parser escape directive."""
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not line:
-            return "\\"
-        if not line.lower().startswith("# escape="):
-            return "\\"
-        escape_character = line.partition("=")[2].strip()
-        if escape_character not in {"\\", "`"}:
-            raise AssertionError("Dockerfile escape directive is unsupported")
-        return escape_character
-    return "\\"
+def _parsed_dockerfile(dockerfile_path: Path):
+    """Parse one Dockerfile once through the production fail-closed parser."""
+    parsed = _docker_instructions(_read_dockerfile_text(dockerfile_path))
+    if parsed is None:
+        raise AssertionError("Dockerfile instruction parsing failed closed")
+    return parsed
 
 
 def _effective_docker_instructions(dockerfile_path: Path) -> list[tuple[str, str]]:
-    """Parse effective Dockerfile instructions using its declared escape."""
-    instructions: list[tuple[str, str]] = []
-    current = ""
-    lines = dockerfile_path.read_text(encoding="utf-8").splitlines()
-    escape_character = _docker_escape_character(lines)
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        trailing_escapes = len(line) - len(line.rstrip(escape_character))
-        continued = trailing_escapes % 2 == 1
-        fragment = line[:-1].rstrip() if continued else line
-        current = f"{current} {fragment}".strip()
-        if continued:
-            continue
-        directive, separator, argument = current.partition(" ")
-        if not separator:
-            raise AssertionError(f"Dockerfile instruction has no argument: {current}")
-        instructions.append((directive.upper(), argument.strip()))
-        current = ""
-    if current:
-        raise AssertionError("Dockerfile ends with an incomplete continuation")
-    return instructions
+    """Return effective instructions from the shared parsed representation."""
+    return list(_parsed_dockerfile(dockerfile_path).instructions)
 
 
 def _docker_copy_sources(dockerfile_path: Path) -> list[str]:
     sources: list[str] = []
-    for line_number, raw_line in enumerate(
-        dockerfile_path.read_text(encoding="utf-8").splitlines(), start=1
+    parsed = _parsed_dockerfile(dockerfile_path)
+    for instruction_number, (directive, argument) in enumerate(
+        parsed.instructions, start=1
     ):
-        line = raw_line.strip()
-        if not line or line.startswith("#") or not line.upper().startswith("COPY "):
+        if directive != "COPY":
             continue
-        arguments = shlex.split(line[5:].strip(), posix=True)
-        while arguments and arguments[0].startswith("--"):
-            arguments.pop(0)
-        if len(arguments) < 2 or arguments[0].startswith("["):
+        spec = _copy_spec(argument, parsed.escape_character)
+        if spec is None:
             raise AssertionError(
-                f"Dockerfile COPY on line {line_number} uses unsupported syntax"
+                f"Dockerfile instruction {instruction_number} (COPY) "
+                "uses unsupported syntax"
             )
-        sources.extend(arguments[:-1])
+        sources.extend(spec.sources)
     return sources
 def _copied_python_files(root: Path, dockerfile_path: Path) -> set[str]:
     copied: set[str] = set()
@@ -230,7 +205,42 @@ class ProductionImageClosureTests(unittest.TestCase):
         cls.copied = _copied_python_files(REPO_ROOT, DOCKERFILE_PATH)
         cls.whitelist = _read_whitelist(WHITELIST_PATH)
     def test_escape_directive_after_blank_line_is_ignored(self) -> None:
-        self.assertEqual(_docker_escape_character(["", "# escape=`"]), "\\")
+        parsed = _docker_instructions("\n# escape=`\nFROM scratch\n")
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.escape_character, "\\")
+
+    def test_closure_uses_shared_buildkit_command_delimiters(self) -> None:
+        for separator in ("\t", "\v", "\f", "\r"):
+            with self.subTest(separator=repr(separator)):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    dockerfile = Path(temporary_directory) / "Dockerfile"
+                    dockerfile.write_bytes(
+                        ("FROM" + separator + "scratch\n").encode("utf-8")
+                    )
+                    self.assertEqual(
+                        _effective_docker_instructions(dockerfile),
+                        [("FROM", "scratch")],
+                    )
+
+    def test_closure_preserves_continuation_whitespace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            dockerfile = Path(temporary_directory) / "Dockerfile"
+            dockerfile.write_text(
+                "RUN echo first   \\\n  && echo second\n", encoding="utf-8"
+            )
+            self.assertEqual(
+                _effective_docker_instructions(dockerfile),
+                [("RUN", "echo first     && echo second")],
+            )
+
+    def test_closure_copy_sources_use_shared_flag_parser(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            dockerfile = Path(temporary_directory) / "Dockerfile"
+            dockerfile.write_text(
+                "FROM scratch\nCOPY --from=stage\v/src /dst\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(_docker_copy_sources(dockerfile), ["/src"])
 
     def test_declared_backtick_escape_joins_dockerfile_continuations(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -241,7 +251,10 @@ class ProductionImageClosureTests(unittest.TestCase):
             )
             self.assertEqual(
                 _effective_docker_instructions(dockerfile),
-                [("RUN", "echo first && echo second"), ("COPY", "app.py /app/app.py")],
+                [
+                    ("RUN", "echo first   && echo second"),
+                    ("COPY", "app.py /app/app.py"),
+                ],
             )
 
     def test_no_staging_test_sample_or_dev_modules_ship(self) -> None:
@@ -291,7 +304,7 @@ class ProductionImageClosureTests(unittest.TestCase):
                     "RUN",
                     "python -m pip install --no-cache-dir --require-hashes "
                     "--requirement /tmp/requirements-assessment-hashed.txt "
-                    "&& chmod 0444 /tmp/requirements-assessment-hashed.txt",
+                    "    && chmod 0444 /tmp/requirements-assessment-hashed.txt",
                 ),
                 ("USER", "10001:10001"),
             ],
