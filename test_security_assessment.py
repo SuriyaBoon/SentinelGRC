@@ -20,9 +20,12 @@ from security_assessment import (
     _boundary_tests_exist,
     _container_file_passes,
     _containers_are_pinned_non_root,
+    _copy_spec,
     _dependency_lock_is_hashed,
     _docker_instruction_fragment,
     _docker_instructions,
+    _docker_physical_lines,
+    _extract_builder_flags,
     _security_decisions_are_bounded,
     _secret_scan,
     build_ci_scan_receipt,
@@ -34,8 +37,17 @@ from security_assessment import (
 SOURCE_SHA = "d" * 40
 ASSESSMENT_DATE = "2026-08-13"
 REPORT = b"No known vulnerabilities found"
+BUILDKIT_FIXTURE_PATH = (
+    Path(__file__).resolve().parent / "fixtures" / "buildkit_parser_cases.json"
+)
 ASSESSMENT_YAML_AVAILABLE = importlib.util.find_spec("yaml") is not None
 class SecurityAssessmentTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.buildkit_fixture = json.loads(
+            BUILDKIT_FIXTURE_PATH.read_text(encoding="utf-8")
+        )
+
     @staticmethod
     def _rehash(envelope):
         canonical = _canonical(envelope["document"])
@@ -388,20 +400,118 @@ class SecurityAssessmentTests(unittest.TestCase):
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed.escape_character, "`")
 
-    def test_docker_continuations_require_odd_trailing_escape_count(self):
+    def test_multiple_cr_before_lf_does_not_hide_root_user(self):
+        digest = "a" * 64
+        dockerfile = (
+            f"FROM python@sha256:{digest}\n"
+            "USER 10001:10001\n"
+            "RUN x \\\r\r\n"
+            "USER root\n"
+        )
+        physical_lines = _docker_physical_lines(dockerfile)
+        self.assertEqual(physical_lines[2], "RUN x \\\r")
+
+        parsed = _docker_instructions(dockerfile)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(
+            parsed.instructions,
+            (
+                ("FROM", f"python@sha256:{digest}"),
+                ("USER", "10001:10001"),
+                ("RUN", "x \\"),
+                ("USER", "root"),
+            ),
+        )
+        self.assertFalse(_container_file_passes(dockerfile))
+
+    def test_pinned_buildkit_instruction_fixtures(self):
+        fixture = self.buildkit_fixture
+        self.assertEqual(
+            fixture["upstream"]["commit"],
+            "30fe6a5116cf8d595a4ffcc96f22464dcf04d1c4",
+        )
+        for case in fixture["instruction_cases"]:
+            with self.subTest(case=case["name"]):
+                parsed = _docker_instructions(case["dockerfile"])
+                self.assertIsNotNone(parsed)
+                self.assertEqual(parsed.escape_character, case["escape_character"])
+                self.assertEqual(
+                    parsed.instructions,
+                    tuple(tuple(item) for item in case["instructions"]),
+                )
+        for case in fixture["rejected_instruction_cases"]:
+            with self.subTest(case=case["name"]):
+                if "deviation" in case:
+                    self.assertEqual(
+                        case["deviation"], "local_fail_closed_policy"
+                    )
+                self.assertIsNone(_docker_instructions(case["dockerfile"]))
+
+    def test_pinned_buildkit_copy_flag_fixtures_preserve_copy_contract(self):
+        fixture = self.buildkit_fixture
+        for case in fixture["copy_cases"]:
+            with self.subTest(case=case["name"]):
+                parsed = _copy_spec(case["argument"])
+                self.assertIsNotNone(parsed)
+                self.assertEqual(parsed.from_reference, case["from_reference"])
+                self.assertEqual(parsed.sources, tuple(case["sources"]))
+        for case in fixture["rejected_copy_cases"]:
+            with self.subTest(case=case["name"]):
+                self.assertIsNone(_copy_spec(case["argument"]))
+
+    def test_builder_flag_refactor_preserves_blank_and_sentinel_contracts(self):
+        flags, remaining = _extract_builder_flags(
+            '--chown="" app.py /app/', "\\"
+        )
+        self.assertEqual(flags, ("--chown=",))
+        self.assertEqual(remaining, "app.py /app/")
+        self.assertIsNone(_copy_spec('--chown="" app.py /app/'))
+
+        flags, remaining = _extract_builder_flags(
+            "--link -- app.py /app/", "\\"
+        )
+        self.assertEqual(flags, ("--link",))
+        self.assertEqual(remaining, " app.py /app/")
+        parsed = _copy_spec("--link -- app.py /app/")
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.sources, ("app.py",))
+
+    def test_parser_directives_and_go_whitespace_remain_fail_closed(self):
+        base = "FROM scratch\nUSER 10001:10001\n"
+        for directive in (
+            "#\u00a0syntax=docker/dockerfile:1",
+            "#\u00a0check=skip=all",
+        ):
+            with self.subTest(directive=directive):
+                self.assertIsNone(_docker_instructions(directive + "\n" + base))
+        for separator in ("\x1c", "\x1d", "\x1e", "\x1f"):
+            with self.subTest(separator=ord(separator)):
+                self.assertIsNone(_docker_instructions(separator + base))
+
+    def test_instruction_arguments_preserve_python_only_control_separators(self):
+        separator = "\x1f"
+        parsed = _docker_instructions(
+            "FROM scratch\nRUN " + separator + "payload" + separator + "\n"
+        )
+        self.assertIsNotNone(parsed)
+        self.assertEqual(
+            parsed.instructions,
+            (("FROM", "scratch"), ("RUN", separator + "payload" + separator)),
+        )
+
+    def test_docker_continuations_match_buildkit_escape_regex(self):
         escape = chr(92)
-        odd = _docker_instruction_fragment("", "RUN echo " + escape, escape)
+        single = _docker_instruction_fragment("", "RUN echo " + escape, escape)
         doubled = _docker_instruction_fragment(
             "", "RUN echo " + (escape * 2), escape
         )
         tripled = _docker_instruction_fragment(
             "", "RUN echo " + (escape * 3), escape
         )
-        self.assertIsNone(odd[1])
-        self.assertTrue(odd[0].endswith("  "))
+        self.assertIsNone(single[1])
+        self.assertEqual(single[0], "RUN echo ")
         self.assertEqual(doubled, ("", ("RUN", "echo " + (escape * 2))))
-        self.assertIsNone(tripled[1])
-        self.assertTrue(tripled[0].endswith((escape * 2) + " "))
+        self.assertEqual(tripled, ("", ("RUN", "echo " + (escape * 3))))
 
     def test_container_policy_rejects_all_add_instructions(self):
         digest = "a" * 64
@@ -729,3 +839,6 @@ class SecurityAssessmentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
