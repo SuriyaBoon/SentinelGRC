@@ -4,7 +4,58 @@
 
 **Stack:** Python 3.12, SQLite for local labs, PostgreSQL for the canonical shared-state staging path, Gunicorn/WSGI, JSON and JSONL fixtures, PowerShell posture collectors, Docker, and GitHub Actions.
 
-**Status:** Portfolio / concept MVP. It completes a bounded security-governance workflow end to end, but it is not production-ready.
+**Status:** Development paused on 17 August 2026. Portfolio / concept MVP; not production-ready. Launch verdict: `NO_GO_PENDING_LIVE_EVIDENCE`.
+
+## Project checkpoint at pause
+
+SentinelGRC development is intentionally paused at the verified source baseline
+`332c912a993f86bcd5b0e3a47c3a0d2e86d9ae84` (merged PR #123). The repository
+is not archived, its evidence has not been deleted, and this pause does not
+grant production or deployment approval.
+
+| Workstream | State at pause | Claim boundary |
+| --- | --- | --- |
+| Historical evidence archive | Complete | Sanitized evidence from 4-5 August 2026 is retained, but it belongs to an older source revision and grants no current live-gate credit. |
+| Evidence collector | Complete | Repository-controlled evidence collection is implemented and tested offline. |
+| Hermetic failure tests | Complete | Dependency loss, restart/replay, readiness, and fail-closed paths are covered by repository tests. |
+| Load/soak baseline | Complete | The hermetic baseline is repository evidence only; it is not Azure capacity or production SLO proof. |
+| Security assessment | Complete for the offline pre-live gate | The reviewed deterministic assessment passed for the paused source baseline; live identity, network, platform, and recovery controls remain unproven. |
+| IaC preflight | Pending | Revalidate Bicep inputs, digest binding, cost controls, and the target subscription before any deployment. |
+| Connector contracts | Pending | Reconfirm each supporting repository independently; no portfolio connector is production-connected by this checkpoint. |
+| Azure Live Validation | Pending: 0 of 8 current gates credited | Historical staging evidence cannot replace fresh validation against the paused source baseline. |
+| Target-environment security and recovery review | Pending | Complete the security assessment, access review, and disaster-recovery procedures with sanitized source-bound evidence before pilot entry. |
+| Limited Production Pilot | Not started | Requires all live gates, approved scope, capacity/failure-duration evidence, access review, disaster-recovery evidence, and security/go-live approval. |
+| Product launch verdict | **NO-GO** | Keep `NO_GO_PENDING_LIVE_EVIDENCE` until live validation, pilot evidence, and an explicit human GO decision exist. |
+
+The external Agentic Engineering Control Plane recorded the PR #123 baseline as
+`merged_verified` under task `DEV-4dc8e27d9103779b`; final evidence reference:
+`EVD-20260817T030044667148Z-c0958154`. This is source and review evidence, not
+evidence that the current revision is running in Azure.
+
+### Safe resume point
+
+Resume through a new governed Agentic Engineering task rather than editing
+`main` directly:
+
+1. Reverify the current `main` SHA, required CI checks, dependency scan,
+   SonarCloud result, and review status; do not assume this checkpoint is still
+   current after new commits or dependency changes.
+2. Complete the IaC preflight and connector-contract review before requesting
+   a new Azure staging deployment.
+3. Re-establish an explicitly approved Azure budget and cleanup plan. Do not
+   switch a subscription to Pay-As-You-Go without separate human authorisation.
+4. Run all eight live gates against digest-pinned images: separated identities,
+   private-network execution, Service Bus delivery, restart/replay recovery,
+   dead-letter recovery, backup/restore, observed-and-resolved monitoring
+   alerts, and revision rollback.
+5. After all eight live gates pass, complete the target-environment security
+   assessment, access review, and disaster-recovery procedures. Preserve
+   sanitized, source-bound evidence for these controls and every live gate.
+6. Only then conduct the limited production pilot and request a separate human
+   GO or NO-GO decision.
+
+No active development, automatic deployment, automatic merge, mTLS claim, or
+production approval is implied while the project is paused.
 
 ## What it is
 
@@ -589,20 +640,17 @@ The current test command is:
 python -m unittest discover -v -p "test_*.py"
 ```
 
-Current isolated regression result without external services:
+Latest governed source verification for
+`332c912a993f86bcd5b0e3a47c3a0d2e86d9ae84`:
 
 ```text
-Ran 179 tests
-OK (skipped=17 environment-gated integration tests)
+Ran 414 tests
+OK (skipped=27 environment-dependent tests)
 ```
 
-The PostgreSQL tests run when `SENTINEL_TEST_POSTGRES_URL` is set. The complete
-suite was also validated against an isolated PostgreSQL 17 container:
-
-```text
-Ran 179 tests
-OK
-```
+The PostgreSQL tests run when `SENTINEL_TEST_POSTGRES_URL` is set. The skipped
+tests require external services or environment-specific tools; a repository
+suite result does not grant Azure live-validation credit.
 
 Those tests cover transactional migrations, checksum mismatch rejection,
 human identity authentication, the full finding lifecycle, rollback,
@@ -719,8 +767,10 @@ This repository is **not** a production deployment. Before even a limited intern
   now includes manual Bicep for an internal Container Apps environment,
   private PostgreSQL, Key Vault, encrypted Blob containers, Service Bus,
   monitoring, private endpoints, managed identity, and resource-scoped RBAC.
-  The template compiles in CI but no Azure resource has been provisioned or
-  validated by this repository.
+  The template compiles in CI. Sanitized historical staging evidence is retained
+  under `docs/evidence/historical-azure-staging-202608`, but it is tied to an
+  older source revision and cannot validate current `main` or satisfy a current
+  live gate.
 - A real Microsoft Entra tenant/app registration, role assignments, Conditional Access/MFA policy, and lifecycle-managed service identities. The staging code verifies OIDC signatures and trust claims; local hashed API keys are lab-only.
 - A secrets manager, TLS termination, network policy, rate limiting, and a hardened WSGI or ASGI server around the HTTP adapter.
 - Validation of the managed-identity Azure Blob adapter against a private
@@ -733,9 +783,13 @@ This repository is **not** a production deployment. Before even a limited intern
 - Validation of the implemented managed-identity Service Bus publisher and
   supervised outbox sidecar against the real private queue. Repository tests
   cover stable message IDs, sessions, duplicate-safe replay, fencing,
-  heartbeat/readiness, retry and dead-letter recovery, but no message has been
-  sent to an Azure tenant.
-- Centralized logging, metrics, tracing, alerting, backup/restore tests, disaster-recovery procedures, and security assessment.
+  heartbeat/readiness, retry and dead-letter recovery. Historical synthetic
+  Azure messaging observations are retained only as old-revision evidence and
+  grant no current live-gate credit.
+- Live centralized logging, metrics, tracing, alert observation and resolution,
+  backup/restore rehearsal, and disaster-recovery procedures. The offline
+  repository security assessment is complete; target-environment assessment
+  and go-live review remain mandatory.
 - A real connector test against an authorised Windows and SIEM environment, including failure recovery and access-control validation.
 
 The repository includes an offline staging-assurance package and explicit live
@@ -766,3 +820,4 @@ remaining user-owned prerequisites, see
 For the wider production requirements, see
 [`docs/production-runbook.md`](docs/production-runbook.md) and
 [`docs/enterprise-deployment.md`](docs/enterprise-deployment.md).
+
