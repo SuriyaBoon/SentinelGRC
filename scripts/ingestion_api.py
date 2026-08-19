@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from contract_validation import is_canonical_text, parse_rfc3339
 from path_security import (
     configured_runtime_root,
     resolve_directory_under_root,
@@ -68,21 +69,19 @@ def _validate_posture_shape(payload: dict[str, Any]) -> None:
 
 
 def _validate_identity_fields(payload: dict[str, Any]) -> None:
-    if not isinstance(payload["asset_id"], str) or not 1 <= len(payload["asset_id"]) <= 128:
+    if not is_canonical_text(payload["asset_id"], 128):
         raise ValueError("asset_id length is invalid.")
-    if not isinstance(payload["hostname"], str) or not 1 <= len(payload["hostname"]) <= 255:
-        raise ValueError("hostname length is invalid.")
-    if any(ord(char) < 32 for char in payload["asset_id"] + payload["hostname"]):
-        raise ValueError("asset_id and hostname cannot contain control characters.")
+    if not is_canonical_text(payload["hostname"], 255):
+        raise ValueError("hostname is invalid.")
 
 
 def _validate_collection_time(value: Any) -> None:
     try:
-        collected_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (AttributeError, TypeError, ValueError) as error:
-        raise ValueError("collected_at must be an ISO-8601 timestamp.") from error
-    if collected_at.tzinfo is None:
-        raise ValueError("collected_at must include a timezone.")
+        parse_rfc3339(value, "posture", "collected_at")
+    except ValueError as error:
+        raise ValueError(
+            "collected_at must be an ISO-8601 timestamp."
+        ) from error
 
 
 def _validate_boolean_fields(payload: dict[str, Any]) -> None:
@@ -96,6 +95,61 @@ def _validate_update_age(value: Any) -> None:
         raise ValueError("days_since_last_update must be a non-negative integer or null.")
 
 
+def _validate_optional_text(payload: dict[str, Any], field: str, maximum: int) -> None:
+    if field not in payload:
+        return
+    value = payload[field]
+    if value is not None and not is_canonical_text(value, maximum):
+        raise ValueError(f"{field} must be null or canonical text up to {maximum} characters.")
+
+
+def _validate_required_text_when_present(
+    payload: dict[str, Any], field: str, maximum: int
+) -> None:
+    if field not in payload:
+        return
+    value = payload[field]
+    if not is_canonical_text(value, maximum):
+        raise ValueError(f"{field} must be canonical text up to {maximum} characters.")
+
+
+def _validate_posture_context(payload: dict[str, Any]) -> None:
+    _validate_optional_text(payload, "os", 128)
+    _validate_optional_text(payload, "os_version", 128)
+    _validate_required_text_when_present(payload, "owner", 128)
+    if "domain" in payload and payload["domain"] is not None and not isinstance(payload["domain"], bool):
+        raise ValueError("domain must be boolean or null.")
+    if "criticality" in payload and payload["criticality"] not in {
+        "low", "medium", "high", "critical",
+    }:
+        raise ValueError("criticality must be low, medium, high, or critical.")
+
+
+def _validate_posture_check_shape(check: Any) -> dict[str, Any]:
+    required = {"name", "passed", "value", "error"}
+    if not isinstance(check, dict) or set(check) != required:
+        raise ValueError("each check must contain only name, passed, value, and error.")
+    return check
+
+
+def _validate_posture_check_fields(check: dict[str, Any]) -> None:
+    name = check["name"]
+    if not is_canonical_text(name, 128):
+        raise ValueError("check name must be canonical text up to 128 characters.")
+    if not isinstance(check["passed"], bool):
+        raise ValueError("check passed must be boolean.")
+    error = check["error"]
+    if error is not None and not is_canonical_text(error, 512):
+        raise ValueError("check error must be null or canonical text up to 512 characters.")
+
+
+def _validate_posture_checks(value: Any) -> None:
+    if not isinstance(value, list) or len(value) > 128:
+        raise ValueError("checks must be an array with at most 128 items.")
+    for check in value:
+        _validate_posture_check_fields(_validate_posture_check_shape(check))
+
+
 def validate_posture(payload: Any) -> None:
     if not isinstance(payload, dict):
         raise ValueError("Posture payload must be a JSON object.")
@@ -104,6 +158,9 @@ def validate_posture(payload: Any) -> None:
     _validate_collection_time(payload["collected_at"])
     _validate_boolean_fields(payload)
     _validate_update_age(payload["days_since_last_update"])
+    _validate_posture_context(payload)
+    if "checks" in payload:
+        _validate_posture_checks(payload["checks"])
 
 
 class NonceStore:
