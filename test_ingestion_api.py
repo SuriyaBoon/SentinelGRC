@@ -4,6 +4,7 @@ import re
 import tempfile
 import time
 import unittest
+from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -143,6 +144,128 @@ class IngestionSecurityTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(ValueError, "Unknown fields"):
             validate_posture(invalid_at_multiple_layers)
+
+
+    def _dispatch(self, path, payload, nonce, state, output_dir, *, sort_keys=False):
+        body = json.dumps(
+            payload, separators=(",", ":"), sort_keys=sort_keys
+        ).encode()
+        timestamp = str(int(time.time()))
+        authorization = "HMAC " + self.key_id + ":" + make_signature(
+            self.signing_key, timestamp, nonce, body
+        )
+        responses = []
+        handler = PostureHandler.__new__(PostureHandler)
+        handler.path = path
+        handler.headers = {
+            "Content-Type": "application/json",
+            "Content-Length": str(len(body)),
+            "X-Sentinel-Timestamp": timestamp,
+            "X-Sentinel-Nonce": nonce,
+            "Authorization": authorization,
+        }
+        handler.rfile = io.BytesIO(body)
+        handler.server = SimpleNamespace(
+            key_registry=StaticKeyRegistry(self.signing_key),
+            key_secrets={},
+            nonce_store=NonceStore(),
+            state_store=state,
+            output_dir=output_dir,
+        )
+        handler._send_json = lambda status, response: responses.append(
+            (status, response)
+        )
+        handler.do_POST()
+        return responses[-1]
+
+    @staticmethod
+    def _asset_context():
+        return {
+            "schema_version": "asset_context.v1",
+            "source": "home-lab-v5",
+            "source_asset_id": "INV-1",
+            "observed_at": "2026-08-19T00:00:00Z",
+            "asset_id": "WIN-01",
+            "hostname": "win-01",
+            "owner": "owner-01",
+            "criticality": "high",
+            "status": "active",
+            "evidence_refs": ["sample://inventory/INV-1"],
+        }
+
+    @staticmethod
+    def _remediation_ticket():
+        return {
+            "schema_version": "remediation_ticket.v1",
+            "source": "helpdesk",
+            "source_ticket_id": "HD-1",
+            "finding_id": "F-1",
+            "asset_id": "WIN-01",
+            "owner": "analyst-01",
+            "status": "assigned",
+            "priority": "P2",
+            "created_at": "2026-08-19T00:00:00Z",
+            "updated_at": "2026-08-19T00:01:00Z",
+            "due_at": "2026-08-19T08:00:00Z",
+            "evidence_refs": ["https://helpdesk.invalid/tickets/HD-1"],
+        }
+
+    def test_portfolio_routes_normalize_before_idempotent_persistence(self):
+        definitions = (
+            ("/v1/asset-context", self._asset_context(), "context_id"),
+            (
+                "/v1/remediation-ticket",
+                self._remediation_ticket(),
+                "ticket_context_id",
+            ),
+        )
+        for index, (path, payload, identity_field) in enumerate(definitions):
+            with self.subTest(path=path), tempfile.TemporaryDirectory() as directory:
+                state = MemoryPayloadState()
+                output_dir = Path(directory)
+                first_status, first = self._dispatch(
+                    path, payload, f"nonce-portfolio-{index}a", state, output_dir
+                )
+                second_status, second = self._dispatch(
+                    path,
+                    dict(reversed(tuple(payload.items()))),
+                    f"nonce-portfolio-{index}b",
+                    state,
+                    output_dir,
+                    sort_keys=True,
+                )
+                self.assertEqual(first_status, HTTPStatus.ACCEPTED)
+                self.assertEqual(second_status, HTTPStatus.ACCEPTED)
+                self.assertEqual(first["status"], "accepted")
+                self.assertEqual(second["status"], "duplicate")
+                self.assertEqual(first["evidence_id"], second["evidence_id"])
+                self.assertEqual(first[identity_field], second[identity_field])
+                files = list(output_dir.glob("*.json"))
+                self.assertEqual(len(files), 1)
+                normalized = json.loads(files[0].read_text(encoding="utf-8"))
+                self.assertEqual(normalized[identity_field], first[identity_field])
+
+    def test_source_derived_identity_is_rejected_before_business_side_effects(self):
+        definitions = (
+            ("/v1/asset-context", self._asset_context(), "context_id"),
+            (
+                "/v1/remediation-ticket",
+                self._remediation_ticket(),
+                "ticket_context_id",
+            ),
+        )
+        for index, (path, payload, identity_field) in enumerate(definitions):
+            with self.subTest(path=path), tempfile.TemporaryDirectory() as directory:
+                payload[identity_field] = "ATTACKER-CONTROLLED"
+                state = MemoryPayloadState()
+                output_dir = Path(directory)
+                status, response = self._dispatch(
+                    path, payload, f"nonce-rejected-{index}", state, output_dir
+                )
+                self.assertEqual(status, HTTPStatus.BAD_REQUEST)
+                self.assertIn("unknown fields", response["error"])
+                self.assertEqual(state.evidence_ids, {})
+                self.assertEqual(list(output_dir.iterdir()), [])
 
     def test_http_handler_preserves_authenticated_acceptance_and_deduplication(self):
         state = MemoryPayloadState()

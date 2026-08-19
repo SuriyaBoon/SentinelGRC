@@ -14,8 +14,14 @@ from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
+from contract_validation import is_canonical_text, parse_rfc3339
+from portfolio_contracts import (
+    normalize_asset_context_v1,
+    normalize_remediation_ticket_v1,
+)
 from path_security import (
     configured_runtime_root,
     resolve_directory_under_root,
@@ -37,6 +43,15 @@ REQUIRED_FIELDS = {
     "defender_realtime_enabled", "days_since_last_update",
 }
 ALLOWED_FIELDS = REQUIRED_FIELDS | {"os", "os_version", "domain", "checks", "owner", "criticality"}
+PortfolioNormalizer = Callable[[Any], dict[str, Any]]
+PORTFOLIO_ROUTES: dict[str, tuple[str, str, PortfolioNormalizer]] = {
+    "/v1/asset-context": ("asset_context", "context_id", normalize_asset_context_v1),
+    "/v1/remediation-ticket": (
+        "remediation_ticket",
+        "ticket_context_id",
+        normalize_remediation_ticket_v1,
+    ),
+}
 
 
 def make_signature(secret: bytes, timestamp: str, nonce: str, body: bytes) -> str:
@@ -68,21 +83,19 @@ def _validate_posture_shape(payload: dict[str, Any]) -> None:
 
 
 def _validate_identity_fields(payload: dict[str, Any]) -> None:
-    if not isinstance(payload["asset_id"], str) or not 1 <= len(payload["asset_id"]) <= 128:
+    if not is_canonical_text(payload["asset_id"], 128):
         raise ValueError("asset_id length is invalid.")
-    if not isinstance(payload["hostname"], str) or not 1 <= len(payload["hostname"]) <= 255:
-        raise ValueError("hostname length is invalid.")
-    if any(ord(char) < 32 for char in payload["asset_id"] + payload["hostname"]):
-        raise ValueError("asset_id and hostname cannot contain control characters.")
+    if not is_canonical_text(payload["hostname"], 255):
+        raise ValueError("hostname is invalid.")
 
 
 def _validate_collection_time(value: Any) -> None:
     try:
-        collected_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (AttributeError, TypeError, ValueError) as error:
-        raise ValueError("collected_at must be an ISO-8601 timestamp.") from error
-    if collected_at.tzinfo is None:
-        raise ValueError("collected_at must include a timezone.")
+        parse_rfc3339(value, "posture", "collected_at")
+    except ValueError as error:
+        raise ValueError(
+            "collected_at must be an ISO-8601 timestamp."
+        ) from error
 
 
 def _validate_boolean_fields(payload: dict[str, Any]) -> None:
@@ -96,6 +109,61 @@ def _validate_update_age(value: Any) -> None:
         raise ValueError("days_since_last_update must be a non-negative integer or null.")
 
 
+def _validate_optional_text(payload: dict[str, Any], field: str, maximum: int) -> None:
+    if field not in payload:
+        return
+    value = payload[field]
+    if value is not None and not is_canonical_text(value, maximum):
+        raise ValueError(f"{field} must be null or canonical text up to {maximum} characters.")
+
+
+def _validate_required_text_when_present(
+    payload: dict[str, Any], field: str, maximum: int
+) -> None:
+    if field not in payload:
+        return
+    value = payload[field]
+    if not is_canonical_text(value, maximum):
+        raise ValueError(f"{field} must be canonical text up to {maximum} characters.")
+
+
+def _validate_posture_context(payload: dict[str, Any]) -> None:
+    _validate_optional_text(payload, "os", 128)
+    _validate_optional_text(payload, "os_version", 128)
+    _validate_required_text_when_present(payload, "owner", 128)
+    if "domain" in payload and payload["domain"] is not None and not isinstance(payload["domain"], bool):
+        raise ValueError("domain must be boolean or null.")
+    if "criticality" in payload and payload["criticality"] not in {
+        "low", "medium", "high", "critical",
+    }:
+        raise ValueError("criticality must be low, medium, high, or critical.")
+
+
+def _validate_posture_check_shape(check: Any) -> dict[str, Any]:
+    required = {"name", "passed", "value", "error"}
+    if not isinstance(check, dict) or set(check) != required:
+        raise ValueError("each check must contain only name, passed, value, and error.")
+    return check
+
+
+def _validate_posture_check_fields(check: dict[str, Any]) -> None:
+    name = check["name"]
+    if not is_canonical_text(name, 128):
+        raise ValueError("check name must be canonical text up to 128 characters.")
+    if not isinstance(check["passed"], bool):
+        raise ValueError("check passed must be boolean.")
+    error = check["error"]
+    if error is not None and not is_canonical_text(error, 512):
+        raise ValueError("check error must be null or canonical text up to 512 characters.")
+
+
+def _validate_posture_checks(value: Any) -> None:
+    if not isinstance(value, list) or len(value) > 128:
+        raise ValueError("checks must be an array with at most 128 items.")
+    for check in value:
+        _validate_posture_check_fields(_validate_posture_check_shape(check))
+
+
 def validate_posture(payload: Any) -> None:
     if not isinstance(payload, dict):
         raise ValueError("Posture payload must be a JSON object.")
@@ -104,6 +172,9 @@ def validate_posture(payload: Any) -> None:
     _validate_collection_time(payload["collected_at"])
     _validate_boolean_fields(payload)
     _validate_update_age(payload["days_since_last_update"])
+    _validate_posture_context(payload)
+    if "checks" in payload:
+        _validate_posture_checks(payload["checks"])
 
 
 class NonceStore:
@@ -199,15 +270,16 @@ class PostureHandler(BaseHTTPRequestHandler):
         )
         return body
 
-    def _persist_posture(self, body: bytes) -> None:
-        payload = json.loads(body.decode("utf-8"))
-        validate_posture(payload)
+    def _persist_validated_body(
+        self, body: bytes, response_fields: dict[str, str]
+    ) -> None:
+        """Persist validated canonical evidence through the shared replay boundary."""
         payload_hash = hashlib.sha256(body).hexdigest()
         existing_id = self.server.state_store.get_evidence_id(payload_hash)
         if existing_id:
             self._send_json(
                 HTTPStatus.ACCEPTED,
-                {"status": "duplicate", "evidence_id": existing_id},
+                {"status": "duplicate", "evidence_id": existing_id, **response_fields},
             )
             return
         evidence_id = payload_hash[:24]
@@ -221,15 +293,44 @@ class PostureHandler(BaseHTTPRequestHandler):
             {
                 "status": "accepted" if inserted else "duplicate",
                 "evidence_id": evidence_id,
+                **response_fields,
             },
         )
 
+    def _persist_posture(self, body: bytes) -> None:
+        payload = json.loads(body.decode("utf-8"))
+        validate_posture(payload)
+        self._persist_validated_body(body, {"record_type": "posture"})
+
+    def _persist_portfolio_record(
+        self,
+        body: bytes,
+        record_type: str,
+        identity_field: str,
+        normalizer: PortfolioNormalizer,
+    ) -> None:
+        """Normalize source input before any file or state-store side effect."""
+        source = json.loads(body.decode("utf-8"))
+        normalized = normalizer(source)
+        canonical = json.dumps(
+            normalized, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+        self._persist_validated_body(
+            canonical,
+            {"record_type": record_type, identity_field: normalized[identity_field]},
+        )
+
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/v1/posture":
+        portfolio_route = PORTFOLIO_ROUTES.get(self.path)
+        if self.path != "/v1/posture" and portfolio_route is None:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
             return
         try:
-            self._persist_posture(self._read_authenticated_body())
+            body = self._read_authenticated_body()
+            if portfolio_route is None:
+                self._persist_posture(body)
+            else:
+                self._persist_portfolio_record(body, *portfolio_route)
         except (UnicodeDecodeError, json.JSONDecodeError):
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_json"})
         except IngestionError as error:

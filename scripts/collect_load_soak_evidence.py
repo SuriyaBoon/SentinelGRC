@@ -20,6 +20,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--replay-rounds", type=int, default=1)
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--duration-seconds", type=float, default=1.0)
+    parser.add_argument("--minimum-throughput-per-second", type=float, default=1.0)
+    parser.add_argument("--maximum-p95-latency-ms", type=float, default=2_000.0)
+    parser.add_argument(
+        "--maximum-peak-traced-bytes", type=int, default=128 * 1024 * 1024
+    )
     args = parser.parse_args(argv)
     try:
         profile = LoadSoakProfile(
@@ -27,6 +32,9 @@ def main(argv: list[str] | None = None) -> int:
             replay_rounds=args.replay_rounds,
             concurrency=args.concurrency,
             duration_seconds=args.duration_seconds,
+            minimum_throughput_per_second=args.minimum_throughput_per_second,
+            maximum_p95_latency_ms=args.maximum_p95_latency_ms,
+            maximum_peak_traced_bytes=args.maximum_peak_traced_bytes,
         )
         envelope = collect_load_soak_evidence(profile, args.source_commit)
         validate_load_soak_evidence(envelope)
