@@ -18,8 +18,8 @@
     "collected_at": { "type": "string", "format": "date-time" },
     "asset_id": { "type": "string", "minLength": 1, "maxLength": 128 },
     "hostname": { "type": "string", "minLength": 1, "maxLength": 255 },
-    "os": { "type": ["string", "null"] },
-    "os_version": { "type": ["string", "null"] },
+    "os": { "type": ["string", "null"], "minLength": 1, "maxLength": 128 },
+    "os_version": { "type": ["string", "null"], "minLength": 1, "maxLength": 128 },
     "domain": { "type": ["boolean", "null"] },
     "bitlocker_system_drive": { "type": "boolean" },
     "firewall_all_profiles_enabled": { "type": "boolean" },
@@ -29,15 +29,16 @@
     "criticality": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
     "checks": {
       "type": "array",
+      "maxItems": 128,
       "items": {
         "type": "object",
         "required": ["name", "passed", "value", "error"],
         "additionalProperties": false,
         "properties": {
-          "name": { "type": "string" },
+          "name": { "type": "string", "minLength": 1, "maxLength": 128 },
           "passed": { "type": "boolean" },
           "value": {},
-          "error": { "type": ["string", "null"] }
+          "error": { "type": ["string", "null"], "minLength": 1, "maxLength": 512 }
         }
       }
     }

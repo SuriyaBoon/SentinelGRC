@@ -96,6 +96,49 @@ def _validate_update_age(value: Any) -> None:
         raise ValueError("days_since_last_update must be a non-negative integer or null.")
 
 
+def _validate_optional_text(payload: dict[str, Any], field: str, maximum: int) -> None:
+    if field not in payload:
+        return
+    value = payload[field]
+    if value is not None and (
+        not isinstance(value, str) or not value.strip() or len(value.strip()) > maximum
+    ):
+        raise ValueError(f"{field} must be null or non-empty text up to {maximum} characters.")
+
+
+def _validate_posture_context(payload: dict[str, Any]) -> None:
+    _validate_optional_text(payload, "os", 128)
+    _validate_optional_text(payload, "os_version", 128)
+    _validate_optional_text(payload, "owner", 128)
+    if "domain" in payload and payload["domain"] is not None and not isinstance(payload["domain"], bool):
+        raise ValueError("domain must be boolean or null.")
+    if "criticality" in payload and payload["criticality"] not in {
+        "low", "medium", "high", "critical",
+    }:
+        raise ValueError("criticality must be low, medium, high, or critical.")
+
+
+def _validate_posture_checks(value: Any) -> None:
+    if value is None:
+        return
+    if not isinstance(value, list) or len(value) > 128:
+        raise ValueError("checks must be an array with at most 128 items.")
+    required = {"name", "passed", "value", "error"}
+    for check in value:
+        if not isinstance(check, dict) or set(check) != required:
+            raise ValueError("each check must contain only name, passed, value, and error.")
+        name = check["name"]
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 128:
+            raise ValueError("check name must be non-empty text up to 128 characters.")
+        if not isinstance(check["passed"], bool):
+            raise ValueError("check passed must be boolean.")
+        error = check["error"]
+        if error is not None and (
+            not isinstance(error, str) or not error.strip() or len(error.strip()) > 512
+        ):
+            raise ValueError("check error must be null or non-empty text up to 512 characters.")
+
+
 def validate_posture(payload: Any) -> None:
     if not isinstance(payload, dict):
         raise ValueError("Posture payload must be a JSON object.")
@@ -104,6 +147,9 @@ def validate_posture(payload: Any) -> None:
     _validate_collection_time(payload["collected_at"])
     _validate_boolean_fields(payload)
     _validate_update_age(payload["days_since_last_update"])
+    _validate_posture_context(payload)
+    if "checks" in payload:
+        _validate_posture_checks(payload["checks"])
 
 
 class NonceStore:
