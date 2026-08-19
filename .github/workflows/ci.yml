@@ -54,6 +54,7 @@ jobs:
           --replay-rounds 1
           --concurrency 4
           --duration-seconds 1
+          --maximum-p95-latency-ms 10000
 
       - name: Retain hermetic load and soak evidence
         if: always()

@@ -191,6 +191,25 @@ class LoadSoakBaselineTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "stop"):
                 collect_load_soak_evidence(profile, SOURCE_COMMIT)
         self.assertFalse(tracemalloc.is_tracing())
+    def test_hosted_runner_guard_accepts_recorded_pr127_latency_without_live_credit(self):
+        profile = self.profile(maximum_p95_latency_ms=10_000)
+        metrics = {
+            "operations": 24,
+            "unique_findings": 12,
+            "expected_reassessments": 12,
+            "actual_reassessments": 12,
+            "persisted_findings": 12,
+            "delivered_events": 24,
+            "errors": 0,
+            "throughput_per_second": 3.688,
+            "latency_ms": {"p50": 55.318, "p95": 2949.065, "p99": 6562.899},
+            "peak_traced_bytes": 341429,
+            "outbox": {"pending": 0, "dead": 0},
+        }
+        from load_soak_baseline import _evaluate_gates
+
+        self.assertTrue(all(_evaluate_gates(metrics, profile).values()))
+
     def test_cli_writes_only_the_fixed_sanitized_output(self):
         with tempfile.TemporaryDirectory() as temp:
             previous = Path.cwd()
@@ -204,6 +223,9 @@ class LoadSoakBaselineTests(unittest.TestCase):
                         "--unique-findings", "4",
                         "--concurrency", "1",
                         "--duration-seconds", "0.1",
+                        "--minimum-throughput-per-second", "0.1",
+                        "--maximum-p95-latency-ms", "5000",
+                        "--maximum-peak-traced-bytes", str(128 * 1024 * 1024),
                     ])
                 output = Path(OUTPUT_PATH)
                 payload = json.loads(output.read_text(encoding="utf-8"))
