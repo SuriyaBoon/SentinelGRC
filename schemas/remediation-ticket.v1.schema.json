@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SuriyaBoon/SentinelGRC/schemas/remediation-ticket.v1.schema.json",
+  "title": "SentinelGRC canonical remediation ticket v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source",
+    "source_ticket_id",
+    "finding_id",
+    "asset_id",
+    "owner",
+    "status",
+    "priority",
+    "created_at",
+    "updated_at",
+    "due_at",
+    "evidence_refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "remediation_ticket.v1"
+    },
+    "source": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "source_ticket_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "finding_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "asset_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "owner": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "status": {
+      "enum": [
+        "new",
+        "assigned",
+        "in_progress",
+        "on_hold",
+        "resolved",
+        "closed"
+      ]
+    },
+    "priority": {
+      "enum": [
+        "P1",
+        "P2",
+        "P3",
+        "P4"
+      ]
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "due_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "evidence_refs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512,
+        "pattern": "^(?:urn:[^\\s]+|(?:https|azblob|sample)://[^\\s/@]+(?:[/?#][^\\s]*)?)$"
+      }
+    }
+  }
+}
