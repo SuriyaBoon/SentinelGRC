@@ -19,6 +19,7 @@ from scripts.path_policy import (
     validate_evidence_id,
 )
 from job_queue import SQLiteJobQueue
+from state_store import SQLiteStateStore
 from sentinelgrc import load_json
 from state_store import DEFAULT_STATE_DB
 
@@ -224,9 +225,11 @@ def process_inbox_once(
     inbox_items = sorted(paths.inbox.glob("*.json"))
     for posture_path in inbox_items:
         _validated_inbox_item(posture_path, paths.inbox)
+    publication_state = SQLiteStateStore(paths.state_db, storage_root=paths.storage_root)
     queue = SQLiteJobQueue(paths.state_db)
     for posture_path in inbox_items:
-        queue.enqueue(str(posture_path))
+        if len(posture_path.stem) != 24 or any(ch not in '0123456789abcdef' for ch in posture_path.stem) or publication_state.is_evidence_committed(posture_path.stem):
+            queue.enqueue(str(posture_path))
     results: list[dict[str, Any]] = []
     worker_id = "worker-" + secrets.token_hex(6)
     while True:

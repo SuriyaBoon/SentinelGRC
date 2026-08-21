@@ -1,16 +1,16 @@
-"""Agent key metadata registry.
+"""Agent key metadata and route-scope registry.
 
-Secrets are never stored here. The secret manager owns key material; this registry
-stores only key IDs, agent IDs, lifecycle status, and timestamps.
+Secrets are never stored here. Existing keys migrate fail-closed to posture-only
+access; portfolio writers require an explicit reviewed scope at registration.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import secrets
 import sqlite3
-import re
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,10 +20,29 @@ from state_store import DEFAULT_STATE_DB
 
 
 KEY_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+POSTURE_WRITE_SCOPE = "posture:write"
+ASSET_CONTEXT_WRITE_SCOPE = "asset-context:write"
+REMEDIATION_TICKET_WRITE_SCOPE = "remediation-ticket:write"
+ALLOWED_KEY_SCOPES = frozenset(
+    {POSTURE_WRITE_SCOPE, ASSET_CONTEXT_WRITE_SCOPE, REMEDIATION_TICKET_WRITE_SCOPE}
+)
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _canonical_scopes(scopes: tuple[str, ...] | list[str] | None) -> tuple[str, ...]:
+    # A caller passing None means "no preference, use the default." A caller
+    # passing an explicit empty tuple/list means "I want zero route access" -
+    # `scopes or (POSTURE_WRITE_SCOPE,)` treated those the same way and
+    # silently granted posture-write to a caller that asked for nothing.
+    selected = (
+        (POSTURE_WRITE_SCOPE,) if scopes is None else tuple(sorted(set(scopes)))
+    )
+    if not selected or any(scope not in ALLOWED_KEY_SCOPES for scope in selected):
+        raise ValueError("agent key scopes must use the approved route-scope allowlist.")
+    return selected
 
 
 class AgentKeyRegistry:
@@ -51,20 +70,40 @@ class AgentKeyRegistry:
                     agent_id TEXT NOT NULL,
                     status TEXT NOT NULL CHECK(status IN ('active', 'revoked')),
                     created_at TEXT NOT NULL,
-                    revoked_at TEXT
+                    revoked_at TEXT,
+                    scopes_json TEXT NOT NULL DEFAULT '["posture:write"]'
                 )
                 """
             )
+            columns = {
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(agent_keys)").fetchall()
+            }
+            if "scopes_json" not in columns:
+                connection.execute(
+                    """ALTER TABLE agent_keys ADD COLUMN scopes_json TEXT NOT NULL
+                    DEFAULT '["posture:write"]'"""
+                )
+            connection.commit()
 
-    def register(self, agent_id: str, key_id: str | None = None) -> tuple[str, str]:
+    def register(
+        self,
+        agent_id: str,
+        key_id: str | None = None,
+        *,
+        scopes: tuple[str, ...] | list[str] | None = None,
+    ) -> tuple[str, str]:
         key_id = key_id or f"{agent_id}-{secrets.token_hex(6)}"
+        selected_scopes = _canonical_scopes(scopes)
         if not agent_id.strip() or not KEY_ID_PATTERN.fullmatch(key_id):
             raise ValueError("agent_id and key_id must use non-empty safe identifiers.")
         secret = secrets.token_urlsafe(32)
         with closing(sqlite3.connect(database=self.path, uri=False)) as connection:
             connection.execute(
-                "INSERT INTO agent_keys(key_id, agent_id, status, created_at) VALUES (?, ?, 'active', ?)",
-                (key_id, agent_id, utc_now()),
+                "INSERT INTO agent_keys"
+                "(key_id, agent_id, status, created_at, scopes_json) "
+                "VALUES (?, ?, 'active', ?, ?)",
+                (key_id, agent_id, utc_now(), json.dumps(selected_scopes)),
             )
             connection.commit()
         return key_id, secret
@@ -84,6 +123,21 @@ class AgentKeyRegistry:
             ).fetchone()
         return row is not None and row[0] == "active"
 
+    def is_authorized(self, key_id: str, required_scope: str) -> bool:
+        if required_scope not in ALLOWED_KEY_SCOPES:
+            return False
+        with closing(sqlite3.connect(database=self.path, uri=False)) as connection:
+            row = connection.execute(
+                "SELECT status, scopes_json FROM agent_keys WHERE key_id = ?", (key_id,)
+            ).fetchone()
+        if row is None or row[0] != "active":
+            return False
+        try:
+            scopes = json.loads(row[1])
+        except (TypeError, json.JSONDecodeError):
+            return False
+        return isinstance(scopes, list) and required_scope in scopes
+
     def resolve_secret(self, key_id: str, secret_map: dict[str, str]) -> bytes | None:
         if not self.is_active(key_id):
             return None
@@ -98,6 +152,9 @@ def main() -> int:
     register = subparsers.add_parser("register")
     register.add_argument("--agent-id", required=True)
     register.add_argument("--key-id")
+    register.add_argument(
+        "--scope", action="append", choices=sorted(ALLOWED_KEY_SCOPES)
+    )
     revoke = subparsers.add_parser("revoke")
     revoke.add_argument("--key-id", required=True)
     args = parser.parse_args()
@@ -109,8 +166,9 @@ def main() -> int:
     )
     registry = AgentKeyRegistry(database_path, storage_root=runtime_root)
     if args.command == "register":
-        key_id, secret = registry.register(args.agent_id, args.key_id)
-        print(json.dumps({"key_id": key_id, "secret_once": secret}))
+        scopes = _canonical_scopes(args.scope)
+        key_id, secret = registry.register(args.agent_id, args.key_id, scopes=scopes)
+        print(json.dumps({"key_id": key_id, "scopes": scopes, "secret_once": secret}))
     else:
         registry.revoke(args.key_id)
         print(json.dumps({"key_id": args.key_id, "status": "revoked"}))

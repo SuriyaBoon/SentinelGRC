@@ -47,7 +47,8 @@ class SQLiteStateStore:
                 CREATE TABLE IF NOT EXISTS accepted_payloads (
                     payload_hash TEXT PRIMARY KEY,
                     evidence_id TEXT NOT NULL,
-                    accepted_at REAL NOT NULL
+                    accepted_at REAL NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'committed' CHECK(status IN ('pending', 'committed'))
                 );
                 CREATE TABLE IF NOT EXISTS pipeline_runs (
                     input_hash TEXT PRIMARY KEY,
@@ -83,6 +84,9 @@ class SQLiteStateStore:
                 );
                 """
             )
+            payload_columns = {row[1] for row in connection.execute("PRAGMA table_info(accepted_payloads)").fetchall()}
+            if "status" not in payload_columns:
+                connection.execute("ALTER TABLE accepted_payloads ADD COLUMN status TEXT NOT NULL DEFAULT 'committed'")
             columns = {row[1] for row in connection.execute("PRAGMA table_info(pipeline_runs)").fetchall()}
             if "status" not in columns:
                 connection.execute("ALTER TABLE pipeline_runs ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'")
@@ -123,10 +127,43 @@ class SQLiteStateStore:
     def get_evidence_id(self, payload_hash: str) -> str | None:
         with closing(self._connect()) as connection:
             row = connection.execute(
-                "SELECT evidence_id FROM accepted_payloads WHERE payload_hash = ?",
+                "SELECT evidence_id FROM accepted_payloads WHERE payload_hash = ? AND status = 'committed'",
                 (payload_hash,),
             ).fetchone()
         return None if row is None else str(row["evidence_id"])
+
+    def begin_payload(self, payload_hash: str, evidence_id: str, now: float | None = None) -> bool:
+        """Reserve a deterministic payload identity without making it processable."""
+        current = time.time() if now is None else now
+        with self._lock, closing(self._connect()) as connection:
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO accepted_payloads(payload_hash, evidence_id, accepted_at, status) VALUES (?, ?, ?, 'pending')",
+                (payload_hash, evidence_id, current),
+            )
+            row = connection.execute(
+                "SELECT evidence_id FROM accepted_payloads WHERE payload_hash = ?", (payload_hash,)
+            ).fetchone()
+            connection.commit()
+        if row is None or str(row["evidence_id"]) != evidence_id:
+            raise sqlite3.IntegrityError("payload identity mismatch")
+        return cursor.rowcount == 1
+
+    def commit_payload(self, payload_hash: str, evidence_id: str) -> bool:
+        """Make a previously reserved payload eligible for worker processing."""
+        with self._lock, closing(self._connect()) as connection:
+            cursor = connection.execute(
+                "UPDATE accepted_payloads SET status = 'committed' WHERE payload_hash = ? AND evidence_id = ?",
+                (payload_hash, evidence_id),
+            )
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def is_evidence_committed(self, evidence_id: str) -> bool:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT 1 FROM accepted_payloads WHERE evidence_id = ? AND status = 'committed'", (evidence_id,)
+            ).fetchone()
+        return row is not None
 
     def remember_payload(self, payload_hash: str, evidence_id: str, now: float | None = None) -> bool:
         """Persist an accepted payload and report whether this call created it."""

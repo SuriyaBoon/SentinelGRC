@@ -15,6 +15,16 @@ class StateStoreTests(unittest.TestCase):
             second = SQLiteStateStore(db)
             self.assertFalse(second.reserve_nonce("nonce-123", 300, now=1001))
 
+    def test_payload_requires_commit_before_worker_visibility(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStateStore(Path(directory) / "state.db", storage_root=directory)
+            self.assertTrue(store.begin_payload("hash-pending", "evidence-pending"))
+            self.assertIsNone(store.get_evidence_id("hash-pending"))
+            self.assertFalse(store.is_evidence_committed("evidence-pending"))
+            self.assertTrue(store.commit_payload("hash-pending", "evidence-pending"))
+            self.assertEqual(store.get_evidence_id("hash-pending"), "evidence-pending")
+            self.assertTrue(store.is_evidence_committed("evidence-pending"))
+
     def test_payload_identity_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             store = SQLiteStateStore(str(Path(directory) / "state.db"))
