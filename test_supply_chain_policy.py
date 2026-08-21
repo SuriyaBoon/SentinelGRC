@@ -113,6 +113,9 @@ class SupplyChainPolicyTests(unittest.TestCase):
         self.assertNotIn("COPY . .", assurance)
         self.assertIn("requirements-assessment-hashed.txt", qualification)
         self.assertIn("--require-hashes", qualification)
+        assessment_lock = (ROOT / "requirements-assessment-hashed.txt").read_text(encoding="utf-8")
+        self.assertIn("jsonschema==4.25.1", assessment_lock)
+        self.assertIn("rfc3339-validator==0.1.4", assessment_lock)
         self.assertNotIn("COPY . .", qualification)
         self.assertIn("USER 10001:10001", qualification)
     def test_runtime_tmpfs_is_private_and_owned_by_the_non_root_user(self):

@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/SuriyaBoon/SentinelGRC/schemas/asset-context-normalized.v1.schema.json",
+  "title": "SentinelGRC canonical asset context v1 (normalized record)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "context_id",
+    "schema_version",
+    "source",
+    "source_asset_id",
+    "observed_at",
+    "asset_id",
+    "owner",
+    "criticality",
+    "status",
+    "evidence_refs"
+  ],
+  "properties": {
+    "context_id": {
+      "type": "string",
+      "pattern": "^ASSET-CTX-[0-9A-F]{16}$"
+    },
+    "schema_version": {
+      "const": "asset_context.v1"
+    },
+    "source": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._:-]{0,127}$"
+    },
+    "source_asset_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+    },
+    "asset_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "hostname": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[^\\s\\u0000-\\u001F\\u007F\\u200B\\u2028\\u2029\\uFEFF](?:[^\\u0000-\\u001F\\u007F\\u200B\\u2028\\u2029\\uFEFF]*[^\\s\\u0000-\\u001F\\u007F\\u200B\\u2028\\u2029\\uFEFF])?$"
+    },
+    "owner": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "criticality": {
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
+    "status": {
+      "enum": [
+        "active",
+        "inactive",
+        "retired",
+        "unknown"
+      ]
+    },
+    "evidence_refs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512,
+        "pattern": "^(?:urn:[^\\s\\u0000-\\u001F\\u007F\\u200B\\u2028\\u2029\\uFEFF]+|(?:https|azblob|sample)://[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*(?:[/?#][^\\s\\u0000-\\u001F\\u007F\\u200B\\u2028\\u2029\\uFEFF]*)?)$"
+      }
+    }
+  },
+  "description": "Governed record produced after source validation. context_id is server-derived and is never accepted from a source."
+}
