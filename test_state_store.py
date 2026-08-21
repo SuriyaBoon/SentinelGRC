@@ -1,12 +1,56 @@
 import tempfile
 import unittest
 import hashlib
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from state_store import SQLiteStateStore
 
 
 class StateStoreTests(unittest.TestCase):
+    def test_legacy_payload_table_migrates_before_index_creation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "state.db"
+            with closing(sqlite3.connect(database)) as connection:
+                connection.execute(
+                    "CREATE TABLE accepted_payloads ("
+                    "payload_hash TEXT PRIMARY KEY, evidence_id TEXT NOT NULL, "
+                    "accepted_at REAL NOT NULL)"
+                )
+                connection.execute(
+                    "INSERT INTO accepted_payloads(payload_hash, evidence_id, accepted_at) "
+                    "VALUES (?, ?, ?)",
+                    ("legacy-hash", "legacy-evidence", 1000),
+                )
+                connection.commit()
+
+            first = SQLiteStateStore(database, storage_root=directory)
+            self.assertEqual(first.get_evidence_id("legacy-hash"), "legacy-evidence")
+
+            with closing(sqlite3.connect(database)) as connection:
+                columns = {
+                    row[1] for row in connection.execute(
+                        "PRAGMA table_info(accepted_payloads)"
+                    ).fetchall()
+                }
+                indexes = {
+                    row[1] for row in connection.execute(
+                        "PRAGMA index_list(accepted_payloads)"
+                    ).fetchall()
+                }
+                status = connection.execute(
+                    "SELECT status FROM accepted_payloads WHERE payload_hash = ?",
+                    ("legacy-hash",),
+                ).fetchone()[0]
+
+            self.assertIn("status", columns)
+            self.assertIn("idx_accepted_payloads_evidence_status", indexes)
+            self.assertEqual(status, "committed")
+
+            second = SQLiteStateStore(database, storage_root=directory)
+            self.assertEqual(second.get_evidence_id("legacy-hash"), "legacy-evidence")
+
     def test_nonce_survives_new_store_instance(self):
         with tempfile.TemporaryDirectory() as directory:
             db = str(Path(directory) / "state.db")
@@ -14,6 +58,16 @@ class StateStoreTests(unittest.TestCase):
             self.assertTrue(first.reserve_nonce("nonce-123", 300, now=1000))
             second = SQLiteStateStore(db)
             self.assertFalse(second.reserve_nonce("nonce-123", 300, now=1001))
+
+    def test_payload_requires_commit_before_worker_visibility(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = SQLiteStateStore(Path(directory) / "state.db", storage_root=directory)
+            self.assertTrue(store.begin_payload("hash-pending", "evidence-pending"))
+            self.assertIsNone(store.get_evidence_id("hash-pending"))
+            self.assertFalse(store.is_evidence_committed("evidence-pending"))
+            self.assertTrue(store.commit_payload("hash-pending", "evidence-pending"))
+            self.assertEqual(store.get_evidence_id("hash-pending"), "evidence-pending")
+            self.assertTrue(store.is_evidence_committed("evidence-pending"))
 
     def test_payload_identity_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
