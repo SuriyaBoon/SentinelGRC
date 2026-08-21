@@ -8,23 +8,47 @@ import hmac
 import json
 import os
 import re
+import secrets
+import sqlite3
+import threading
 import ssl
 import time
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
+if __name__ == "__main__" and __package__ in {None, ""}:
+    raise SystemExit("Run from the repository root with: python -m scripts.ingestion_api")
+
+from contract_validation import is_canonical_text, parse_rfc3339
+from portfolio_contracts import (
+    CRITICALITIES,
+    IDENTIFIER,
+    normalize_asset_context_v1,
+    normalize_remediation_ticket_v1,
+)
 from path_security import (
     configured_runtime_root,
     resolve_directory_under_root,
     resolve_existing_file_under_root,
     resolve_sqlite_database_under_root,
 )
-from scripts.agent_keys import AgentKeyRegistry
+from scripts.agent_keys import (
+    ASSET_CONTEXT_WRITE_SCOPE,
+    POSTURE_WRITE_SCOPE,
+    REMEDIATION_TICKET_WRITE_SCOPE,
+    AgentKeyRegistry,
+)
 from state_store import DEFAULT_STATE_DB, SQLiteStateStore
+from publication_reconciliation import (
+    RECONCILIATION_GRACE_SECONDS,
+    reconcile_pending_publications,
+)
 
+DIRECTORY_FSYNC_SUPPORTED = os.name != "nt"
 MAX_BODY_BYTES = 64 * 1024
 MAX_CLOCK_SKEW_SECONDS = 300
 DEFAULT_INGESTION_PORT = 8080
@@ -37,6 +61,18 @@ REQUIRED_FIELDS = {
     "defender_realtime_enabled", "days_since_last_update",
 }
 ALLOWED_FIELDS = REQUIRED_FIELDS | {"os", "os_version", "domain", "checks", "owner", "criticality"}
+PortfolioNormalizer = Callable[[Any], dict[str, Any]]
+PortfolioRoute = tuple[str, str, PortfolioNormalizer, str]
+PORTFOLIO_ROUTES: dict[str, PortfolioRoute] = {
+    "/v1/asset-context": (
+        "asset_context", "context_id", normalize_asset_context_v1,
+        ASSET_CONTEXT_WRITE_SCOPE,
+    ),
+    "/v1/remediation-ticket": (
+        "remediation_ticket", "ticket_context_id",
+        normalize_remediation_ticket_v1, REMEDIATION_TICKET_WRITE_SCOPE,
+    ),
+}
 
 
 def make_signature(secret: bytes, timestamp: str, nonce: str, body: bytes) -> str:
@@ -68,21 +104,19 @@ def _validate_posture_shape(payload: dict[str, Any]) -> None:
 
 
 def _validate_identity_fields(payload: dict[str, Any]) -> None:
-    if not isinstance(payload["asset_id"], str) or not 1 <= len(payload["asset_id"]) <= 128:
-        raise ValueError("asset_id length is invalid.")
-    if not isinstance(payload["hostname"], str) or not 1 <= len(payload["hostname"]) <= 255:
-        raise ValueError("hostname length is invalid.")
-    if any(ord(char) < 32 for char in payload["asset_id"] + payload["hostname"]):
-        raise ValueError("asset_id and hostname cannot contain control characters.")
+    if IDENTIFIER.fullmatch(payload["asset_id"]) is None:
+        raise ValueError("asset_id must be a canonical identifier.")
+    if not is_canonical_text(payload["hostname"], 255):
+        raise ValueError("hostname is invalid.")
 
 
 def _validate_collection_time(value: Any) -> None:
     try:
-        collected_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (AttributeError, TypeError, ValueError) as error:
-        raise ValueError("collected_at must be an ISO-8601 timestamp.") from error
-    if collected_at.tzinfo is None:
-        raise ValueError("collected_at must include a timezone.")
+        parse_rfc3339(value, "posture", "collected_at")
+    except ValueError as error:
+        raise ValueError(
+            "collected_at must be an ISO-8601 timestamp."
+        ) from error
 
 
 def _validate_boolean_fields(payload: dict[str, Any]) -> None:
@@ -96,6 +130,59 @@ def _validate_update_age(value: Any) -> None:
         raise ValueError("days_since_last_update must be a non-negative integer or null.")
 
 
+def _validate_optional_text(payload: dict[str, Any], field: str, maximum: int) -> None:
+    if field not in payload:
+        return
+    value = payload[field]
+    if value is not None and not is_canonical_text(value, maximum):
+        raise ValueError(f"{field} must be null or canonical text up to {maximum} characters.")
+
+
+def _validate_required_text_when_present(
+    payload: dict[str, Any], field: str, maximum: int
+) -> None:
+    if field not in payload:
+        return
+    value = payload[field]
+    if not is_canonical_text(value, maximum):
+        raise ValueError(f"{field} must be canonical text up to {maximum} characters.")
+
+
+def _validate_posture_context(payload: dict[str, Any]) -> None:
+    _validate_optional_text(payload, "os", 128)
+    _validate_optional_text(payload, "os_version", 128)
+    _validate_required_text_when_present(payload, "owner", 128)
+    if "domain" in payload and payload["domain"] is not None and not isinstance(payload["domain"], bool):
+        raise ValueError("domain must be boolean or null.")
+    if "criticality" in payload and payload["criticality"] not in CRITICALITIES:
+        raise ValueError("criticality must be low, medium, high, or critical.")
+
+
+def _validate_posture_check_shape(check: Any) -> dict[str, Any]:
+    required = {"name", "passed", "value", "error"}
+    if not isinstance(check, dict) or set(check) != required:
+        raise ValueError("each check must contain only name, passed, value, and error.")
+    return check
+
+
+def _validate_posture_check_fields(check: dict[str, Any]) -> None:
+    name = check["name"]
+    if not is_canonical_text(name, 128):
+        raise ValueError("check name must be canonical text up to 128 characters.")
+    if not isinstance(check["passed"], bool):
+        raise ValueError("check passed must be boolean.")
+    error = check["error"]
+    if error is not None and not is_canonical_text(error, 512):
+        raise ValueError("check error must be null or canonical text up to 512 characters.")
+
+
+def _validate_posture_checks(value: Any) -> None:
+    if not isinstance(value, list) or len(value) > 128:
+        raise ValueError("checks must be an array with at most 128 items.")
+    for check in value:
+        _validate_posture_check_fields(_validate_posture_check_shape(check))
+
+
 def validate_posture(payload: Any) -> None:
     if not isinstance(payload, dict):
         raise ValueError("Posture payload must be a JSON object.")
@@ -104,6 +191,9 @@ def validate_posture(payload: Any) -> None:
     _validate_collection_time(payload["collected_at"])
     _validate_boolean_fields(payload)
     _validate_update_age(payload["days_since_last_update"])
+    _validate_posture_context(payload)
+    if "checks" in payload:
+        _validate_posture_checks(payload["checks"])
 
 
 class NonceStore:
@@ -165,10 +255,22 @@ def authenticate_request(
         raise IngestionError("Replay detected.", HTTPStatus.UNAUTHORIZED)
 
 
+def _fsync_directory(directory: Path) -> None:
+    """Make a POSIX rename durable; Windows cannot open directories this way."""
+    if not DIRECTORY_FSYNC_SUPPORTED:
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(directory, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 class PostureHandler(BaseHTTPRequestHandler):
     server_version = "SentinelGRC/0.7"
 
-    def _read_authenticated_body(self) -> bytes:
+    def _read_authenticated_body(self, required_scope: str) -> bytes:
         if not self.headers.get("Content-Type", "").lower().startswith("application/json"):
             raise IngestionError("Content-Type must be application/json.")
         length = int(self.headers.get("Content-Length", "0"))
@@ -197,45 +299,94 @@ class PostureHandler(BaseHTTPRequestHandler):
             body,
             self.server.nonce_store,
         )
+        if not self.server.key_registry.is_authorized(key_id, required_scope):
+            raise IngestionError(
+                "Key is not authorized for this route.", HTTPStatus.FORBIDDEN
+            )
         return body
+
+    def _persist_validated_body(
+        self, body: bytes, response_fields: dict[str, str], output_dir: Path
+    ) -> None:
+        """Persist canonical evidence atomically into one record-aware inbox."""
+        payload_hash = hashlib.sha256(body).hexdigest()
+        evidence_id = payload_hash[:24]
+        with self.server.publication_lock:
+            existing_id = self.server.state_store.get_evidence_id(payload_hash)
+            if existing_id:
+                self._send_json(HTTPStatus.ACCEPTED, {
+                    "status": "duplicate", "evidence_id": existing_id, **response_fields,
+                })
+                return
+            self.server.state_store.begin_payload(payload_hash, evidence_id)
+            destination = output_dir / f"{evidence_id}.json"
+            temporary = output_dir / f".{evidence_id}.{secrets.token_hex(16)}.tmp"
+            try:
+                with temporary.open("xb") as stream:
+                    stream.write(body)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, destination)
+                _fsync_directory(output_dir)
+            finally:
+                temporary.unlink(missing_ok=True)
+            if not self.server.state_store.commit_payload(payload_hash, evidence_id):
+                raise sqlite3.OperationalError("payload publication state was not committed")
+        self._send_json(HTTPStatus.ACCEPTED, {
+            "status": "accepted", "evidence_id": evidence_id, **response_fields,
+        })
 
     def _persist_posture(self, body: bytes) -> None:
         payload = json.loads(body.decode("utf-8"))
         validate_posture(payload)
-        payload_hash = hashlib.sha256(body).hexdigest()
-        existing_id = self.server.state_store.get_evidence_id(payload_hash)
-        if existing_id:
-            self._send_json(
-                HTTPStatus.ACCEPTED,
-                {"status": "duplicate", "evidence_id": existing_id},
-            )
-            return
-        evidence_id = payload_hash[:24]
-        destination = self.server.output_dir / f"{evidence_id}.json"
-        temporary = self.server.output_dir / f".{evidence_id}.tmp"
-        temporary.write_bytes(body)
-        os.replace(temporary, destination)
-        inserted = self.server.state_store.remember_payload(payload_hash, evidence_id)
-        self._send_json(
-            HTTPStatus.ACCEPTED,
-            {
-                "status": "accepted" if inserted else "duplicate",
-                "evidence_id": evidence_id,
-            },
+        self._persist_validated_body(
+            body, {"record_type": "posture"}, self.server.output_dir
+        )
+
+    def _persist_portfolio_record(
+        self,
+        body: bytes,
+        record_type: str,
+        identity_field: str,
+        normalizer: PortfolioNormalizer,
+    ) -> None:
+        """Normalize source input before any file or state-store side effect."""
+        source = json.loads(body.decode("utf-8"))
+        normalized = normalizer(source)
+        canonical = json.dumps(
+            normalized, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+        self._persist_validated_body(
+            canonical,
+            {"record_type": record_type, identity_field: normalized[identity_field]},
+            self.server.portfolio_output_dirs[record_type],
         )
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/v1/posture":
+        portfolio_route = PORTFOLIO_ROUTES.get(self.path)
+        if self.path != "/v1/posture" and portfolio_route is None:
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
             return
         try:
-            self._persist_posture(self._read_authenticated_body())
+            required_scope = (
+                POSTURE_WRITE_SCOPE if portfolio_route is None else portfolio_route[3]
+            )
+            body = self._read_authenticated_body(required_scope)
+            if portfolio_route is None:
+                self._persist_posture(body)
+            else:
+                self._persist_portfolio_record(body, *portfolio_route[:3])
         except (UnicodeDecodeError, json.JSONDecodeError):
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid_json"})
         except IngestionError as error:
             self._send_json(error.status, {"error": str(error)})
-        except (OSError, ValueError) as error:
+        except ValueError as error:
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+        except (OSError, sqlite3.Error):
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"error": "Evidence storage is unavailable."},
+            )
 
     def log_message(self, format: str, *args: Any) -> None:
         return
@@ -259,6 +410,7 @@ class IngestionServer(ThreadingHTTPServer):
         key_registry: AgentKeyRegistry,
         key_secrets: dict[str, str],
         output_dir: Path,
+        portfolio_output_dirs: dict[str, Path],
         state_db: Path,
         runtime_root: Path,
     ):
@@ -266,9 +418,30 @@ class IngestionServer(ThreadingHTTPServer):
         self.key_registry = key_registry
         self.key_secrets = key_secrets
         self.output_dir = output_dir
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.portfolio_output_dirs = dict(portfolio_output_dirs)
+        for directory in (self.output_dir, *self.portfolio_output_dirs.values()):
+            directory.mkdir(parents=True, exist_ok=True)
         self.state_store = SQLiteStateStore(state_db, storage_root=runtime_root)
+        self.publication_lock = threading.Lock()
         self.nonce_store = NonceStore(db_path=state_db, storage_root=runtime_root)
+        # Self-heal any publication left in 'pending' by a crash on a prior
+        # run before this server starts accepting new requests.
+        #
+        # grace_seconds=0 is deliberate and load-bearing, not an oversight:
+        # the default RECONCILIATION_GRACE_SECONDS (300s) exists to avoid
+        # racing a request that is genuinely still in flight right now -
+        # but nothing can be in flight yet, because this server has not
+        # opened its socket or accepted a single request. Using the default
+        # grace period here would silently reproduce the exact bug this
+        # sweep exists to fix: a crash followed by an immediate restart
+        # (well within 300s) would find its own orphaned record "too new"
+        # and skip it, leaving it stuck exactly as if reconciliation had
+        # never run at all.
+        reconcile_pending_publications(
+            self.state_store,
+            [self.output_dir, *self.portfolio_output_dirs.values()],
+            grace_seconds=0,
+        )
 
 
 def _runtime_environment() -> str:
@@ -276,6 +449,36 @@ def _runtime_environment() -> str:
     if environment not in SUPPORTED_ENVIRONMENTS:
         raise SystemExit("SENTINEL_ENV must be lab, staging, or production.")
     return environment
+
+
+def _resolve_ingestion_directories(
+    args: argparse.Namespace, runtime_root: Path
+) -> tuple[Path, dict[str, Path]]:
+    output_dir = resolve_directory_under_root(
+        args.output_dir,
+        runtime_root,
+        purpose="ingestion output directory",
+        create=True,
+    )
+    portfolio_output_dirs = {
+        "asset_context": resolve_directory_under_root(
+            getattr(
+                args, "asset_context_output_dir",
+                "runtime/portfolio-inbox/asset-context",
+            ), runtime_root,
+            purpose="asset-context ingestion directory", create=True,
+        ),
+        "remediation_ticket": resolve_directory_under_root(
+            getattr(
+                args, "remediation_ticket_output_dir",
+                "runtime/portfolio-inbox/remediation-ticket",
+            ), runtime_root,
+            purpose="remediation-ticket ingestion directory", create=True,
+        ),
+    }
+    if output_dir in portfolio_output_dirs.values() or len(set(portfolio_output_dirs.values())) != 2:
+        raise SystemExit("Posture and portfolio output directories must be distinct.")
+    return output_dir, portfolio_output_dirs
 
 
 def run_server(args: argparse.Namespace) -> int:
@@ -301,12 +504,7 @@ def run_server(args: argparse.Namespace) -> int:
     if bool(args.tls_cert) != bool(args.tls_key):
         raise SystemExit("TLS certificate and private key must be configured together.")
     runtime_root = configured_runtime_root()
-    output_dir = resolve_directory_under_root(
-        args.output_dir,
-        runtime_root,
-        purpose="ingestion output directory",
-        create=True,
-    )
+    output_dir, portfolio_output_dirs = _resolve_ingestion_directories(args, runtime_root)
     state_db = resolve_sqlite_database_under_root(
         args.state_db,
         runtime_root,
@@ -318,6 +516,7 @@ def run_server(args: argparse.Namespace) -> int:
         registry,
         key_secrets,
         output_dir,
+        portfolio_output_dirs,
         state_db,
         runtime_root,
     )
@@ -351,6 +550,40 @@ def run_server(args: argparse.Namespace) -> int:
     return 0
 
 
+def _non_negative_int(raw: str) -> int:
+    value = int(raw)
+    if value < 0:
+        raise argparse.ArgumentTypeError("--grace-seconds must not be negative")
+    return value
+
+
+def run_reconcile(args: argparse.Namespace) -> int:
+    """Operator-triggerable sweep for a scheduled job (cron/systemd timer/etc).
+
+    IngestionServer.__init__ already self-heals every 'pending' record on
+    every server restart (with grace_seconds=0, since nothing can be
+    in-flight yet), and scripts/pipeline_worker.py's process_inbox_once()
+    self-heals the posture inbox on every poll cycle while it runs. This
+    subcommand exists for the remaining gap: a long-running ingestion
+    server that never restarts, or a portfolio (asset-context /
+    remediation-ticket) directory that no recurring worker currently polls.
+    Safe to run on a schedule; every run is idempotent.
+    """
+    runtime_root = configured_runtime_root()
+    output_dir, portfolio_output_dirs = _resolve_ingestion_directories(args, runtime_root)
+    state_db = resolve_sqlite_database_under_root(
+        args.state_db, runtime_root, purpose="ingestion state database",
+    )
+    state_store = SQLiteStateStore(state_db, storage_root=runtime_root)
+    reconciled = reconcile_pending_publications(
+        state_store,
+        [output_dir, *portfolio_output_dirs.values()],
+        grace_seconds=args.grace_seconds,
+    )
+    print(json.dumps({"reconciled": reconciled, "count": len(reconciled)}, separators=(",", ":")))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="SentinelGRC authenticated per-agent ingestion.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -358,12 +591,44 @@ def main() -> int:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=DEFAULT_INGESTION_PORT)
     serve.add_argument("--output-dir", default="evidence-inbox")
+    serve.add_argument(
+        "--asset-context-output-dir",
+        default="runtime/portfolio-inbox/asset-context",
+    )
+    serve.add_argument(
+        "--remediation-ticket-output-dir",
+        default="runtime/portfolio-inbox/remediation-ticket",
+    )
     serve.add_argument("--state-db", default=DEFAULT_STATE_DB)
     serve.add_argument("--keys-env", default="SENTINELGRC_AGENT_KEYS_JSON")
     serve.add_argument("--tls-cert")
     serve.add_argument("--tls-key")
     serve.add_argument("--allow-loopback-http", action="store_true")
+
+    reconcile = subparsers.add_parser(
+        "reconcile",
+        help="Self-heal publication records left 'pending' by a prior crash. "
+        "Safe to run repeatedly; intended for a cron/systemd-timer schedule "
+        "on long-running servers, in addition to the automatic sweep every "
+        "server does at startup.",
+    )
+    reconcile.add_argument("--output-dir", default="evidence-inbox")
+    reconcile.add_argument(
+        "--asset-context-output-dir",
+        default="runtime/portfolio-inbox/asset-context",
+    )
+    reconcile.add_argument(
+        "--remediation-ticket-output-dir",
+        default="runtime/portfolio-inbox/remediation-ticket",
+    )
+    reconcile.add_argument("--state-db", default=DEFAULT_STATE_DB)
+    reconcile.add_argument(
+        "--grace-seconds", type=_non_negative_int, default=RECONCILIATION_GRACE_SECONDS,
+    )
+
     args = parser.parse_args()
+    if args.command == "reconcile":
+        return run_reconcile(args)
     return run_server(args)
 
 

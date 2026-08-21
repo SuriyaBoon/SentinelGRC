@@ -19,6 +19,8 @@ from scripts.path_policy import (
     validate_evidence_id,
 )
 from job_queue import SQLiteJobQueue
+from publication_reconciliation import reconcile_pending_publications
+from state_store import SQLiteStateStore
 from sentinelgrc import load_json
 from state_store import DEFAULT_STATE_DB
 
@@ -224,9 +226,19 @@ def process_inbox_once(
     inbox_items = sorted(paths.inbox.glob("*.json"))
     for posture_path in inbox_items:
         _validated_inbox_item(posture_path, paths.inbox)
+    publication_state = SQLiteStateStore(paths.state_db, storage_root=paths.storage_root)
+    # Uses the default grace period (not 0): unlike a server's one-time
+    # startup sweep, this call runs on every poll cycle for as long as the
+    # worker process is alive, potentially concurrently with a live
+    # ingestion server that may have a request genuinely in flight right
+    # now. This recurring sweep is also what protects a long-running
+    # ingestion server that has not restarted in a while - the server's own
+    # startup sweep only runs once, at process start.
+    reconcile_pending_publications(publication_state, [paths.inbox])
     queue = SQLiteJobQueue(paths.state_db)
     for posture_path in inbox_items:
-        queue.enqueue(str(posture_path))
+        if len(posture_path.stem) != 24 or any(ch not in '0123456789abcdef' for ch in posture_path.stem) or publication_state.is_evidence_committed(posture_path.stem):
+            queue.enqueue(str(posture_path))
     results: list[dict[str, Any]] = []
     worker_id = "worker-" + secrets.token_hex(6)
     while True:
