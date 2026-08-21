@@ -11,11 +11,33 @@ from unittest.mock import patch
 from pathlib import Path
 from job_queue import SQLiteJobQueue
 from scripts import pipeline_worker
+from state_store import SQLiteStateStore
 class PipelineWorkerTests(unittest.TestCase):
     def test_worker_options_keep_processing_boundary_below_parameter_limit(self):
         parameters = inspect.signature(pipeline_worker.process_inbox_once).parameters
         self.assertLessEqual(len(parameters), 13)
         self.assertIn("options", parameters)
+    def test_worker_ignores_pending_ingestion_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            evidence_id = "a" * 24
+            (inbox / f"{evidence_id}.json").write_text(
+                Path("sample_posture.json").read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            store = SQLiteStateStore(root / "state.db", storage_root=root)
+            store.begin_payload("hash-pending", evidence_id)
+            args = (
+                str(inbox), json.loads(Path("controls.json").read_text()),
+                json.loads(Path("assets.json").read_text()), str(root / "ledger.jsonl"),
+                str(root / "state.db"), str(root / "remediation"), str(root / "tickets"),
+                str(root / "reports"),
+            )
+            self.assertEqual(pipeline_worker.process_inbox_once(*args), [])
+            store.commit_payload("hash-pending", evidence_id)
+            self.assertEqual(pipeline_worker.process_inbox_once(*args)[0]["status"], "accepted")
+
     def test_worker_processes_inbox_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
