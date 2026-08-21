@@ -18,6 +18,18 @@ DEFAULT_STATE_DB = "sentinelgrc-state.db"
 BEGIN_IMMEDIATE_SQL = "BEGIN IMMEDIATE"
 
 
+def _enable_wal(connection: sqlite3.Connection) -> None:
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            connection.execute("PRAGMA journal_mode=WAL").fetchone()
+            return
+        except sqlite3.OperationalError as error:
+            if getattr(error, "sqlite_errorcode", None) not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED} or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
+
+
 class SQLiteStateStore:
     def __init__(
         self,
@@ -37,9 +49,11 @@ class SQLiteStateStore:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         with closing(self._connect()) as connection:
+            connection.execute("PRAGMA busy_timeout=30000")
+            _enable_wal(connection)
             connection.executescript(
                 """
-                PRAGMA journal_mode=WAL;
+                BEGIN IMMEDIATE;
                 CREATE TABLE IF NOT EXISTS replay_nonces (
                     nonce TEXT PRIMARY KEY,
                     expires_at REAL NOT NULL
@@ -47,7 +61,8 @@ class SQLiteStateStore:
                 CREATE TABLE IF NOT EXISTS accepted_payloads (
                     payload_hash TEXT PRIMARY KEY,
                     evidence_id TEXT NOT NULL,
-                    accepted_at REAL NOT NULL
+                    accepted_at REAL NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'committed' CHECK(status IN ('pending', 'committed'))
                 );
                 CREATE TABLE IF NOT EXISTS pipeline_runs (
                     input_hash TEXT PRIMARY KEY,
@@ -83,6 +98,15 @@ class SQLiteStateStore:
                 );
                 """
             )
+            payload_columns = {row[1] for row in connection.execute("PRAGMA table_info(accepted_payloads)").fetchall()}
+            if "status" not in payload_columns:
+                # SQLite cannot add the fresh-schema CHECK constraint through
+                # ALTER TABLE. Upgraded stores enforce the domain in code.
+                connection.execute("ALTER TABLE accepted_payloads ADD COLUMN status TEXT NOT NULL DEFAULT 'committed'")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_accepted_payloads_evidence_status "
+                "ON accepted_payloads(evidence_id, status)"
+            )
             columns = {row[1] for row in connection.execute("PRAGMA table_info(pipeline_runs)").fetchall()}
             if "status" not in columns:
                 connection.execute("ALTER TABLE pipeline_runs ADD COLUMN status TEXT NOT NULL DEFAULT 'completed'")
@@ -102,7 +126,7 @@ class SQLiteStateStore:
             connection.commit()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(database=self.path, timeout=5, uri=False)
+        connection = sqlite3.connect(database=self.path, timeout=30, uri=False)
         connection.row_factory = sqlite3.Row
         return connection
 
@@ -123,10 +147,66 @@ class SQLiteStateStore:
     def get_evidence_id(self, payload_hash: str) -> str | None:
         with closing(self._connect()) as connection:
             row = connection.execute(
-                "SELECT evidence_id FROM accepted_payloads WHERE payload_hash = ?",
+                "SELECT evidence_id FROM accepted_payloads WHERE payload_hash = ? AND status = 'committed'",
                 (payload_hash,),
             ).fetchone()
         return None if row is None else str(row["evidence_id"])
+
+    def begin_payload(self, payload_hash: str, evidence_id: str, now: float | None = None) -> bool:
+        """Reserve a deterministic payload identity without making it processable."""
+        current = time.time() if now is None else now
+        with self._lock, closing(self._connect()) as connection:
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO accepted_payloads(payload_hash, evidence_id, accepted_at, status) VALUES (?, ?, ?, 'pending')",
+                (payload_hash, evidence_id, current),
+            )
+            row = connection.execute(
+                "SELECT evidence_id FROM accepted_payloads WHERE payload_hash = ?", (payload_hash,)
+            ).fetchone()
+            connection.commit()
+        if row is None or str(row["evidence_id"]) != evidence_id:
+            raise sqlite3.IntegrityError("payload identity mismatch")
+        return cursor.rowcount == 1
+
+    def commit_payload(self, payload_hash: str, evidence_id: str) -> bool:
+        """Make a previously reserved payload eligible for worker processing."""
+        with self._lock, closing(self._connect()) as connection:
+            cursor = connection.execute(
+                "UPDATE accepted_payloads SET status = 'committed' WHERE payload_hash = ? AND evidence_id = ?",
+                (payload_hash, evidence_id),
+            )
+            connection.commit()
+        return cursor.rowcount == 1
+
+    def is_evidence_committed(self, evidence_id: str) -> bool:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT 1 FROM accepted_payloads WHERE evidence_id = ? AND status = 'committed'", (evidence_id,)
+            ).fetchone()
+        return row is not None
+
+    def find_payload_by_evidence_id(self, evidence_id: str) -> dict[str, Any] | None:
+        """Look up a payload record by its public evidence_id (not payload_hash).
+
+        Returns the record regardless of status - 'pending' or 'committed' -
+        the caller decides what to do with each; this method just reports
+        what accepted_payloads currently has for that evidence_id, or None
+        if there is no row at all.
+
+        Used by publication reconciliation: given a file already on disk
+        (named by its evidence_id), find whether accepted_payloads has a
+        matching row and what its status is, so a crash between the file
+        becoming durable and commit_payload() being called can be detected
+        and self-healed instead of leaving the record stuck as 'pending'
+        forever.
+        """
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT payload_hash, evidence_id, accepted_at, status "
+                "FROM accepted_payloads WHERE evidence_id = ?",
+                (evidence_id,),
+            ).fetchone()
+        return None if row is None else dict(row)
 
     def remember_payload(self, payload_hash: str, evidence_id: str, now: float | None = None) -> bool:
         """Persist an accepted payload and report whether this call created it."""
