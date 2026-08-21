@@ -1,3 +1,4 @@
+import hashlib
 import inspect
 import json
 import os
@@ -10,12 +11,66 @@ from argparse import Namespace
 from unittest.mock import patch
 from pathlib import Path
 from job_queue import SQLiteJobQueue
+import publication_reconciliation
 from scripts import pipeline_worker
+from state_store import SQLiteStateStore
 class PipelineWorkerTests(unittest.TestCase):
     def test_worker_options_keep_processing_boundary_below_parameter_limit(self):
         parameters = inspect.signature(pipeline_worker.process_inbox_once).parameters
         self.assertLessEqual(len(parameters), 13)
         self.assertIn("options", parameters)
+    def test_worker_ignores_pending_ingestion_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            payload = Path("sample_posture.json").read_bytes()
+            payload_hash = hashlib.sha256(payload).hexdigest()
+            evidence_id = payload_hash[:24]
+            (inbox / f"{evidence_id}.json").write_bytes(payload)
+            store = SQLiteStateStore(root / "state.db", storage_root=root)
+            store.begin_payload(payload_hash, evidence_id)
+            self.assertGreater(
+                publication_reconciliation.RECONCILIATION_GRACE_SECONDS, 0
+            )
+            args = (
+                str(inbox), json.loads(Path("controls.json").read_text()),
+                json.loads(Path("assets.json").read_text()), str(root / "ledger.jsonl"),
+                str(root / "state.db"), str(root / "remediation"), str(root / "tickets"),
+                str(root / "reports"),
+            )
+            self.assertEqual(pipeline_worker.process_inbox_once(*args), [])
+            store.commit_payload(payload_hash, evidence_id)
+            self.assertEqual(pipeline_worker.process_inbox_once(*args)[0]["status"], "accepted")
+
+    def test_worker_rejects_replaced_committed_evidence_before_pipeline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            original = Path("sample_posture.json").read_bytes()
+            payload_hash = hashlib.sha256(original).hexdigest()
+            evidence_id = payload_hash[:24]
+            store = SQLiteStateStore(root / "state.db", storage_root=root)
+            store.begin_payload(payload_hash, evidence_id)
+            store.commit_payload(payload_hash, evidence_id)
+            replacement = json.loads(original)
+            replacement["hostname"] = "substituted-host"
+            (inbox / f"{evidence_id}.json").write_text(
+                json.dumps(replacement), encoding="utf-8"
+            )
+            args = (
+                str(inbox), json.loads(Path("controls.json").read_text()),
+                json.loads(Path("assets.json").read_text()), str(root / "ledger.jsonl"),
+                str(root / "state.db"), str(root / "remediation"), str(root / "tickets"),
+                str(root / "reports"),
+            )
+            with patch.object(pipeline_worker.pipeline, "run_pipeline") as run:
+                result = pipeline_worker.process_inbox_once(*args)
+            self.assertEqual(result[0]["status"], "error")
+            self.assertIn("hash verification", result[0]["error"])
+            run.assert_not_called()
+
     def test_worker_processes_inbox_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
