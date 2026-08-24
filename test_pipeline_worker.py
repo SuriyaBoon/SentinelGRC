@@ -1,21 +1,106 @@
+import hashlib
 import inspect
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from argparse import Namespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from pathlib import Path
 from job_queue import SQLiteJobQueue
+import publication_reconciliation
 from scripts import pipeline_worker
+from state_store import SQLiteStateStore
 class PipelineWorkerTests(unittest.TestCase):
     def test_worker_options_keep_processing_boundary_below_parameter_limit(self):
         parameters = inspect.signature(pipeline_worker.process_inbox_once).parameters
         self.assertLessEqual(len(parameters), 13)
         self.assertIn("options", parameters)
+    def test_worker_ignores_pending_ingestion_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            payload = Path("sample_posture.json").read_bytes()
+            payload_hash = hashlib.sha256(payload).hexdigest()
+            evidence_id = payload_hash[:24]
+            (inbox / f"{evidence_id}.json").write_bytes(payload)
+            store = SQLiteStateStore(root / "state.db", storage_root=root)
+            store.begin_payload(payload_hash, evidence_id)
+            self.assertGreater(
+                publication_reconciliation.RECONCILIATION_GRACE_SECONDS, 0
+            )
+            args = (
+                str(inbox), json.loads(Path("controls.json").read_text()),
+                json.loads(Path("assets.json").read_text()), str(root / "ledger.jsonl"),
+                str(root / "state.db"), str(root / "remediation"), str(root / "tickets"),
+                str(root / "reports"),
+            )
+            self.assertEqual(pipeline_worker.process_inbox_once(*args), [])
+            store.commit_payload(payload_hash, evidence_id)
+            self.assertEqual(pipeline_worker.process_inbox_once(*args)[0]["status"], "accepted")
+
+    def test_worker_rejects_replaced_committed_evidence_before_pipeline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            original = Path("sample_posture.json").read_bytes()
+            payload_hash = hashlib.sha256(original).hexdigest()
+            evidence_id = payload_hash[:24]
+            store = SQLiteStateStore(root / "state.db", storage_root=root)
+            store.begin_payload(payload_hash, evidence_id)
+            store.commit_payload(payload_hash, evidence_id)
+            replacement = json.loads(original)
+            replacement["hostname"] = "substituted-host"
+            (inbox / f"{evidence_id}.json").write_text(
+                json.dumps(replacement), encoding="utf-8"
+            )
+            args = (
+                str(inbox), json.loads(Path("controls.json").read_text()),
+                json.loads(Path("assets.json").read_text()), str(root / "ledger.jsonl"),
+                str(root / "state.db"), str(root / "remediation"), str(root / "tickets"),
+                str(root / "reports"),
+            )
+            with patch.object(pipeline_worker.pipeline, "run_pipeline") as run:
+                result = pipeline_worker.process_inbox_once(*args)
+            self.assertEqual(result[0]["status"], "error")
+            self.assertIn("hash verification", result[0]["error"])
+            run.assert_not_called()
+
+    def test_transient_evidence_read_error_uses_bounded_retry_policy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            payload = Path("sample_posture.json").read_bytes()
+            payload_hash = hashlib.sha256(payload).hexdigest()
+            evidence_id = payload_hash[:24]
+            (inbox / f"{evidence_id}.json").write_bytes(payload)
+            store = SQLiteStateStore(root / "state.db", storage_root=root)
+            store.begin_payload(payload_hash, evidence_id)
+            store.commit_payload(payload_hash, evidence_id)
+            args = (
+                str(inbox), json.loads(Path("controls.json").read_text()),
+                json.loads(Path("assets.json").read_text()), str(root / "ledger.jsonl"),
+                str(root / "state.db"), str(root / "remediation"), str(root / "tickets"),
+                str(root / "reports"), None,
+                pipeline_worker.WorkerRunOptions(max_attempts=3, retry_delay=0),
+            )
+            with patch("publication_reconciliation.os.open", side_effect=PermissionError):
+                result = pipeline_worker.process_inbox_once(*args)
+            self.assertEqual(
+                [item["queue_status"] for item in result],
+                ["pending", "pending", "dead"],
+            )
+            self.assertEqual(SQLiteJobQueue(root / "state.db").metadata()["dead"], 1)
+            self.assertIn("temporarily unavailable", result[0]["error"])
+
     def test_worker_processes_inbox_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -421,5 +506,351 @@ class PipelineWorkerTests(unittest.TestCase):
                 self.assertEqual(pipeline_worker.main(), 0)
             self.assertEqual(mocked_load.call_count, 2)
 
+    def _blocked_read_lease_fixture(self, root, queue, lease_seconds=3):
+        """Enqueue and claim one managed-evidence job for worker-a."""
+        inbox = root / "inbox"
+        inbox.mkdir(exist_ok=True)
+        payload = Path("sample_posture.json").read_bytes()
+        payload_hash = hashlib.sha256(payload).hexdigest()
+        evidence_id = payload_hash[:24]
+        payload_path = inbox / f"{evidence_id}.json"
+        payload_path.write_bytes(payload)
+        queue.enqueue(str(payload_path))
+        job = queue.claim("worker-a", lease_seconds=lease_seconds)
+        publication_state = Mock(
+            **{
+                "find_payload_by_evidence_id.return_value": {
+                    "status": "committed",
+                    "payload_hash": payload_hash,
+                }
+            }
+        )
+        options = pipeline_worker.WorkerRunOptions(
+            max_attempts=3, retry_delay=0, lease_seconds=lease_seconds
+        )
+        paths = pipeline_worker._resolve_worker_paths(
+            str(inbox), str(root / "ledger.jsonl"), str(root / "state.db"),
+            "remediation", "tickets", "reports", options,
+        )
+        return payload, payload_hash, job, publication_state, options, paths
+
+    def test_immediate_renewal_sqlite_error_fails_closed_before_evidence_read(self):
+        class LockedRenewQueue:
+            def renew(self, *args, **kwargs):
+                raise sqlite3.OperationalError("database is locked")
+
+            def fail(self, *args, **kwargs):
+                raise AssertionError("queue.fail() must not run while ownership is unknown")
+
+            def complete(self, *args, **kwargs):
+                raise AssertionError("complete() must not run while ownership is unknown")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            job = {"job_id": 1, "payload_path": str(inbox / "evidence-001.json")}
+            options = pipeline_worker.WorkerRunOptions(max_attempts=3, retry_delay=0)
+            paths = pipeline_worker._resolve_worker_paths(
+                str(inbox), str(root / "ledger.jsonl"), str(root / "state.db"),
+                "remediation", "tickets", "reports", options,
+            )
+            with patch.object(
+                pipeline_worker, "_read_claimed_payload"
+            ) as read, patch.object(
+                pipeline_worker.pipeline, "run_pipeline"
+            ) as run:
+                result = pipeline_worker._process_claimed_job(
+                    LockedRenewQueue(), job, paths, Mock(),
+                    [], [], None, options, "worker-a", None,
+                )
+            self.assertEqual(result["status"], "lease_lost")
+            read.assert_not_called()
+            run.assert_not_called()
+
+    def test_one_second_lease_uses_fractional_renewal_interval(self):
+        recorded_intervals = []
+
+        class RecordingStop:
+            def wait(self, timeout=None):
+                recorded_intervals.append(timeout)
+                return True
+
+        queue = Mock()
+        lease_lost = threading.Event()
+        pipeline_worker._renew_lease_until_stopped(
+            queue, RecordingStop(), lease_lost, 1, "worker-a", 1
+        )
+        self.assertEqual(len(recorded_intervals), 1)
+        self.assertGreater(recorded_intervals[0], 0)
+        self.assertLess(recorded_intervals[0], 1)
+        queue.renew.assert_not_called()
+        self.assertFalse(lease_lost.is_set())
+
+    def test_heartbeat_sqlite_error_sets_lease_lost(self):
+        class LockedRenewQueue:
+            def renew(self, *args, **kwargs):
+                raise sqlite3.OperationalError("database is locked")
+
+        stop = threading.Event()
+        lease_lost = threading.Event()
+        heartbeat = threading.Thread(
+            target=pipeline_worker._renew_lease_until_stopped,
+            args=(LockedRenewQueue(), stop, lease_lost, 1, "worker-a", 1),
+        )
+        heartbeat.start()
+        try:
+            self.assertTrue(lease_lost.wait(timeout=5))
+        finally:
+            stop.set()
+            heartbeat.join(timeout=5)
+        self.assertFalse(heartbeat.is_alive())
+
+    def test_heartbeat_renews_during_blocked_read_and_blocks_reclaim(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = SQLiteJobQueue(str(root / "state.db"))
+            payload, _hash, job, publication_state, options, paths = (
+                self._blocked_read_lease_fixture(root, queue)
+            )
+            controls = json.loads(Path("controls.json").read_text(encoding="utf-8"))
+            assets = json.loads(Path("assets.json").read_text(encoding="utf-8"))
+            read_started = threading.Event()
+            release_read = threading.Event()
+            blocked_renewals = threading.Event()
+            second_blocked_renewal = threading.Event()
+            original_renew = SQLiteJobQueue.renew
+
+            def blocked_read(path, expected_hash):
+                read_started.set()
+                release_read.wait(timeout=10)
+                return payload
+
+            def renewing(self, *args, **kwargs):
+                result = original_renew(self, *args, **kwargs)
+                if read_started.is_set() and not release_read.is_set():
+                    if not blocked_renewals.is_set():
+                        blocked_renewals.set()
+                    else:
+                        second_blocked_renewal.set()
+                return result
+
+            with patch.object(
+                pipeline_worker, "read_verified_evidence", blocked_read
+            ), patch.object(SQLiteJobQueue, "renew", renewing):
+                with patch.object(
+                    pipeline_worker.pipeline, "run_pipeline",
+                    return_value={"status": "accepted"},
+                ) as run:
+                    result_box = {}
+
+                    def process():
+                        result_box["result"] = pipeline_worker._process_claimed_job(
+                            queue, job, paths, publication_state,
+                            controls, assets, None, options, "worker-a", None,
+                        )
+
+                    worker_thread = threading.Thread(target=process)
+                    worker_thread.start()
+                    try:
+                        self.assertTrue(read_started.wait(timeout=5))
+                        self.assertTrue(blocked_renewals.wait(timeout=5))
+                        self.assertTrue(second_blocked_renewal.wait(timeout=5))
+                        self.assertIsNone(
+                            queue.claim(
+                                "worker-b", lease_seconds=3, now=time.time() + 2
+                            )
+                        )
+                    finally:
+                        release_read.set()
+                        worker_thread.join(timeout=10)
+                    self.assertFalse(worker_thread.is_alive())
+            self.assertEqual(result_box["result"]["status"], "accepted")
+            run.assert_called_once()
+
+    def test_lease_loss_during_blocked_read_prevents_pipeline_side_effects(self):
+        class OneShotRenewQueue:
+            """First renewal proves ownership; later renewals report loss."""
+
+            def __init__(self):
+                self.renew_calls = 0
+                self.failed = False
+
+            def renew(self, job_id, worker_id, lease_seconds):
+                self.renew_calls += 1
+                if self.renew_calls == 1:
+                    return True
+                return False
+
+            def fail(self, *args, **kwargs):
+                self.failed = True
+                return "pending"
+
+            def complete(self, *args, **kwargs):
+                raise AssertionError("complete() must not run after lease loss")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_queue = OneShotRenewQueue()
+            payload = Path("sample_posture.json").read_bytes()
+            payload_hash = hashlib.sha256(payload).hexdigest()
+            evidence_id = payload_hash[:24]
+            inbox = root / "inbox"
+            inbox.mkdir()
+            job = {
+                "job_id": 1,
+                "payload_path": str(inbox / f"{evidence_id}.json"),
+            }
+            publication_state = Mock(
+                **{
+                    "find_payload_by_evidence_id.return_value": {
+                        "status": "committed",
+                        "payload_hash": payload_hash,
+                    }
+                }
+            )
+            options = pipeline_worker.WorkerRunOptions(
+                max_attempts=3, retry_delay=0, lease_seconds=3
+            )
+            paths = pipeline_worker._resolve_worker_paths(
+                str(inbox), str(root / "ledger.jsonl"), str(root / "state.db"),
+                "remediation", "tickets", "reports", options,
+            )
+            read_started = threading.Event()
+            release_read = threading.Event()
+            captured = {}
+            original_target = pipeline_worker._renew_lease_until_stopped
+
+            def capturing_target(queue, stop, lease_lost, job_id, worker_id, lease_seconds):
+                captured["lease_lost"] = lease_lost
+                original_target(queue, stop, lease_lost, job_id, worker_id, lease_seconds)
+
+            def blocked_read(path, expected_hash):
+                read_started.set()
+                release_read.wait(timeout=10)
+                return payload
+
+            with patch.object(
+                pipeline_worker, "read_verified_evidence", blocked_read
+            ), patch.object(
+                pipeline_worker, "_renew_lease_until_stopped", capturing_target
+            ):
+                with patch.object(
+                    pipeline_worker.pipeline, "run_pipeline",
+                    return_value={"status": "accepted"},
+                ) as run:
+                    result_box = {}
+
+                    def process():
+                        result_box["result"] = pipeline_worker._process_claimed_job(
+                            fake_queue, job, paths, publication_state,
+                            [], [], None, options, "worker-a", None,
+                        )
+
+                    worker_thread = threading.Thread(target=process)
+                    worker_thread.start()
+                    try:
+                        self.assertTrue(read_started.wait(timeout=5))
+                        # Wait for the worker's own lease-loss event, not a
+                        # fake-queue flag, so the post-read check is race-free.
+                        self.assertIsNotNone(captured.get("lease_lost"))
+                        self.assertTrue(captured["lease_lost"].wait(timeout=5))
+                    finally:
+                        release_read.set()
+                        worker_thread.join(timeout=10)
+                    self.assertFalse(worker_thread.is_alive())
+            self.assertEqual(result_box["result"]["status"], "lease_lost")
+            run.assert_not_called()
+            self.assertFalse(fake_queue.failed)
+            self.assertGreaterEqual(fake_queue.renew_calls, 2)
+
+    def test_read_failure_stops_and_joins_heartbeat(self):
+        captured = {}
+        original_target = pipeline_worker._renew_lease_until_stopped
+
+        def capturing_target(queue, stop, lease_lost, job_id, worker_id, lease_seconds):
+            captured["thread"] = threading.current_thread()
+            captured["stop"] = stop
+            original_target(queue, stop, lease_lost, job_id, worker_id, lease_seconds)
+
+        def failing_read(path, publication_state):
+            raise PermissionError("blocked evidence read")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = SQLiteJobQueue(str(root / "state.db"))
+            _payload, _hash, job, publication_state, options, paths = (
+                self._blocked_read_lease_fixture(root, queue)
+            )
+            with patch.object(
+                pipeline_worker, "_read_claimed_payload", failing_read
+            ), patch.object(
+                pipeline_worker, "_renew_lease_until_stopped", capturing_target
+            ):
+                result = pipeline_worker._process_claimed_job(
+                    queue, job, paths, publication_state,
+                    [], [], None, options, "worker-a", None,
+                )
+            self.assertEqual(result["status"], "error")
+            self.assertIn("temporarily unavailable", result["error"])
+            self.assertTrue(captured["stop"].is_set())
+            captured["thread"].join(timeout=5)
+            self.assertFalse(captured["thread"].is_alive())
+
+    def test_success_stops_and_joins_heartbeat(self):
+        captured = {}
+        original_target = pipeline_worker._renew_lease_until_stopped
+
+        def capturing_target(queue, stop, lease_lost, job_id, worker_id, lease_seconds):
+            captured["thread"] = threading.current_thread()
+            captured["stop"] = stop
+            original_target(queue, stop, lease_lost, job_id, worker_id, lease_seconds)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            queue = SQLiteJobQueue(str(root / "state.db"))
+            _payload, _hash, job, publication_state, options, paths = (
+                self._blocked_read_lease_fixture(root, queue)
+            )
+            with patch.object(
+                pipeline_worker, "_renew_lease_until_stopped", capturing_target
+            ), patch.object(
+                pipeline_worker.pipeline, "run_pipeline",
+                return_value={"status": "accepted"},
+            ) as run:
+                result = pipeline_worker._process_claimed_job(
+                    queue, job, paths, publication_state,
+                    [], [], None, options, "worker-a", None,
+                )
+            self.assertEqual(result["status"], "accepted")
+            run.assert_called_once()
+            self.assertTrue(captured["stop"].is_set())
+            captured["thread"].join(timeout=5)
+            self.assertFalse(captured["thread"].is_alive())
+
+    def test_worker_cleanup_joins_heartbeat_without_short_timeout(self):
+        queue = Mock()
+        queue.renew.return_value = True
+        queue.fail.return_value = "pending"
+        heartbeat = Mock()
+        job = {"job_id": 1, "payload_path": "evidence.json"}
+        options = pipeline_worker.WorkerRunOptions()
+        with patch.object(
+            pipeline_worker.threading, "Thread", return_value=heartbeat
+        ) as thread_factory, patch.object(
+            pipeline_worker, "_validated_inbox_item", return_value=Path("evidence.json")
+        ), patch.object(
+            pipeline_worker, "_read_claimed_payload",
+            side_effect=PermissionError("blocked evidence read"),
+        ):
+            result = pipeline_worker._process_claimed_job(
+                queue, job, Mock(inbox=Path(".")), Mock(),
+                [], [], None, options, "worker-a", None,
+            )
+        self.assertEqual(result["status"], "error")
+        heartbeat.start.assert_called_once_with()
+        heartbeat.join.assert_called_once_with()
+        heartbeat_stop = thread_factory.call_args.kwargs["args"][1]
+        self.assertTrue(heartbeat_stop.is_set())
 if __name__ == "__main__":
     unittest.main()
