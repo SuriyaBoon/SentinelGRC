@@ -1,8 +1,12 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import job_queue
 from job_queue import SQLiteJobQueue
+from state_store import SQLITE_LOCK_TIMEOUT_SECONDS
 
 
 class JobQueueTests(unittest.TestCase):
@@ -30,6 +34,50 @@ class JobQueueTests(unittest.TestCase):
             self.assertFalse(queue.complete(original["job_id"], "worker-a", now=1011))
             self.assertEqual(queue.fail(original["job_id"], "worker-a", "stale", now=1011), "lease_lost")
             self.assertTrue(queue.complete(reclaimed["job_id"], "worker-b", now=1011))
+
+    def test_schema_connection_uses_shared_sqlite_lock_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(
+                job_queue.sqlite3, "connect", wraps=sqlite3.connect
+            ) as connect_spy:
+                queue = SQLiteJobQueue(str(Path(directory) / "queue.db"))
+            self.assertEqual(
+                [call.kwargs.get("timeout") for call in connect_spy.call_args_list],
+                [SQLITE_LOCK_TIMEOUT_SECONDS],
+            )
+            self.assertEqual(
+                queue.metadata(),
+                {"pending": 0, "running": 0, "completed": 0, "dead": 0},
+            )
+
+    def test_enqueue_uses_shared_sqlite_lock_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            queue = SQLiteJobQueue(str(Path(directory) / "queue.db"))
+            with mock.patch.object(
+                job_queue.sqlite3, "connect", wraps=sqlite3.connect
+            ) as connect_spy:
+                enqueued = queue.enqueue("payload.json", now=1000)
+            self.assertTrue(enqueued)
+            self.assertEqual(
+                [call.kwargs.get("timeout") for call in connect_spy.call_args_list],
+                [SQLITE_LOCK_TIMEOUT_SECONDS],
+            )
+
+    def test_claim_uses_shared_sqlite_lock_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            queue = SQLiteJobQueue(str(Path(directory) / "queue.db"))
+            queue.enqueue("payload.json", now=1000)
+            with mock.patch.object(
+                job_queue.sqlite3, "connect", wraps=sqlite3.connect
+            ) as connect_spy:
+                job = queue.claim("worker-a", lease_seconds=30, now=1000)
+            self.assertIsNotNone(job)
+            self.assertEqual(job["payload_path"], "payload.json")
+            self.assertEqual(job["attempts"], 1)
+            self.assertEqual(
+                [call.kwargs.get("timeout") for call in connect_spy.call_args_list],
+                [SQLITE_LOCK_TIMEOUT_SECONDS],
+            )
 
 
 if __name__ == "__main__":

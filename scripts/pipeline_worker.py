@@ -19,6 +19,13 @@ from scripts.path_policy import (
     validate_evidence_id,
 )
 from job_queue import SQLiteJobQueue
+from publication_reconciliation import (
+    is_evidence_filename,
+    read_evidence_bytes,
+    read_verified_evidence,
+    reconcile_pending_publications,
+)
+from state_store import SQLiteStateStore
 from sentinelgrc import load_json
 from state_store import DEFAULT_STATE_DB
 
@@ -142,10 +149,30 @@ def _resolve_worker_paths(
     )
 
 
+def _read_claimed_payload(
+    path: Path, publication_state: SQLiteStateStore
+) -> bytes:
+    """Read managed evidence once and bind those bytes to committed state."""
+    if not is_evidence_filename(path.stem):
+        payload = read_evidence_bytes(path)
+        if payload is None:
+            raise ValueError("inbox payload must be a regular readable file")
+        return payload
+    record = publication_state.find_payload_by_evidence_id(path.stem)
+    if record is None or record["status"] != "committed":
+        raise ValueError("managed inbox payload is not committed")
+    payload = read_verified_evidence(path, str(record["payload_hash"]))
+    if payload is None:
+        # Recovery requires the reviewed operator procedure in docs/pipeline-worker-recovery.md.
+        raise ValueError("managed inbox payload failed committed hash verification")
+    return payload
+
+
 def _process_claimed_job(
     queue: SQLiteJobQueue,
     job: dict[str, Any],
     paths: _WorkerPaths,
+    publication_state: SQLiteStateStore,
     controls: list[dict[str, Any]],
     assets: list[dict[str, Any]],
     access_review: dict[str, Any] | None,
@@ -155,6 +182,19 @@ def _process_claimed_job(
 ) -> dict[str, Any]:
     try:
         posture_path = _validated_inbox_item(job["payload_path"], paths.inbox)
+        posture_bytes = _read_claimed_payload(posture_path, publication_state)
+    except OSError:
+        status = queue.fail(
+            int(job["job_id"]), worker_id,
+            "evidence storage is temporarily unavailable",
+            options.max_attempts, options.retry_delay,
+        )
+        return {
+            "file": str(job["payload_path"]),
+            "status": "error",
+            "queue_status": status,
+            "error": "evidence storage is temporarily unavailable",
+        }
     except (TypeError, ValueError) as error:
         status = queue.fail(
             int(job["job_id"]), worker_id, str(error),
@@ -175,7 +215,7 @@ def _process_claimed_job(
     )
     heartbeat_thread.start()
     try:
-        posture = json.loads(posture_path.read_text(encoding="utf-8"))
+        posture = json.loads(posture_bytes.decode("utf-8"))
         stem = posture_path.stem
         result = pipeline.run_pipeline(
             posture, controls, assets, paths.ledger,
@@ -224,9 +264,24 @@ def process_inbox_once(
     inbox_items = sorted(paths.inbox.glob("*.json"))
     for posture_path in inbox_items:
         _validated_inbox_item(posture_path, paths.inbox)
+    publication_state = SQLiteStateStore(paths.state_db, storage_root=paths.storage_root)
+    # Uses the default grace period (not 0): unlike a server's one-time
+    # startup sweep, this poll-cycle sweep covers only the posture inbox
+    # at paths.inbox, potentially concurrently with a live ingestion
+    # server that may have a request genuinely in flight right now. This
+    # recurring sweep is also what protects a long-running ingestion
+    # server that has not restarted in a while - the server's own startup
+    # sweep only runs once, at process start. Portfolio directories are
+    # not reconciled here; they are covered at server startup or through
+    # the explicit reconciliation CLI.
+    reconcile_pending_publications(publication_state, [paths.inbox])
     queue = SQLiteJobQueue(paths.state_db)
     for posture_path in inbox_items:
-        queue.enqueue(str(posture_path))
+        if (
+            not is_evidence_filename(posture_path.stem)
+            or publication_state.is_evidence_committed(posture_path.stem)
+        ):
+            queue.enqueue(str(posture_path))
     results: list[dict[str, Any]] = []
     worker_id = "worker-" + secrets.token_hex(6)
     while True:
@@ -234,7 +289,7 @@ def process_inbox_once(
         if job is None:
             break
         results.append(_process_claimed_job(
-            queue, job, paths, controls, assets, access_review, options,
+            queue, job, paths, publication_state, controls, assets, access_review, options,
             worker_id, failpoint,
         ))
     return results

@@ -14,30 +14,114 @@
   ],
   "additionalProperties": false,
   "properties": {
-    "schema_version": { "type": "string", "const": "1.0" },
-    "collected_at": { "type": "string", "format": "date-time" },
-    "asset_id": { "type": "string", "minLength": 1, "maxLength": 128 },
-    "hostname": { "type": "string", "minLength": 1, "maxLength": 255 },
-    "os": { "type": ["string", "null"] },
-    "os_version": { "type": ["string", "null"] },
-    "domain": { "type": ["boolean", "null"] },
-    "bitlocker_system_drive": { "type": "boolean" },
-    "firewall_all_profiles_enabled": { "type": "boolean" },
-    "defender_realtime_enabled": { "type": "boolean" },
-    "days_since_last_update": { "type": ["integer", "null"], "minimum": 0 },
-    "owner": { "type": "string", "minLength": 1, "maxLength": 128 },
-    "criticality": { "type": "string", "enum": ["low", "medium", "high", "critical"] },
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "collected_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "asset_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "hostname": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[^\\s\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF](?:[^\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF]*[^\\s\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF])?$"
+    },
+    "os": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[^\\s\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF](?:[^\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF]*[^\\s\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF])?$"
+    },
+    "os_version": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[^\\s\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF](?:[^\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF]*[^\\s\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF])?$"
+    },
+    "domain": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "bitlocker_system_drive": {
+      "type": "boolean"
+    },
+    "firewall_all_profiles_enabled": {
+      "type": "boolean"
+    },
+    "defender_realtime_enabled": {
+      "type": "boolean"
+    },
+    "days_since_last_update": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "owner": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[^\\s\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF](?:[^\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF]*[^\\s\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF])?$"
+    },
+    "criticality": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    },
     "checks": {
       "type": "array",
+      "maxItems": 128,
       "items": {
         "type": "object",
-        "required": ["name", "passed", "value", "error"],
+        "required": [
+          "name",
+          "passed",
+          "value",
+          "error"
+        ],
         "additionalProperties": false,
         "properties": {
-          "name": { "type": "string" },
-          "passed": { "type": "boolean" },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[^\\s\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF](?:[^\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF]*[^\\s\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF])?$"
+          },
+          "passed": {
+            "type": "boolean"
+          },
           "value": {},
-          "error": { "type": ["string", "null"] }
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "^[^\\s\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF](?:[^\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF]*[^\\s\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF])?$"
+          }
         }
       }
     }
