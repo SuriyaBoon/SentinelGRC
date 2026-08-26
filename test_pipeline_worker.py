@@ -513,6 +513,48 @@ class PipelineWorkerTests(unittest.TestCase):
                 self.assertEqual(pipeline_worker.main(), 0)
             self.assertEqual(mocked_load.call_count, 2)
 
+    def test_main_exits_nonzero_when_lease_is_lost(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            argv = [
+                "pipeline_worker", "once", "--inbox", str(inbox),
+                "--runtime-root", str(root), "--controls", "controls.json",
+                "--assets", "assets.json",
+            ]
+            with patch.object(sys, "argv", argv), patch.object(
+                pipeline_worker, "load_json", side_effect=[[], []]
+            ), patch.object(
+                pipeline_worker, "process_inbox_once",
+                return_value=[{"file": "evidence.json", "status": "lease_lost"}],
+            ):
+                self.assertEqual(pipeline_worker.main(), 1)
+
+    def test_one_shot_exit_code_accepts_only_completed_results(self):
+        successful_results = (
+            [],
+            [{"status": "accepted"}],
+            [{"status": "duplicate"}],
+            [{"status": "accepted"}, {"status": "duplicate"}],
+        )
+        for results in successful_results:
+            with self.subTest(results=results):
+                self.assertEqual(pipeline_worker._one_shot_exit_code(results), 0)
+
+    def test_one_shot_exit_code_fails_closed(self):
+        failed_results = (
+            [{"status": "lease_lost"}],
+            [{"status": "error"}],
+            [{"status": "unknown"}],
+            [{"status": ""}],
+            [{}],
+            ["malformed"],
+        )
+        for results in failed_results:
+            with self.subTest(results=results):
+                self.assertEqual(pipeline_worker._one_shot_exit_code(results), 1)
+
     def _blocked_read_lease_fixture(self, root, queue, lease_seconds=3):
         """Enqueue and claim one managed-evidence job for worker-a."""
         inbox = root / "inbox"
@@ -859,6 +901,83 @@ class PipelineWorkerTests(unittest.TestCase):
         heartbeat.join.assert_called_once_with()
         heartbeat_stop = thread_factory.call_args.kwargs["args"][1]
         self.assertTrue(heartbeat_stop.is_set())
+
+    def _run_controlled_acknowledgement(self, *, lose_lease_during_join):
+        queue = Mock()
+        queue.renew.return_value = True
+        order = []
+
+        class ControlledHeartbeat:
+            def __init__(self, *, target, args, daemon):
+                self.lease_lost = args[2]
+
+            def start(self):
+                return None
+
+            def join(self):
+                order.append("join")
+                if lose_lease_during_join:
+                    self.lease_lost.set()
+
+        queue.complete.side_effect = lambda *args: order.append("complete") or True
+        job = {"job_id": 1, "payload_path": "evidence.json"}
+        paths = Mock(
+            inbox=Path("."), ledger="ledger.jsonl", remediation_dir="remediation",
+            tickets_dir="tickets", reports_dir="reports", state_db="state.db",
+            audit_path=None, governance_db=None, storage_root=Path("."),
+        )
+        with patch.object(
+            pipeline_worker.threading, "Thread", ControlledHeartbeat
+        ), patch.object(
+            pipeline_worker, "_validated_inbox_item", return_value=Path("evidence.json")
+        ), patch.object(
+            pipeline_worker, "_read_claimed_payload", return_value=b"{}"
+        ), patch.object(
+            pipeline_worker.pipeline, "run_pipeline", return_value={"status": "accepted"}
+        ):
+            result = pipeline_worker._process_claimed_job(
+                queue, job, paths, Mock(), [], [], None,
+                pipeline_worker.WorkerRunOptions(), "worker-a", None,
+            )
+        return result, queue, order
+
+    def test_heartbeat_loss_during_join_prevents_acknowledgement(self):
+        result, queue, order = self._run_controlled_acknowledgement(
+            lose_lease_during_join=True
+        )
+        self.assertEqual(result["status"], "lease_lost")
+        self.assertEqual(order, ["join"])
+        queue.complete.assert_not_called()
+
+    def test_heartbeat_is_joined_before_acknowledgement(self):
+        result, queue, order = self._run_controlled_acknowledgement(
+            lose_lease_during_join=False
+        )
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(order, ["join", "complete"])
+        queue.complete.assert_called_once_with(1, "worker-a")
+
+    def test_unexpected_validation_failure_preserves_original_error(self):
+        queue = Mock()
+        queue.renew.return_value = True
+        queue.fail.return_value = "pending"
+        heartbeat = Mock()
+        job = {"job_id": 1, "payload_path": "evidence.json"}
+        with patch.object(
+            pipeline_worker.threading, "Thread", return_value=heartbeat
+        ), patch.object(
+            pipeline_worker, "_validated_inbox_item", side_effect=RuntimeError("boom")
+        ):
+            result = pipeline_worker._process_claimed_job(
+                queue, job, Mock(inbox=Path(".")), Mock(), [], [], None,
+                pipeline_worker.WorkerRunOptions(), "worker-a", None,
+            )
+        self.assertEqual(result["file"], "evidence.json")
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error"], "boom")
+        self.assertNotIn("UnboundLocalError", result["error"])
+        queue.fail.assert_called_once()
+        heartbeat.join.assert_called_once_with()
 
     def test_min_worker_lease_derives_from_shared_lock_timeout(self):
         self.assertEqual(

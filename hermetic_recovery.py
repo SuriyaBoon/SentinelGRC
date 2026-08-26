@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts import pipeline_worker
-from state_store import SQLITE_LOCK_TIMEOUT_SECONDS
+from state_store import DEFAULT_STATE_DB, SQLITE_LOCK_TIMEOUT_SECONDS
 
 
 DOCUMENT_SCHEMA = "sentinel.hermetic_recovery_evidence.v1"
@@ -154,7 +154,7 @@ def _pipeline_command(root: Path, repository: Path) -> list[str]:
         "--ledger",
         str(root / "evidence-ledger.jsonl"),
         "--state-db",
-        str(root / "sentinelgrc-state.db"),
+        str(root / DEFAULT_STATE_DB),
         "--audit-log",
         str(root / "runtime" / "audit-log.jsonl"),
         "--governance-db",
@@ -211,7 +211,7 @@ def run_pipeline_commit_ack_recovery(repository_root: str | Path) -> dict[str, b
         )
         # Expire the crashed lease deterministically instead of sleeping out a
         # real lease; the crashed job must be the only running queue job.
-        _expire_crashed_running_job(root / "sentinelgrc-state.db")
+        _expire_crashed_running_job(root / DEFAULT_STATE_DB)
         replay_environment = {
             key: value
             for key, value in os.environ.items()
@@ -241,7 +241,7 @@ def run_pipeline_commit_ack_recovery(repository_root: str | Path) -> dict[str, b
             "output_hashes_unchanged": before_hashes == after_hashes,
             "database_counts_unchanged": before_counts == after_counts,
             "business_records_present": all(count > 0 for count in before_counts),
-            "queue_completed_once": _queue_completed(root / "sentinelgrc-state.db"),
+            "queue_completed_once": _queue_completed(root / DEFAULT_STATE_DB),
         }
 
 

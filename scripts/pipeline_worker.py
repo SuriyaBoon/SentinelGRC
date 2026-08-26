@@ -94,6 +94,16 @@ def _lease_renewal_interval(lease_seconds: int) -> float:
     return max(0.05, lease_seconds / 3.0)
 
 
+def _one_shot_exit_code(results: list[Any]) -> int:
+    """Return success only when every one-shot result is explicitly complete."""
+    successful_statuses = {"accepted", "duplicate"}
+    succeeded = all(
+        isinstance(item, dict) and item.get("status") in successful_statuses
+        for item in results
+    )
+    return 0 if succeeded else 1
+
+
 def _renew_lease_until_stopped(
     queue: SQLiteJobQueue,
     stop: threading.Event,
@@ -203,14 +213,15 @@ def _process_claimed_job(
     # too), the heartbeat keeps the lease alive across the read and the
     # pipeline run, and lease_lost turns any renewal failure into an
     # explicit stop signal instead of a silent background-thread exit.
+    job_file = str(job["payload_path"])
     try:
         lease_owned = queue.renew(
             int(job["job_id"]), worker_id, options.lease_seconds
         )
     except sqlite3.Error:
-        return {"file": str(job["payload_path"]), "status": "lease_lost"}
+        return {"file": job_file, "status": "lease_lost"}
     if not lease_owned:
-        return {"file": str(job["payload_path"]), "status": "lease_lost"}
+        return {"file": job_file, "status": "lease_lost"}
     stop = threading.Event()
     lease_lost = threading.Event()
     heartbeat_thread = threading.Thread(
@@ -219,12 +230,23 @@ def _process_claimed_job(
         daemon=True,
     )
     heartbeat_thread.start()
+    heartbeat_joined = False
+
+    def shutdown_heartbeat() -> None:
+        """Stop and join the heartbeat at most once."""
+        nonlocal heartbeat_joined
+        if heartbeat_joined:
+            return
+        stop.set()
+        heartbeat_thread.join()
+        heartbeat_joined = True
+
     try:
         try:
             posture_path = _validated_inbox_item(job["payload_path"], paths.inbox)
             posture_bytes = _read_claimed_payload(posture_path, publication_state)
             if lease_lost.is_set():
-                return {"file": str(job["payload_path"]), "status": "lease_lost"}
+                return {"file": job_file, "status": "lease_lost"}
         except OSError:
             status = queue.fail(
                 int(job["job_id"]), worker_id,
@@ -232,7 +254,7 @@ def _process_claimed_job(
                 options.max_attempts, options.retry_delay,
             )
             return {
-                "file": str(job["payload_path"]),
+                "file": job_file,
                 "status": "error",
                 "queue_status": status,
                 "error": "evidence storage is temporarily unavailable",
@@ -243,7 +265,7 @@ def _process_claimed_job(
                 max_attempts=1, retry_delay=0,
             )
             return {
-                "file": str(job["payload_path"]),
+                "file": job_file,
                 "status": "error",
                 "queue_status": status,
                 "error": str(error),
@@ -264,6 +286,7 @@ def _process_claimed_job(
             ),
         )
         _trigger_test_failpoint(failpoint, FAILPOINT_AFTER_PIPELINE_COMMIT)
+        shutdown_heartbeat()
         if lease_lost.is_set():
             # A detected loss is not success; pipeline side effects already
             # performed are not rolled back by this check.
@@ -277,14 +300,13 @@ def _process_claimed_job(
             options.max_attempts, options.retry_delay,
         )
         return {
-            "file": str(posture_path),
+            "file": job_file,
             "status": "error",
             "queue_status": status,
             "error": str(error),
         }
     finally:
-        stop.set()
-        heartbeat_thread.join()
+        shutdown_heartbeat()
 
 
 def _validate_worker_run_options(options: WorkerRunOptions) -> None:
@@ -447,7 +469,7 @@ def main() -> int:
             args.reports_dir, configuration.access_review, options,
         )
         print(json.dumps(results, indent=2))
-        return 0 if all(item["status"] != "error" for item in results) else 1
+        return _one_shot_exit_code(results)
     return serve(args, configuration, options)
 
 
