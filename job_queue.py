@@ -92,8 +92,9 @@ class SQLiteJobQueue:
         """Complete only a job still leased to the calling worker."""
         if not worker_id.strip():
             raise ValueError("worker_id is required")
-        current = time.time() if now is None else now
         with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = now if now is not None else time.time()
             cursor = connection.execute(
                 "UPDATE pipeline_jobs SET status = 'completed', locked_until = NULL, last_error = NULL "
                 "WHERE job_id = ? AND status = 'running' AND worker_id = ? AND locked_until > ?",
@@ -106,14 +107,17 @@ class SQLiteJobQueue:
         """Return lease_lost rather than mutating a job reclaimed by another worker."""
         if not worker_id.strip() or max_attempts < 1 or retry_delay < 0:
             raise ValueError("worker_id, max_attempts, and retry_delay are invalid")
-        current = time.time() if now is None else now
         with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = now if now is not None else time.time()
             row = connection.execute(
                 "SELECT attempts, status, worker_id, locked_until FROM pipeline_jobs WHERE job_id = ?", (job_id,)
             ).fetchone()
             if row is None:
+                connection.rollback()
                 raise ValueError(f"Unknown job {job_id}.")
             if row[1] != "running" or row[2] != worker_id or row[3] is None or row[3] <= current:
+                connection.rollback()
                 return "lease_lost"
             status = "dead" if row[0] >= max_attempts else "pending"
             cursor = connection.execute(

@@ -43,6 +43,9 @@ TICKET_PRIORITIES = {"P1", "P2", "P3", "P4"}
 def _shape(payload: Any, *, label: str, allowed: set[str], required: set[str]) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"{label} must be an object")
+    for key in payload:
+        if not isinstance(key, str):
+            raise ValueError(f"{label} field names must be strings")
     unknown = sorted(set(payload) - allowed)
     missing = sorted(required - set(payload))
     if unknown:

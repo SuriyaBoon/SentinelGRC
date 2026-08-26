@@ -200,6 +200,25 @@ class PortfolioContractTests(unittest.TestCase):
         ticket = self.ticket()
         ticket["due_at"] = ticket["created_at"]
         normalize_remediation_ticket_v1(ticket)  # must not raise
+    def test_normalizers_reject_integer_only_keys_with_value_error(self):
+        payload = {2048: "misdirected"}
+        for normalizer, label in (
+            (normalize_asset_context_v1, "asset context"),
+            (normalize_remediation_ticket_v1, "remediation ticket"),
+        ):
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(ValueError, "field names must be strings"):
+                    normalizer(payload)
+    def test_normalizers_reject_mixed_string_and_integer_keys_with_value_error(self):
+        for fixture, normalizer, label in (
+            (self.asset, normalize_asset_context_v1, "asset context"),
+            (self.ticket, normalize_remediation_ticket_v1, "remediation ticket"),
+        ):
+            payload = fixture()
+            payload[2048] = "misdirected"
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(ValueError, "field names must be strings"):
+                    normalizer(payload)
     def test_posture_optional_fields_follow_schema(self):
         payload = self.posture()
         validate_posture(payload)

@@ -172,6 +172,165 @@ class JobQueueTests(unittest.TestCase):
             reclaimed = queue.claim("worker-b", lease_seconds=300, now=2000)
             self.assertEqual(reclaimed["job_id"], job["job_id"])
 
+    def test_complete_samples_implicit_time_after_write_lock_acquisition(self):
+        events = []
+        real_connect = sqlite3.connect
+        real_time = job_queue.time.time
+
+        def ordering_connect(*args, **kwargs):
+            target = real_connect(*args, **kwargs)
+
+            class OrderedConnection:
+                def execute(self, statement, *execute_args, **execute_kwargs):
+                    normalized = statement.strip().upper()
+                    if normalized.startswith("BEGIN IMMEDIATE"):
+                        events.append("begin")
+                    elif normalized.startswith("UPDATE"):
+                        events.append("update")
+                    return target.execute(statement, *execute_args, **execute_kwargs)
+
+                def commit(self):
+                    return target.commit()
+
+                def close(self):
+                    return target.close()
+
+            return OrderedConnection()
+
+        def ordering_time():
+            events.append("time-sampled")
+            return real_time()
+
+        with tempfile.TemporaryDirectory() as directory:
+            queue = SQLiteJobQueue(str(Path(directory) / "queue.db"))
+            # Claim with implicit time so the lease is still valid at the
+            # real wall-clock moment the implicit complete sampling uses.
+            queue.enqueue("payload.json")
+            job = queue.claim("worker-a", lease_seconds=300)
+            with mock.patch.object(
+                job_queue.sqlite3, "connect", side_effect=ordering_connect
+            ), mock.patch.object(
+                job_queue.time, "time", side_effect=ordering_time
+            ):
+                completed = queue.complete(job["job_id"], "worker-a")
+            self.assertTrue(completed)
+        self.assertEqual(events, ["begin", "time-sampled", "update"])
+
+    def test_fail_samples_implicit_time_after_write_lock_and_before_row_read(self):
+        events = []
+        real_connect = sqlite3.connect
+        real_time = job_queue.time.time
+
+        def ordering_connect(*args, **kwargs):
+            target = real_connect(*args, **kwargs)
+
+            class OrderedConnection:
+                def execute(self, statement, *execute_args, **execute_kwargs):
+                    normalized = statement.strip().upper()
+                    if normalized.startswith("BEGIN IMMEDIATE"):
+                        events.append("begin")
+                    elif normalized.startswith("SELECT"):
+                        events.append("row-read")
+                    elif normalized.startswith("UPDATE"):
+                        events.append("update")
+                    return target.execute(statement, *execute_args, **execute_kwargs)
+
+                def commit(self):
+                    return target.commit()
+
+                def close(self):
+                    return target.close()
+
+            return OrderedConnection()
+
+        def ordering_time():
+            events.append("time-sampled")
+            return real_time()
+
+        with tempfile.TemporaryDirectory() as directory:
+            queue = SQLiteJobQueue(str(Path(directory) / "queue.db"))
+            queue.enqueue("payload.json")
+            job = queue.claim("worker-a", lease_seconds=300)
+            with mock.patch.object(
+                job_queue.sqlite3, "connect", side_effect=ordering_connect
+            ), mock.patch.object(
+                job_queue.time, "time", side_effect=ordering_time
+            ):
+                outcome = queue.fail(job["job_id"], "worker-a", "transient")
+            self.assertEqual(outcome, "pending")
+        self.assertEqual(events, ["begin", "time-sampled", "row-read", "update"])
+
+    def test_lease_expired_at_post_lock_time_cannot_be_completed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "queue.db"
+            queue = SQLiteJobQueue(str(database))
+            queue.enqueue("payload.json", now=1000)
+            job = queue.claim("worker-a", lease_seconds=60, now=1000)
+            # Without explicit now, ownership is judged by the real wall clock,
+            # which is far past the synthetic locked_until of 1060.
+            self.assertFalse(queue.complete(job["job_id"], "worker-a"))
+            with closing(sqlite3.connect(database)) as connection:
+                row = connection.execute(
+                    "SELECT status, worker_id, locked_until FROM pipeline_jobs WHERE job_id = ?",
+                    (job["job_id"],),
+                ).fetchone()
+            self.assertEqual(row[0], "running")
+            self.assertEqual(row[1], "worker-a")
+            self.assertEqual(row[2], 1060)
+
+    def test_lease_expired_at_post_lock_time_cannot_be_failed_or_requeued(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "queue.db"
+            queue = SQLiteJobQueue(str(database))
+            queue.enqueue("payload.json", now=1000)
+            job = queue.claim("worker-a", lease_seconds=60, now=1000)
+            self.assertEqual(
+                queue.fail(job["job_id"], "worker-a", "late"), "lease_lost"
+            )
+            with closing(sqlite3.connect(database)) as connection:
+                row = connection.execute(
+                    "SELECT status, worker_id, locked_until, attempts, last_error "
+                    "FROM pipeline_jobs WHERE job_id = ?",
+                    (job["job_id"],),
+                ).fetchone()
+            self.assertEqual(row[0], "running")
+            self.assertEqual(row[1], "worker-a")
+            self.assertEqual(row[2], 1060)
+            self.assertEqual(row[3], 1)
+            self.assertIsNone(row[4])
+
+    def test_complete_with_explicit_now_is_deterministic_without_wall_clock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            queue = SQLiteJobQueue(str(Path(directory) / "queue.db"))
+            queue.enqueue("payload.json", now=1000)
+            job = queue.claim("worker-a", lease_seconds=300, now=1000)
+            with mock.patch.object(
+                job_queue.time,
+                "time",
+                side_effect=AssertionError("time.time() must not be called"),
+            ):
+                self.assertFalse(queue.complete(job["job_id"], "worker-a", now=1300))
+                self.assertTrue(queue.complete(job["job_id"], "worker-a", now=1299))
+
+    def test_fail_with_explicit_now_is_deterministic_without_wall_clock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            queue = SQLiteJobQueue(str(Path(directory) / "queue.db"))
+            queue.enqueue("payload.json", now=1000)
+            job = queue.claim("worker-a", lease_seconds=300, now=1000)
+            with mock.patch.object(
+                job_queue.time,
+                "time",
+                side_effect=AssertionError("time.time() must not be called"),
+            ):
+                self.assertEqual(
+                    queue.fail(job["job_id"], "worker-a", "late", max_attempts=2, retry_delay=10, now=1400),
+                    "lease_lost",
+                )
+                self.assertEqual(
+                    queue.fail(job["job_id"], "worker-a", "late", max_attempts=2, retry_delay=10, now=1299),
+                    "pending",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
