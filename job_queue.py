@@ -8,14 +8,14 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from state_store import DEFAULT_STATE_DB
+from state_store import BEGIN_IMMEDIATE_SQL, DEFAULT_STATE_DB, SQLITE_LOCK_TIMEOUT_SECONDS
 
 
 class SQLiteJobQueue:
     def __init__(self, path: str = DEFAULT_STATE_DB):
         self.path = str(Path(path))
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(self.path)) as connection:
+        with closing(self._connect()) as connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS pipeline_jobs (
@@ -32,9 +32,13 @@ class SQLiteJobQueue:
             )
             connection.commit()
 
+    def _connect(self) -> sqlite3.Connection:
+        """Single place where queue connections apply the shared lock policy."""
+        return sqlite3.connect(self.path, timeout=SQLITE_LOCK_TIMEOUT_SECONDS)
+
     def enqueue(self, payload_path: str, now: float | None = None) -> bool:
         current = time.time() if now is None else now
-        with closing(sqlite3.connect(self.path)) as connection:
+        with closing(self._connect()) as connection:
             cursor = connection.execute(
                 "INSERT OR IGNORE INTO pipeline_jobs(payload_path, status, available_at) VALUES (?, 'pending', ?)",
                 (payload_path, current),
@@ -46,9 +50,9 @@ class SQLiteJobQueue:
         if not worker_id.strip() or lease_seconds <= 0:
             raise ValueError("worker_id and a positive lease_seconds are required")
         current = time.time() if now is None else now
-        with closing(sqlite3.connect(self.path, timeout=5)) as connection:
+        with closing(self._connect()) as connection:
             connection.row_factory = sqlite3.Row
-            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(BEGIN_IMMEDIATE_SQL)
             row = connection.execute(
                 """
                 SELECT * FROM pipeline_jobs
@@ -71,10 +75,12 @@ class SQLiteJobQueue:
             return result
 
     def renew(self, job_id: int, worker_id: str, lease_seconds: int = 300, now: float | None = None) -> bool:
+        """Extend a held lease, sampling implicit time after the write lock."""
         if not worker_id.strip() or lease_seconds <= 0:
             raise ValueError("worker_id and a positive lease_seconds are required")
-        current = time.time() if now is None else now
-        with closing(sqlite3.connect(self.path)) as connection:
+        with closing(self._connect()) as connection:
+            connection.execute(BEGIN_IMMEDIATE_SQL)
+            current = now if now is not None else time.time()
             cursor = connection.execute(
                 "UPDATE pipeline_jobs SET locked_until = ? WHERE job_id = ? AND status = 'running' AND worker_id = ? AND locked_until > ?",
                 (current + lease_seconds, job_id, worker_id, current),
@@ -86,8 +92,9 @@ class SQLiteJobQueue:
         """Complete only a job still leased to the calling worker."""
         if not worker_id.strip():
             raise ValueError("worker_id is required")
-        current = time.time() if now is None else now
-        with closing(sqlite3.connect(self.path)) as connection:
+        with closing(self._connect()) as connection:
+            connection.execute(BEGIN_IMMEDIATE_SQL)
+            current = now if now is not None else time.time()
             cursor = connection.execute(
                 "UPDATE pipeline_jobs SET status = 'completed', locked_until = NULL, last_error = NULL "
                 "WHERE job_id = ? AND status = 'running' AND worker_id = ? AND locked_until > ?",
@@ -100,14 +107,17 @@ class SQLiteJobQueue:
         """Return lease_lost rather than mutating a job reclaimed by another worker."""
         if not worker_id.strip() or max_attempts < 1 or retry_delay < 0:
             raise ValueError("worker_id, max_attempts, and retry_delay are invalid")
-        current = time.time() if now is None else now
-        with closing(sqlite3.connect(self.path)) as connection:
+        with closing(self._connect()) as connection:
+            connection.execute(BEGIN_IMMEDIATE_SQL)
+            current = now if now is not None else time.time()
             row = connection.execute(
                 "SELECT attempts, status, worker_id, locked_until FROM pipeline_jobs WHERE job_id = ?", (job_id,)
             ).fetchone()
             if row is None:
+                connection.rollback()
                 raise ValueError(f"Unknown job {job_id}.")
             if row[1] != "running" or row[2] != worker_id or row[3] is None or row[3] <= current:
+                connection.rollback()
                 return "lease_lost"
             status = "dead" if row[0] >= max_attempts else "pending"
             cursor = connection.execute(
@@ -119,7 +129,7 @@ class SQLiteJobQueue:
         return status if cursor.rowcount == 1 else "lease_lost"
 
     def metadata(self) -> dict[str, int]:
-        with closing(sqlite3.connect(self.path)) as connection:
+        with closing(self._connect()) as connection:
             rows = connection.execute("SELECT status, COUNT(*) FROM pipeline_jobs GROUP BY status").fetchall()
         result = {"pending": 0, "running": 0, "completed": 0, "dead": 0}
         result.update({str(status): int(count) for status, count in rows})

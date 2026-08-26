@@ -10,12 +10,12 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
-import time
 from contextlib import closing
 from pathlib import Path
 from typing import Any
 
 from scripts import pipeline_worker
+from state_store import DEFAULT_STATE_DB, SQLITE_LOCK_TIMEOUT_SECONDS
 
 
 DOCUMENT_SCHEMA = "sentinel.hermetic_recovery_evidence.v1"
@@ -107,6 +107,24 @@ def _queue_completed(database: Path) -> bool:
     return int(row[0]) == 1
 
 
+def _expire_crashed_running_job(database: Path) -> None:
+    """Expire exactly one crashed queue lease in a bounded transaction."""
+    with closing(
+        sqlite3.connect(database, timeout=SQLITE_LOCK_TIMEOUT_SECONDS)
+    ) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        expired = connection.execute(
+            "UPDATE pipeline_jobs SET locked_until = 0 WHERE status = 'running'"
+        )
+        if expired.rowcount != 1:
+            connection.rollback()
+            raise RuntimeError(
+                "expected exactly one crashed running queue job, "
+                f"found {expired.rowcount}"
+            )
+        connection.commit()
+
+
 def _hash_outputs(paths: list[Path], root: Path) -> dict[str, str]:
     return {
         path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -136,13 +154,11 @@ def _pipeline_command(root: Path, repository: Path) -> list[str]:
         "--ledger",
         str(root / "evidence-ledger.jsonl"),
         "--state-db",
-        str(root / "sentinelgrc-state.db"),
+        str(root / DEFAULT_STATE_DB),
         "--audit-log",
         str(root / "runtime" / "audit-log.jsonl"),
         "--governance-db",
         str(root / "runtime" / "governance.db"),
-        "--lease-seconds",
-        "1",
     ]
 
 
@@ -173,6 +189,13 @@ def run_pipeline_commit_ack_recovery(repository_root: str | Path) -> dict[str, b
             timeout=30,
             check=False,
         )
+        if crashed.returncode != pipeline_worker.FAILPOINT_EXIT_CODE:
+            # Never manufacture recovery evidence from a process that did
+            # not reach the commit-before-ack failpoint.
+            raise RuntimeError(
+                f"crash process exited with {crashed.returncode}, expected "
+                f"failpoint exit {pipeline_worker.FAILPOINT_EXIT_CODE}"
+            )
         protected = [
             root / "evidence-ledger.jsonl",
             root / "runtime" / "audit-log.jsonl",
@@ -186,7 +209,9 @@ def run_pipeline_commit_ack_recovery(repository_root: str | Path) -> dict[str, b
             _table_count(governance_db, table)
             for table in ("findings", "governance_events", "governance_outbox")
         )
-        time.sleep(1.1)
+        # Expire the crashed lease deterministically instead of sleeping out a
+        # real lease; the crashed job must be the only running queue job.
+        _expire_crashed_running_job(root / DEFAULT_STATE_DB)
         replay_environment = {
             key: value
             for key, value in os.environ.items()
@@ -216,7 +241,7 @@ def run_pipeline_commit_ack_recovery(repository_root: str | Path) -> dict[str, b
             "output_hashes_unchanged": before_hashes == after_hashes,
             "database_counts_unchanged": before_counts == after_counts,
             "business_records_present": all(count > 0 for count in before_counts),
-            "queue_completed_once": _queue_completed(root / "sentinelgrc-state.db"),
+            "queue_completed_once": _queue_completed(root / DEFAULT_STATE_DB),
         }
 
 

@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import secrets
+import sqlite3
 import threading
 import time
 from dataclasses import dataclass
@@ -19,12 +20,22 @@ from scripts.path_policy import (
     validate_evidence_id,
 )
 from job_queue import SQLiteJobQueue
+from publication_reconciliation import (
+    read_evidence_bytes,
+    read_verified_evidence,
+    reconcile_pending_publications,
+)
+from state_store import SQLITE_LOCK_TIMEOUT_SECONDS, SQLiteStateStore
 from sentinelgrc import load_json
 from state_store import DEFAULT_STATE_DB
 
 
 FAILPOINT_AFTER_PIPELINE_COMMIT = "after_pipeline_commit_before_queue_ack"
 FAILPOINT_EXIT_CODE = 86
+# The heartbeat fires at lease/3; a lease of twice the shared SQLite lock
+# timeout keeps a worst-case renewal lock wait (lease/3 + timeout) ahead of
+# lease expiry with a positive margin.
+MIN_WORKER_LEASE_SECONDS = SQLITE_LOCK_TIMEOUT_SECONDS * 2
 
 
 @dataclass(frozen=True)
@@ -77,15 +88,37 @@ def _trigger_test_failpoint(configured: str | None, expected: str) -> None:
         os._exit(FAILPOINT_EXIT_CODE)
 
 
+def _lease_renewal_interval(lease_seconds: int) -> float:
+    """Bounded fractional cadence strictly shorter than any valid lease."""
+    return max(0.05, lease_seconds / 3.0)
+
+
+def _one_shot_exit_code(results: list[Any]) -> int:
+    """Return success only when every one-shot result is explicitly complete."""
+    successful_statuses = {"accepted", "duplicate"}
+    succeeded = all(
+        isinstance(item, dict) and item.get("status") in successful_statuses
+        for item in results
+    )
+    return 0 if succeeded else 1
+
+
 def _renew_lease_until_stopped(
     queue: SQLiteJobQueue,
     stop: threading.Event,
+    lease_lost: threading.Event,
     job_id: int,
     worker_id: str,
     lease_seconds: int,
 ) -> None:
-    while not stop.wait(max(1, lease_seconds // 3)):
-        if not queue.renew(job_id, worker_id, lease_seconds):
+    """Extend the lease until stopped; flag any renewal loss fail-closed."""
+    while not stop.wait(_lease_renewal_interval(lease_seconds)):
+        try:
+            if not queue.renew(job_id, worker_id, lease_seconds):
+                lease_lost.set()
+                break
+        except sqlite3.Error:
+            lease_lost.set()
             break
 
 
@@ -142,10 +175,33 @@ def _resolve_worker_paths(
     )
 
 
+def _read_claimed_payload(
+    path: Path, publication_state: SQLiteStateStore
+) -> bytes:
+    """Read managed evidence once and bind those bytes to committed state."""
+    # Publication-state record existence, not filename appearance, decides
+    # provenance: a no-row file is ordinary unmanaged inbox evidence even
+    # when its stem happens to use the generated evidence-ID shape.
+    record = publication_state.find_payload_by_evidence_id(path.stem)
+    if record is None:
+        payload = read_evidence_bytes(path)
+        if payload is None:
+            raise ValueError("inbox payload must be a regular readable file")
+        return payload
+    if record["status"] != "committed":
+        raise ValueError("managed inbox payload is not committed")
+    payload = read_verified_evidence(path, str(record["payload_hash"]))
+    if payload is None:
+        # Recovery requires the reviewed operator procedure in docs/pipeline-worker-recovery.md.
+        raise ValueError("managed inbox payload failed committed hash verification")
+    return payload
+
+
 def _process_claimed_job(
     queue: SQLiteJobQueue,
     job: dict[str, Any],
     paths: _WorkerPaths,
+    publication_state: SQLiteStateStore,
     controls: list[dict[str, Any]],
     assets: list[dict[str, Any]],
     access_review: dict[str, Any] | None,
@@ -153,29 +209,71 @@ def _process_claimed_job(
     worker_id: str,
     failpoint: str | None,
 ) -> dict[str, Any]:
+    # Lease supervision precedes any blocking evidence I/O: an immediate
+    # synchronous renewal proves ownership before the read (an expected
+    # queue-storage failure means ownership is unknown, so it fails closed
+    # too), the heartbeat keeps the lease alive across the read and the
+    # pipeline run, and lease_lost turns any renewal failure into an
+    # explicit stop signal instead of a silent background-thread exit.
+    job_file = str(job["payload_path"])
     try:
-        posture_path = _validated_inbox_item(job["payload_path"], paths.inbox)
-    except (TypeError, ValueError) as error:
-        status = queue.fail(
-            int(job["job_id"]), worker_id, str(error),
-            max_attempts=1, retry_delay=0,
+        lease_owned = queue.renew(
+            int(job["job_id"]), worker_id, options.lease_seconds
         )
-        return {
-            "file": str(job["payload_path"]),
-            "status": "error",
-            "queue_status": status,
-            "error": str(error),
-        }
-
+    except sqlite3.Error:
+        return {"file": job_file, "status": "lease_lost"}
+    if not lease_owned:
+        return {"file": job_file, "status": "lease_lost"}
     stop = threading.Event()
+    lease_lost = threading.Event()
     heartbeat_thread = threading.Thread(
         target=_renew_lease_until_stopped,
-        args=(queue, stop, int(job["job_id"]), worker_id, options.lease_seconds),
+        args=(queue, stop, lease_lost, int(job["job_id"]), worker_id, options.lease_seconds),
         daemon=True,
     )
     heartbeat_thread.start()
+    heartbeat_joined = False
+
+    def shutdown_heartbeat() -> None:
+        """Stop and join the heartbeat at most once."""
+        nonlocal heartbeat_joined
+        if heartbeat_joined:
+            return
+        stop.set()
+        heartbeat_thread.join()
+        heartbeat_joined = True
+
     try:
-        posture = json.loads(posture_path.read_text(encoding="utf-8"))
+        try:
+            posture_path = _validated_inbox_item(job["payload_path"], paths.inbox)
+            posture_bytes = _read_claimed_payload(posture_path, publication_state)
+            if lease_lost.is_set():
+                return {"file": job_file, "status": "lease_lost"}
+        except OSError:
+            status = queue.fail(
+                int(job["job_id"]), worker_id,
+                "evidence storage is temporarily unavailable",
+                options.max_attempts, options.retry_delay,
+            )
+            return {
+                "file": job_file,
+                "status": "error",
+                "queue_status": status,
+                "error": "evidence storage is temporarily unavailable",
+            }
+        except (TypeError, ValueError) as error:
+            status = queue.fail(
+                int(job["job_id"]), worker_id, str(error),
+                max_attempts=1, retry_delay=0,
+            )
+            return {
+                "file": job_file,
+                "status": "error",
+                "queue_status": status,
+                "error": str(error),
+            }
+
+        posture = json.loads(posture_bytes.decode("utf-8"))
         stem = posture_path.stem
         result = pipeline.run_pipeline(
             posture, controls, assets, paths.ledger,
@@ -190,6 +288,11 @@ def _process_claimed_job(
             ),
         )
         _trigger_test_failpoint(failpoint, FAILPOINT_AFTER_PIPELINE_COMMIT)
+        shutdown_heartbeat()
+        if lease_lost.is_set():
+            # A detected loss is not success; pipeline side effects already
+            # performed are not rolled back by this check.
+            return {"file": str(posture_path), "status": "lease_lost"}
         if not queue.complete(int(job["job_id"]), worker_id):
             return {"file": str(posture_path), "status": "lease_lost"}
         return {"file": str(posture_path), **result}
@@ -199,14 +302,26 @@ def _process_claimed_job(
             options.max_attempts, options.retry_delay,
         )
         return {
-            "file": str(posture_path),
+            "file": job_file,
             "status": "error",
             "queue_status": status,
             "error": str(error),
         }
     finally:
-        stop.set()
-        heartbeat_thread.join(timeout=2)
+        shutdown_heartbeat()
+
+
+def _validate_worker_run_options(options: WorkerRunOptions) -> None:
+    """Reject unsafe run options at the public boundary, before side effects."""
+    if options.lease_seconds < MIN_WORKER_LEASE_SECONDS:
+        raise ValueError(
+            f"lease_seconds must be at least {MIN_WORKER_LEASE_SECONDS} to keep the "
+            "heartbeat cadence ahead of the shared SQLite lock timeout"
+        )
+    if options.max_attempts < 1:
+        raise ValueError("max_attempts must be at least 1")
+    if options.retry_delay < 0:
+        raise ValueError("retry_delay must not be negative")
 
 
 def process_inbox_once(
@@ -216,6 +331,7 @@ def process_inbox_once(
     options: WorkerRunOptions | None = None,
 ) -> list[dict[str, Any]]:
     options = options or WorkerRunOptions()
+    _validate_worker_run_options(options)
     failpoint = _configured_test_failpoint()
     paths = _resolve_worker_paths(
         inbox, ledger, state_db, remediation_dir, tickets_dir, reports_dir, options
@@ -224,9 +340,25 @@ def process_inbox_once(
     inbox_items = sorted(paths.inbox.glob("*.json"))
     for posture_path in inbox_items:
         _validated_inbox_item(posture_path, paths.inbox)
+    publication_state = SQLiteStateStore(paths.state_db, storage_root=paths.storage_root)
+    # Uses the default grace period (not 0): unlike a server's one-time
+    # startup sweep, this poll-cycle sweep covers only the posture inbox
+    # at paths.inbox, potentially concurrently with a live ingestion
+    # server that may have a request genuinely in flight right now. This
+    # recurring sweep is also what protects a long-running ingestion
+    # server that has not restarted in a while - the server's own startup
+    # sweep only runs once, at process start. Portfolio directories are
+    # not reconciled here; they are covered at server startup or through
+    # the explicit reconciliation CLI.
+    reconcile_pending_publications(publication_state, [paths.inbox])
     queue = SQLiteJobQueue(paths.state_db)
     for posture_path in inbox_items:
-        queue.enqueue(str(posture_path))
+        # Provenance is the publication-state record, never filename shape:
+        # a no-row file is ordinary unmanaged evidence, a committed record is
+        # processable, and a pending publication stays invisible to the worker.
+        record = publication_state.find_payload_by_evidence_id(posture_path.stem)
+        if record is None or record["status"] == "committed":
+            queue.enqueue(str(posture_path))
     results: list[dict[str, Any]] = []
     worker_id = "worker-" + secrets.token_hex(6)
     while True:
@@ -234,7 +366,7 @@ def process_inbox_once(
         if job is None:
             break
         results.append(_process_claimed_job(
-            queue, job, paths, controls, assets, access_review, options,
+            queue, job, paths, publication_state, controls, assets, access_review, options,
             worker_id, failpoint,
         ))
     return results
@@ -327,8 +459,12 @@ def main() -> int:
     add_worker_arguments(serve_parser, "serve")
     args = parser.parse_args()
     config_root, runtime_root = resolve_worker_roots(args)
-    configuration = load_worker_configuration(args, config_root)
     options = worker_options_from_args(args, runtime_root)
+    try:
+        _validate_worker_run_options(options)
+    except ValueError as error:
+        parser.error(str(error))
+    configuration = load_worker_configuration(args, config_root)
     if args.command == "once":
         results = process_inbox_once(
             args.inbox, configuration.controls, configuration.assets,
@@ -336,7 +472,7 @@ def main() -> int:
             args.reports_dir, configuration.access_review, options,
         )
         print(json.dumps(results, indent=2))
-        return 0 if all(item["status"] != "error" for item in results) else 1
+        return _one_shot_exit_code(results)
     return serve(args, configuration, options)
 
 
