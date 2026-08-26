@@ -10,12 +10,14 @@ import threading
 import time
 import unittest
 from argparse import Namespace
+from contextlib import closing, redirect_stderr
+from io import StringIO
 from unittest.mock import Mock, patch
 from pathlib import Path
 from job_queue import SQLiteJobQueue
 import publication_reconciliation
 from scripts import pipeline_worker
-from state_store import SQLiteStateStore
+from state_store import SQLITE_LOCK_TIMEOUT_SECONDS, SQLiteStateStore
 class PipelineWorkerTests(unittest.TestCase):
     def test_worker_options_keep_processing_boundary_below_parameter_limit(self):
         parameters = inspect.signature(pipeline_worker.process_inbox_once).parameters
@@ -315,8 +317,6 @@ class PipelineWorkerTests(unittest.TestCase):
                 str(root / "runtime" / "audit-log.jsonl"),
                 "--governance-db",
                 str(root / "runtime" / "governance.db"),
-                "--lease-seconds",
-                "1",
             ]
             crash_environment = {
                 **os.environ,
@@ -345,7 +345,14 @@ class PipelineWorkerTests(unittest.TestCase):
                 path: path.read_bytes()
                 for path in protected_paths
             }
-            time.sleep(1.1)
+            # The crashed job's lease is expired deterministically instead of
+            # sleeping out a real lease: the CLI now enforces a lease safety
+            # floor far above one second.
+            with closing(sqlite3.connect(root / "sentinelgrc-state.db")) as connection:
+                connection.execute(
+                    "UPDATE pipeline_jobs SET locked_until = 0 WHERE status = 'running'"
+                )
+                connection.commit()
             replayed = subprocess.run(
                 command,
                 cwd=Path.cwd(),
@@ -852,5 +859,142 @@ class PipelineWorkerTests(unittest.TestCase):
         heartbeat.join.assert_called_once_with()
         heartbeat_stop = thread_factory.call_args.kwargs["args"][1]
         self.assertTrue(heartbeat_stop.is_set())
+
+    def test_min_worker_lease_derives_from_shared_lock_timeout(self):
+        self.assertEqual(
+            pipeline_worker.MIN_WORKER_LEASE_SECONDS,
+            SQLITE_LOCK_TIMEOUT_SECONDS * 2,
+        )
+        self.assertGreater(
+            pipeline_worker.MIN_WORKER_LEASE_SECONDS, SQLITE_LOCK_TIMEOUT_SECONDS
+        )
+
+    def test_worker_run_options_validation_floor_and_other_bounds(self):
+        floor = pipeline_worker.MIN_WORKER_LEASE_SECONDS
+        pipeline_worker._validate_worker_run_options(
+            pipeline_worker.WorkerRunOptions(lease_seconds=floor)
+        )
+        pipeline_worker._validate_worker_run_options(pipeline_worker.WorkerRunOptions())
+        for invalid in (
+            pipeline_worker.WorkerRunOptions(lease_seconds=floor - 1),
+            pipeline_worker.WorkerRunOptions(max_attempts=0),
+            pipeline_worker.WorkerRunOptions(retry_delay=-1),
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    pipeline_worker._validate_worker_run_options(invalid)
+
+    def test_lease_below_floor_rejected_before_any_worker_side_effect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inbox = root / "inbox"
+            controls = json.loads(Path("controls.json").read_text(encoding="utf-8"))
+            assets = json.loads(Path("assets.json").read_text(encoding="utf-8"))
+            options = pipeline_worker.WorkerRunOptions(
+                lease_seconds=pipeline_worker.MIN_WORKER_LEASE_SECONDS - 1
+            )
+            with patch.object(
+                pipeline_worker, "SQLiteJobQueue"
+            ) as queue, patch.object(
+                pipeline_worker, "SQLiteStateStore"
+            ) as store, patch.object(
+                pipeline_worker, "reconcile_pending_publications"
+            ) as reconcile, patch.object(
+                pipeline_worker.pipeline, "run_pipeline"
+            ) as run:
+                with self.assertRaisesRegex(
+                    ValueError, "lease_seconds must be at least"
+                ):
+                    pipeline_worker.process_inbox_once(
+                        str(inbox), controls, assets, str(root / "ledger.jsonl"),
+                        str(root / "state.db"), "remediation", "tickets", "reports",
+                        options=options,
+                    )
+            queue.assert_not_called()
+            store.assert_not_called()
+            reconcile.assert_not_called()
+            run.assert_not_called()
+            self.assertFalse(inbox.exists())
+            self.assertFalse((root / "state.db").exists())
+
+    def test_cli_rejects_lease_below_floor_with_concise_parser_error(self):
+        argv = [
+            "pipeline_worker",
+            "once",
+            "--inbox",
+            "evidence-inbox",
+            "--runtime-root",
+            ".",
+            "--controls",
+            "controls.json",
+            "--assets",
+            "assets.json",
+            "--lease-seconds",
+            str(pipeline_worker.MIN_WORKER_LEASE_SECONDS - 1),
+        ]
+        stderr = StringIO()
+        with patch.object(sys, "argv", argv), redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as raised:
+                pipeline_worker.main()
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("lease_seconds must be at least", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_lease_loss_during_run_pipeline_prevents_successful_completion(self):
+        class LossAfterFirstRenewQueue:
+            def __init__(self):
+                self.renew_calls = 0
+                self.completed = False
+
+            def renew(self, job_id, worker_id, lease_seconds):
+                self.renew_calls += 1
+                return self.renew_calls == 1
+
+            def complete(self, *args, **kwargs):
+                self.completed = True
+                raise AssertionError("complete() must not run after lease loss")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_queue = LossAfterFirstRenewQueue()
+            inbox = root / "inbox"
+            inbox.mkdir()
+            (inbox / "evidence-001.json").write_text(
+                Path("sample_posture.json").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            job = {"job_id": 1, "payload_path": str(inbox / "evidence-001.json")}
+            options = pipeline_worker.WorkerRunOptions(
+                max_attempts=3, retry_delay=0, lease_seconds=3
+            )
+            paths = pipeline_worker._resolve_worker_paths(
+                str(inbox), str(root / "ledger.jsonl"), str(root / "state.db"),
+                "remediation", "tickets", "reports", options,
+            )
+            captured = {}
+            original_target = pipeline_worker._renew_lease_until_stopped
+
+            def capturing_target(queue, stop, lease_lost, job_id, worker_id, lease_seconds):
+                captured["lease_lost"] = lease_lost
+                original_target(queue, stop, lease_lost, job_id, worker_id, lease_seconds)
+
+            def blocking_run(*run_args, **run_kwargs):
+                # Hold the pipeline open until the heartbeat reports lease loss.
+                if not captured["lease_lost"].wait(timeout=5):
+                    raise AssertionError("lease loss was never reported")
+                return {"status": "accepted"}
+
+            with patch.object(
+                pipeline_worker, "_renew_lease_until_stopped", capturing_target
+            ), patch.object(
+                pipeline_worker.pipeline, "run_pipeline", side_effect=blocking_run
+            ):
+                result = pipeline_worker._process_claimed_job(
+                    fake_queue, job, paths, Mock(),
+                    [], [], None, options, "worker-a", None,
+                )
+            self.assertEqual(result["status"], "lease_lost")
+            self.assertFalse(fake_queue.completed)
+            self.assertGreaterEqual(fake_queue.renew_calls, 2)
 if __name__ == "__main__":
     unittest.main()

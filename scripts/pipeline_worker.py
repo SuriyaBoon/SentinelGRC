@@ -26,13 +26,17 @@ from publication_reconciliation import (
     read_verified_evidence,
     reconcile_pending_publications,
 )
-from state_store import SQLiteStateStore
+from state_store import SQLITE_LOCK_TIMEOUT_SECONDS, SQLiteStateStore
 from sentinelgrc import load_json
 from state_store import DEFAULT_STATE_DB
 
 
 FAILPOINT_AFTER_PIPELINE_COMMIT = "after_pipeline_commit_before_queue_ack"
 FAILPOINT_EXIT_CODE = 86
+# The heartbeat fires at lease/3; a lease of twice the shared SQLite lock
+# timeout keeps a worst-case renewal lock wait (lease/3 + timeout) ahead of
+# lease expiry with a positive margin.
+MIN_WORKER_LEASE_SECONDS = SQLITE_LOCK_TIMEOUT_SECONDS * 2
 
 
 @dataclass(frozen=True)
@@ -260,6 +264,10 @@ def _process_claimed_job(
             ),
         )
         _trigger_test_failpoint(failpoint, FAILPOINT_AFTER_PIPELINE_COMMIT)
+        if lease_lost.is_set():
+            # A detected loss is not success; pipeline side effects already
+            # performed are not rolled back by this check.
+            return {"file": str(posture_path), "status": "lease_lost"}
         if not queue.complete(int(job["job_id"]), worker_id):
             return {"file": str(posture_path), "status": "lease_lost"}
         return {"file": str(posture_path), **result}
@@ -279,6 +287,19 @@ def _process_claimed_job(
         heartbeat_thread.join()
 
 
+def _validate_worker_run_options(options: WorkerRunOptions) -> None:
+    """Reject unsafe run options at the public boundary, before side effects."""
+    if options.lease_seconds < MIN_WORKER_LEASE_SECONDS:
+        raise ValueError(
+            f"lease_seconds must be at least {MIN_WORKER_LEASE_SECONDS} to keep the "
+            "heartbeat cadence ahead of the shared SQLite lock timeout"
+        )
+    if options.max_attempts < 1:
+        raise ValueError("max_attempts must be at least 1")
+    if options.retry_delay < 0:
+        raise ValueError("retry_delay must not be negative")
+
+
 def process_inbox_once(
     inbox: str, controls: list[dict[str, Any]], assets: list[dict[str, Any]],
     ledger: str, state_db: str, remediation_dir: str, tickets_dir: str,
@@ -286,6 +307,7 @@ def process_inbox_once(
     options: WorkerRunOptions | None = None,
 ) -> list[dict[str, Any]]:
     options = options or WorkerRunOptions()
+    _validate_worker_run_options(options)
     failpoint = _configured_test_failpoint()
     paths = _resolve_worker_paths(
         inbox, ledger, state_db, remediation_dir, tickets_dir, reports_dir, options
@@ -412,8 +434,12 @@ def main() -> int:
     add_worker_arguments(serve_parser, "serve")
     args = parser.parse_args()
     config_root, runtime_root = resolve_worker_roots(args)
-    configuration = load_worker_configuration(args, config_root)
     options = worker_options_from_args(args, runtime_root)
+    try:
+        _validate_worker_run_options(options)
+    except ValueError as error:
+        parser.error(str(error))
+    configuration = load_worker_configuration(args, config_root)
     if args.command == "once":
         results = process_inbox_once(
             args.inbox, configuration.controls, configuration.assets,

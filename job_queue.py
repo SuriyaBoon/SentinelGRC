@@ -75,10 +75,12 @@ class SQLiteJobQueue:
             return result
 
     def renew(self, job_id: int, worker_id: str, lease_seconds: int = 300, now: float | None = None) -> bool:
+        """Extend a held lease, sampling implicit time after the write lock."""
         if not worker_id.strip() or lease_seconds <= 0:
             raise ValueError("worker_id and a positive lease_seconds are required")
-        current = time.time() if now is None else now
         with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = now if now is not None else time.time()
             cursor = connection.execute(
                 "UPDATE pipeline_jobs SET locked_until = ? WHERE job_id = ? AND status = 'running' AND worker_id = ? AND locked_until > ?",
                 (current + lease_seconds, job_id, worker_id, current),
