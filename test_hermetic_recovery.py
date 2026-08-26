@@ -1,12 +1,15 @@
+import ast
 import copy
 import json
+import sqlite3
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import closing, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest import mock
 
+import hermetic_recovery
 from hermetic_recovery import (
     PRODUCTION_DECISION,
     READINESS_SCHEMA,
@@ -16,7 +19,9 @@ from hermetic_recovery import (
     run_pipeline_commit_ack_recovery,
     validate_envelope,
 )
+from job_queue import SQLiteJobQueue
 from scripts.collect_hermetic_recovery_evidence import OUTPUT_PATH, main
+from state_store import SQLITE_LOCK_TIMEOUT_SECONDS
 
 
 ROOT = Path(__file__).resolve().parent
@@ -83,6 +88,91 @@ class HermeticRecoveryTests(unittest.TestCase):
     def test_real_failpoint_replay_preserves_exactly_once_state(self):
         result = run_pipeline_commit_ack_recovery(ROOT)
         self.assertTrue(all(result.values()), result)
+
+    def test_pipeline_command_uses_valid_default_lease(self):
+        command = hermetic_recovery._pipeline_command(ROOT, ROOT)
+        self.assertNotIn("--lease-seconds", command)
+
+    def test_wrong_failpoint_exit_never_expires_queue_lease(self):
+        unexpected = mock.Mock(returncode=2, stdout="", stderr="")
+        with mock.patch.object(
+            hermetic_recovery.subprocess, "run", return_value=unexpected
+        ), mock.patch.object(
+            hermetic_recovery, "_expire_crashed_running_job"
+        ) as expire:
+            with self.assertRaisesRegex(RuntimeError, "expected failpoint exit"):
+                run_pipeline_commit_ack_recovery(ROOT)
+        expire.assert_not_called()
+
+    def test_expiry_requires_exactly_one_running_job_and_rolls_back(self):
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "queue.db"
+            queue = SQLiteJobQueue(str(database))
+            queue.enqueue("first.json", now=1000)
+            queue.enqueue("second.json", now=1000)
+            queue.claim("worker-a", lease_seconds=300, now=1000)
+            queue.claim("worker-b", lease_seconds=300, now=1000)
+
+            with self.assertRaisesRegex(RuntimeError, "found 2"):
+                hermetic_recovery._expire_crashed_running_job(database)
+
+            with closing(sqlite3.connect(database)) as connection:
+                rows = connection.execute(
+                    "SELECT locked_until FROM pipeline_jobs "
+                    "WHERE status = 'running' ORDER BY job_id"
+                ).fetchall()
+            self.assertEqual(rows, [(1300.0,), (1300.0,)])
+
+    def test_expiry_rejects_zero_running_jobs_without_mutation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "queue.db"
+            queue = SQLiteJobQueue(str(database))
+            queue.enqueue("pending.json", now=1000)
+
+            with self.assertRaisesRegex(RuntimeError, "found 0"):
+                hermetic_recovery._expire_crashed_running_job(database)
+
+            with closing(sqlite3.connect(database)) as connection:
+                row = connection.execute(
+                    "SELECT status, locked_until FROM pipeline_jobs"
+                ).fetchone()
+            self.assertEqual(row, ("pending", None))
+
+    def test_expiry_uses_shared_timeout_and_expires_one_running_job(self):
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "queue.db"
+            queue = SQLiteJobQueue(str(database))
+            queue.enqueue("payload.json", now=1000)
+            queue.claim("worker-a", lease_seconds=300, now=1000)
+            real_connect = sqlite3.connect
+
+            with mock.patch.object(
+                hermetic_recovery.sqlite3, "connect", wraps=real_connect
+            ) as connect:
+                hermetic_recovery._expire_crashed_running_job(database)
+
+            self.assertEqual(
+                connect.call_args.kwargs["timeout"], SQLITE_LOCK_TIMEOUT_SECONDS
+            )
+            with closing(sqlite3.connect(database)) as connection:
+                locked_until = connection.execute(
+                    "SELECT locked_until FROM pipeline_jobs WHERE status = 'running'"
+                ).fetchone()[0]
+            self.assertEqual(locked_until, 0)
+
+    def test_recovery_source_contains_no_wall_clock_sleep(self):
+        source = Path(hermetic_recovery.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        sleep_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "time"
+            and node.func.attr == "sleep"
+        ]
+        self.assertEqual(sleep_calls, [])
 
     def test_envelope_is_strict_hash_verified_and_grants_no_live_credit(self):
         with tempfile.TemporaryDirectory() as temp:
