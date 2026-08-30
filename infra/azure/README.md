@@ -39,6 +39,14 @@ use session-aware, idempotent processing and have their own receiver identity.
 bootstrap password is intentionally absent and must be supplied securely at
 deployment time.
 
+The offline IaC preflight binds the runtime image to the digest-pinned
+`<acr-name>.azurecr.io/sentinelgrc` repository and the validation image to the
+digest-pinned `<acr-name>.azurecr.io/sentinelgrc-assurance` repository. Their
+digests must differ. The Microsoft Entra issuer and JWKS URL must be the exact
+tenant-derived v2 endpoints. Same, swapped, arbitrary, wrong-ACR, noncanonical,
+or mutable inputs fail closed. These repository controls perform no Azure
+mutation and grant no Azure live-validation credit.
+
 See [the deployment runbook](../../docs/azure-staging-deployment.md) before
 running any Azure mutation.
 

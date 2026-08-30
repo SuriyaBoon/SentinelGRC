@@ -48,6 +48,15 @@ The operator must supply and own all of the following:
 
 The repository cannot create or approve these organisational inputs.
 
+The staging preflight enforces exact image repositories under the selected ACR:
+`<acr-name>.azurecr.io/sentinelgrc` for the runtime and
+`<acr-name>.azurecr.io/sentinelgrc-assurance` for validation. Both references
+must be digest-pinned, and their sha256 digests must differ. It also derives the
+canonical Microsoft Entra v2 issuer and JWKS URLs from the lowercase,
+hyphenated tenant GUID and rejects alternate hosts, cross-tenant paths, ports,
+queries, fragments, trailing slashes, and case variants. These checks perform
+no Azure mutation and provide no live-gate credit.
+
 ## Cost boundary
 
 The template creates billable resources, including Container Apps,

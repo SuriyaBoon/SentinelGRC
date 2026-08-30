@@ -132,6 +132,8 @@ var auditContainerName = 'audit-archive'
 var databaseSecretName = 'sentinel-database-url'
 var hexCharacters = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
 var expectedRegistryHost = toLower('${containerRegistryName}.azurecr.io')
+var expectedRuntimeImageRepository = '${expectedRegistryHost}/sentinelgrc'
+var expectedValidationImageRepository = '${expectedRegistryHost}/sentinelgrc-assurance'
 var containerImageParts = split(containerImage, '@sha256:')
 var containerImageRepository = length(containerImageParts) == 2 ? containerImageParts[0] : ''
 var containerImageRepositoryParts = split(containerImageRepository, '/')
@@ -142,7 +144,7 @@ var containerImageInvalidDigestCharacters = reduce(
   containerImageDigest,
   (remaining, character) => replace(remaining, character, '')
 )
-var imageDigestPinned = length(containerImageParts) == 2 && containerImageHost == expectedRegistryHost && length(containerImageDigest) == 64 && empty(containerImageInvalidDigestCharacters)
+var imageDigestPinned = length(containerImageParts) == 2 && containerImageRepository == expectedRuntimeImageRepository && containerImageHost == expectedRegistryHost && length(containerImageDigest) == 64 && empty(containerImageInvalidDigestCharacters)
 var validationImageParts = split(validationContainerImage, '@sha256:')
 var validationImageRepository = length(validationImageParts) == 2 ? validationImageParts[0] : ''
 var validationImageRepositoryParts = split(validationImageRepository, '/')
@@ -153,24 +155,45 @@ var validationImageInvalidDigestCharacters = reduce(
   validationImageDigest,
   (remaining, character) => replace(remaining, character, '')
 )
-var validationImageDigestPinned = length(validationImageParts) == 2 && validationImageHost == expectedRegistryHost && length(validationImageDigest) == 64 && empty(validationImageInvalidDigestCharacters)
-var deployValidatedApplication = !deployApplication
-  ? false
-  : imageDigestPinned
-    ? true
-    : fail('deployApplication requires a lowercase digest-pinned runtime image from containerRegistryName.azurecr.io')
+var validationImageDigestPinned = length(validationImageParts) == 2 && validationImageRepository == expectedValidationImageRepository && validationImageHost == expectedRegistryHost && length(validationImageDigest) == 64 && empty(validationImageInvalidDigestCharacters)
+var oidcTenantIdWithoutHyphens = replace(oidcTenantId, '-', '')
+var oidcTenantIdInvalidCharacters = reduce(
+  hexCharacters,
+  oidcTenantIdWithoutHyphens,
+  (remaining, character) => replace(remaining, character, '')
+)
+var oidcTenantIdCanonical = oidcTenantId == toLower(oidcTenantId) && length(oidcTenantIdWithoutHyphens) == 32 && empty(oidcTenantIdInvalidCharacters) && substring(oidcTenantId, 8, 1) == '-' && substring(oidcTenantId, 13, 1) == '-' && substring(oidcTenantId, 18, 1) == '-' && substring(oidcTenantId, 23, 1) == '-'
+var oidcAudienceWithoutHyphens = replace(oidcAudience, '-', '')
+var oidcAudienceInvalidCharacters = reduce(
+  hexCharacters,
+  oidcAudienceWithoutHyphens,
+  (remaining, character) => replace(remaining, character, '')
+)
+var oidcAudienceCanonical = oidcAudience == toLower(oidcAudience) && length(oidcAudienceWithoutHyphens) == 32 && empty(oidcAudienceInvalidCharacters) && substring(oidcAudience, 8, 1) == '-' && substring(oidcAudience, 13, 1) == '-' && substring(oidcAudience, 18, 1) == '-' && substring(oidcAudience, 23, 1) == '-'
+var canonicalOidcIssuer = 'https://login.microsoftonline.com/${oidcTenantId}/v2.0'
+var canonicalOidcJwksUrl = 'https://login.microsoftonline.com/${oidcTenantId}/discovery/v2.0/keys'
+var oidcTrustInputsCanonical = oidcTenantIdCanonical && oidcAudienceCanonical && oidcIssuer == canonicalOidcIssuer && oidcJwksUrl == canonicalOidcJwksUrl
+var deployValidatedApplication = !oidcTrustInputsCanonical
+  ? fail('oidcTenantId, oidcAudience, oidcIssuer, and oidcJwksUrl must be canonical tenant-bound Entra inputs')
+  : !deployApplication
+    ? false
+    : imageDigestPinned
+      ? true
+      : fail('deployApplication requires a lowercase digest-pinned runtime image from containerRegistryName.azurecr.io/sentinelgrc')
 var deployValidatedJobs = !deployValidationJobs
   ? false
   : !deployValidatedApplication
-    ? fail('deployValidationJobs requires deployApplication=true with a valid runtime image')
-    : validationImageDigestPinned
-      ? true
-      : fail('deployValidationJobs requires a lowercase digest-pinned validation image from containerRegistryName.azurecr.io')
+    ? fail('deployValidationJobs requires deployApplication=true with valid canonical OIDC inputs and a valid runtime image')
+    : !validationImageDigestPinned
+      ? fail('deployValidationJobs requires a lowercase digest-pinned validation image from containerRegistryName.azurecr.io/sentinelgrc-assurance')
+      : validationImageDigest == containerImageDigest
+        ? fail('deployValidationJobs requires runtime and validation images to use separate sha256 digests')
+        : true
 var deployValidatedMonitoring = !deployMonitoringAlerts
   ? false
   : deployValidatedApplication
     ? true
-    : fail('deployMonitoringAlerts requires deployApplication=true with a valid runtime image')
+    : fail('deployMonitoringAlerts requires deployApplication=true with valid canonical OIDC inputs and a valid runtime image')
 
 var keyVaultSecretsUserRoleId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',

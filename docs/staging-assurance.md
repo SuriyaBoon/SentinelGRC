@@ -36,6 +36,7 @@ Run the existing Azure input preflight without mutation:
 ```powershell
 .\scripts\Test-AzureStagingInputs.ps1 `
   -ContainerImage "example.azurecr.io/sentinelgrc@sha256:<64-hex-digest>" `
+  -ValidationContainerImage "example.azurecr.io/sentinelgrc-assurance@sha256:<64-hex-digest>" `
   -RegistrySubscriptionId "<subscription-guid>" `
   -RegistryResourceGroup "<resource-group>" `
   -RegistryName "<registry-name>" `
@@ -48,7 +49,11 @@ Run the existing Azure input preflight without mutation:
 For the Entra v2 deployment path, `OidcAudience` is the bare application client
 ID GUID verified against the token `aud` claim. Managed-identity clients still
 request `api://<application-guid>/.default`; the request scope and verified
-claim value are separate parts of the contract.
+claim value are separate parts of the contract. The preflight binds the issuer
+and JWKS URL to the canonical Microsoft Entra v2 endpoints derived from the
+tenant GUID. It also requires distinct digests in the fixed `sentinelgrc` and
+`sentinelgrc-assurance` repositories. These are offline repository checks and
+grant no Azure live-gate credit.
 
 Run the repository-only staging package:
 

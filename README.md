@@ -4,25 +4,27 @@
 
 **Stack:** Python 3.12, SQLite for local labs, PostgreSQL for the canonical shared-state staging path, Gunicorn/WSGI, JSON and JSONL fixtures, PowerShell posture collectors, Docker, and GitHub Actions.
 
-**Status:** Development paused on 17 August 2026. Portfolio / concept MVP; not production-ready. Launch verdict: `NO_GO_PENDING_LIVE_EVIDENCE`.
+**Status:** Governed development has resumed for repository preflight work. Portfolio / concept MVP; not production-ready. Launch verdict: `NO_GO_PENDING_LIVE_EVIDENCE`.
 
-## Project checkpoint at pause
+## Governed resume checkpoint
 
-SentinelGRC development is intentionally paused at the verified source baseline
-`332c912a993f86bcd5b0e3a47c3a0d2e86d9ae84` (merged PR #123). The repository
-is not archived, its evidence has not been deleted, and this pause does not
-grant production or deployment approval.
+SentinelGRC was paused on 17 August 2026 at verified source baseline
+`332c912a993f86bcd5b0e3a47c3a0d2e86d9ae84` (merged PR #123). Governed source
+changes later resumed. The repository is not archived, its evidence has not
+been deleted, and neither the historical pause nor the current offline work
+grants production or deployment approval.
 
-| Workstream | State at pause | Claim boundary |
+| Workstream | Current state | Claim boundary |
 | --- | --- | --- |
 | Historical evidence archive | Complete | Sanitized evidence from 4-5 August 2026 is retained, but it belongs to an older source revision and grants no current live-gate credit. |
 | Evidence collector | Complete | Repository-controlled evidence collection is implemented and tested offline. |
 | Hermetic failure tests | Complete | Dependency loss, restart/replay, readiness, and fail-closed paths are covered by repository tests. |
 | Load/soak baseline | Complete | The hermetic baseline is repository evidence only; it is not Azure capacity or production SLO proof. |
 | Security assessment | Complete for the offline pre-live gate | The reviewed deterministic assessment passed for the paused source baseline; live identity, network, platform, and recovery controls remain unproven. |
-| IaC preflight | Pending | Revalidate Bicep inputs, digest binding, cost controls, and the target subscription before any deployment. |
+| Repository/offline IaC preflight | Complete for the source revision containing this document | PowerShell and Bicep fail closed on noncanonical Entra endpoints, wrong image repositories, mutable images, and reused runtime/validation digests. This performs no Azure mutation. |
+| Target Azure preflight | Pending | Subscription, region, provider registration, pricing and budget approval, cleanup ownership, and reviewed `what-if` output remain operator-owned prerequisites. |
 | Connector contracts | Pending | Reconfirm each supporting repository independently; no portfolio connector is production-connected by this checkpoint. |
-| Azure Live Validation | Pending: 0 of 8 current gates credited | Historical staging evidence cannot replace fresh validation against the paused source baseline. |
+| Azure Live Validation | Pending: 0 of 8 current gates credited | Historical staging evidence cannot replace fresh validation against the current source revision. |
 | Target-environment security and recovery review | Pending | Complete the security assessment, access review, and disaster-recovery procedures with sanitized source-bound evidence before pilot entry. |
 | Limited Production Pilot | Not started | Requires all live gates, approved scope, capacity/failure-duration evidence, access review, disaster-recovery evidence, and security/go-live approval. |
 | Product launch verdict | **NO-GO** | Keep `NO_GO_PENDING_LIVE_EVIDENCE` until live validation, pilot evidence, and an explicit human GO decision exist. |
@@ -40,8 +42,8 @@ Resume through a new governed Agentic Engineering task rather than editing
 1. Reverify the current `main` SHA, required CI checks, dependency scan,
    SonarCloud result, and review status; do not assume this checkpoint is still
    current after new commits or dependency changes.
-2. Complete the IaC preflight and connector-contract review before requesting
-   a new Azure staging deployment.
+2. Use the completed repository IaC preflight and complete the
+   connector-contract review before requesting a new Azure staging deployment.
 3. Re-establish an explicitly approved Azure budget and cleanup plan. Do not
    switch a subscription to Pay-As-You-Go without separate human authorisation.
 4. Run all eight live gates against digest-pinned images: separated identities,
@@ -54,8 +56,8 @@ Resume through a new governed Agentic Engineering task rather than editing
 6. Only then conduct the limited production pilot and request a separate human
    GO or NO-GO decision.
 
-No active development, automatic deployment, automatic merge, mTLS claim, or
-production approval is implied while the project is paused.
+No automatic deployment, automatic merge, mTLS claim, Azure live-gate credit,
+or production approval is implied by governed repository development.
 
 ## What it is
 

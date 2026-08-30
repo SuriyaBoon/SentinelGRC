@@ -1,3 +1,4 @@
+import json
 import re
 import shutil
 import subprocess
@@ -9,6 +10,7 @@ ROOT = Path(__file__).resolve().parent
 MAIN = ROOT / "infra" / "azure" / "main.bicep"
 PARAMS = ROOT / "infra" / "azure" / "main.staging.bicepparam.example"
 PREFLIGHT = ROOT / "scripts" / "Test-AzureStagingInputs.ps1"
+STAGING_ASSURANCE = ROOT / "docs" / "staging-assurance.md"
 SECURITY_REMEDIATION = ROOT / "docs" / "sonar-security-remediation.md"
 RESOURCE_ELEMENT_ORDER = {
     "parent": 0,
@@ -162,7 +164,7 @@ class AzureIacPolicyTests(unittest.TestCase):
             self.params,
             r"param\s+databaseAdministratorPassword\s*=",
         )
-        self.assertIn("@sha256:[a-f0-9]{64}", self.preflight)
+        self.assertIn("@sha256:(?<digest>[a-f0-9]{64})", self.preflight)
         self.assertIn("ValidationContainerImage", self.preflight)
         self.assertIn("validation_image_is_digest_pinned", self.preflight)
         self.assertIn("param validationContainerImage", self.params)
@@ -174,16 +176,33 @@ class AzureIacPolicyTests(unittest.TestCase):
 
     def test_images_are_bound_to_the_acr_receiving_pull_permissions(self):
         self.assertIn("expectedRegistryHost = toLower('${containerRegistryName}.azurecr.io')", self.source)
+        self.assertIn("expectedRuntimeImageRepository = '${expectedRegistryHost}/sentinelgrc'", self.source)
+        self.assertIn("expectedValidationImageRepository = '${expectedRegistryHost}/sentinelgrc-assurance'", self.source)
+        self.assertIn("containerImageRepository == expectedRuntimeImageRepository", self.source)
+        self.assertIn("validationImageRepository == expectedValidationImageRepository", self.source)
         self.assertIn("containerImageHost == expectedRegistryHost", self.source)
         self.assertIn("validationImageHost == expectedRegistryHost", self.source)
         self.assertNotIn("monitoringImage", self.source)
         self.assertIn("image_registry_bound = $true", self.preflight)
         self.assertIn("validation_image_registry_bound = $true", self.preflight)
 
-    def _run_preflight(self, container_image, validation_image):
+    def _run_preflight(
+        self,
+        container_image,
+        validation_image,
+        *,
+        issuer=None,
+        jwks=None,
+        tenant="11111111-1111-1111-1111-111111111111",
+        audience="22222222-2222-2222-2222-222222222222",
+    ):
         powershell = shutil.which("pwsh") or shutil.which("powershell")
         if powershell is None:
             self.skipTest("PowerShell is unavailable")
+        if issuer is None:
+            issuer = f"https://login.microsoftonline.com/{tenant}/v2.0"
+        if jwks is None:
+            jwks = f"https://login.microsoftonline.com/{tenant}/discovery/v2.0/keys"
         command = [
             powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
             "-File", str(PREFLIGHT),
@@ -191,31 +210,135 @@ class AzureIacPolicyTests(unittest.TestCase):
             "-ValidationContainerImage", validation_image,
             "-RegistrySubscriptionId", "11111111-1111-1111-1111-111111111111",
             "-RegistryResourceGroup", "sentinel-staging", "-RegistryName", "expectedacr",
-            "-OidcIssuer", "https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/v2.0",
-            "-OidcAudience", "22222222-2222-2222-2222-222222222222",
-            "-OidcTenantId", "11111111-1111-1111-1111-111111111111",
-            "-OidcJwksUrl", "https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/discovery/v2.0/keys",
+            "-OidcIssuer", issuer,
+            "-OidcAudience", audience,
+            "-OidcTenantId", tenant,
+            "-OidcJwksUrl", jwks,
         ]
         return subprocess.run(command, capture_output=True, text=True, check=False)
 
-    def test_preflight_accepts_only_matching_immutable_acr_images(self):
-        digest = "a" * 64
-        runtime = f"expectedacr.azurecr.io/sentinelgrc@sha256:{digest}"
-        validation = f"expectedacr.azurecr.io/sentinelgrc-assurance@sha256:{digest}"
+    def test_preflight_accepts_only_separate_repository_bound_images(self):
+        runtime_digest = "a" * 64
+        validation_digest = "b" * 64
+        runtime = f"expectedacr.azurecr.io/sentinelgrc@sha256:{runtime_digest}"
+        validation = f"expectedacr.azurecr.io/sentinelgrc-assurance@sha256:{validation_digest}"
         accepted = self._run_preflight(runtime, validation)
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        evidence = json.loads(accepted.stdout)
+        for field in (
+            "runtime_repository_bound",
+            "validation_repository_bound",
+            "image_separation_enforced",
+            "tenant_bound_endpoints",
+        ):
+            with self.subTest(field=field):
+                self.assertIs(evidence[field], True)
+        same_digest_validation = (
+            f"expectedacr.azurecr.io/sentinelgrc-assurance@sha256:{runtime_digest}"
+        )
         for rejected_runtime, rejected_validation in (
-            (f"otheracr.azurecr.io/sentinelgrc@sha256:{digest}", validation),
-            (runtime, f"otheracr.azurecr.io/sentinelgrc-assurance@sha256:{digest}"),
+            (runtime, runtime),
+            (validation, validation),
+            (validation, runtime),
+            (f"expectedacr.azurecr.io/arbitrary@sha256:{runtime_digest}", validation),
+            (runtime, f"expectedacr.azurecr.io/arbitrary@sha256:{validation_digest}"),
+            (f"otheracr.azurecr.io/sentinelgrc@sha256:{runtime_digest}", validation),
+            (runtime, f"otheracr.azurecr.io/sentinelgrc-assurance@sha256:{validation_digest}"),
             ("expectedacr.azurecr.io/sentinelgrc:latest", validation),
+            (runtime, "expectedacr.azurecr.io/sentinelgrc-assurance:latest"),
+            (runtime, same_digest_validation),
+            (f"expectedacr.azurecr.io/SentinelGRC@sha256:{runtime_digest}", validation),
         ):
             with self.subTest(runtime=rejected_runtime, validation=rejected_validation):
                 rejected = self._run_preflight(rejected_runtime, rejected_validation)
                 self.assertNotEqual(rejected.returncode, 0)
 
+    def test_preflight_rejects_noncanonical_entra_inputs(self):
+        runtime = f"expectedacr.azurecr.io/sentinelgrc@sha256:{'a' * 64}"
+        validation = (
+            f"expectedacr.azurecr.io/sentinelgrc-assurance@sha256:{'b' * 64}"
+        )
+        tenant = "aaaaaaaa-1111-1111-1111-111111111111"
+        audience = "bbbbbbbb-2222-2222-2222-222222222222"
+        other_tenant = "cccccccc-3333-3333-3333-333333333333"
+        issuer = f"https://login.microsoftonline.com/{tenant}/v2.0"
+        jwks = f"https://login.microsoftonline.com/{tenant}/discovery/v2.0/keys"
+        cases = (
+            ("attacker pair", {"issuer": "https://attacker.invalid/v2.0", "jwks": "https://attacker.invalid/keys"}),
+            ("wrong issuer host", {"issuer": f"https://attacker.invalid/{tenant}/v2.0", "jwks": jwks}),
+            ("wrong jwks host", {"issuer": issuer, "jwks": f"https://attacker.invalid/{tenant}/keys"}),
+            ("cross-tenant issuer", {"issuer": f"https://login.microsoftonline.com/{other_tenant}/v2.0", "jwks": jwks}),
+            ("cross-tenant jwks", {"issuer": issuer, "jwks": f"https://login.microsoftonline.com/{other_tenant}/discovery/v2.0/keys"}),
+            ("issuer port", {"issuer": f"https://login.microsoftonline.com:443/{tenant}/v2.0", "jwks": jwks}),
+            ("jwks port", {"issuer": issuer, "jwks": f"https://login.microsoftonline.com:443/{tenant}/discovery/v2.0/keys"}),
+            ("issuer query", {"issuer": f"{issuer}?x=1", "jwks": jwks}),
+            ("jwks fragment", {"issuer": issuer, "jwks": f"{jwks}#x"}),
+            ("issuer trailing slash", {"issuer": f"{issuer}/", "jwks": jwks}),
+            ("jwks trailing slash", {"issuer": issuer, "jwks": f"{jwks}/"}),
+            ("noncanonical tenant", {"issuer": issuer, "jwks": jwks, "tenant": tenant.upper()}),
+            ("noncanonical audience", {"issuer": issuer, "jwks": jwks, "audience": audience.upper()}),
+        )
+        for name, overrides in cases:
+            with self.subTest(case=name):
+                rejected = self._run_preflight(runtime, validation, **overrides)
+                self.assertNotEqual(rejected.returncode, 0)
+
+    def test_bicep_consumes_repository_digest_and_oidc_guards(self):
+        runtime_predicate = self.source.split(
+            "var imageDigestPinned =", 1
+        )[1].split("var validationImageParts", 1)[0]
+        validation_predicate = self.source.split(
+            "var validationImageDigestPinned =", 1
+        )[1].split("var canonicalOidcIssuer", 1)[0]
+        self.assertIn(
+            "containerImageRepository == expectedRuntimeImageRepository",
+            runtime_predicate,
+        )
+        self.assertIn(
+            "validationImageRepository == expectedValidationImageRepository",
+            validation_predicate,
+        )
+        application = self.source.split(
+            "var deployValidatedApplication", 1
+        )[1].split("var deployValidatedJobs", 1)[0]
+        self.assertIn("!oidcTrustInputsCanonical", application)
+        self.assertLess(
+            application.index("!oidcTrustInputsCanonical"),
+            application.index("!deployApplication"),
+        )
+        trust_inputs = self.source.split(
+            "var oidcTenantIdWithoutHyphens", 1
+        )[1].split("var deployValidatedApplication", 1)[0]
+        for contract in (
+            "var oidcTenantIdCanonical =",
+            "var oidcAudienceCanonical =",
+            "length(oidcTenantIdWithoutHyphens) == 32",
+            "length(oidcAudienceWithoutHyphens) == 32",
+            "substring(oidcTenantId, 23, 1) == '-'",
+            "substring(oidcAudience, 23, 1) == '-'",
+            "oidcTenantIdCanonical && oidcAudienceCanonical",
+        ):
+            with self.subTest(contract=contract):
+                self.assertIn(contract, trust_inputs)
+        jobs = self.source.split("var deployValidatedJobs", 1)[1].split(
+            "var deployValidatedMonitoring", 1
+        )[0]
+        self.assertIn("validationImageDigest == containerImageDigest", jobs)
+
+    def test_staging_assurance_documents_both_required_images(self):
+        assurance = STAGING_ASSURANCE.read_text(encoding="utf-8")
+        self.assertRegex(
+            assurance,
+            r'-ContainerImage\s+"example\.azurecr\.io/sentinelgrc@sha256:<64-hex-digest>"',
+        )
+        self.assertRegex(
+            assurance,
+            r'-ValidationContainerImage\s+"example\.azurecr\.io/sentinelgrc-assurance@sha256:<64-hex-digest>"',
+        )
+
     def test_requested_application_jobs_and_monitoring_fail_instead_of_omitting(self):
         for contract in (
-            "var deployValidatedApplication = !deployApplication",
+            "var deployValidatedApplication = !oidcTrustInputsCanonical",
             "var deployValidatedJobs = !deployValidationJobs",
             "var deployValidatedMonitoring = !deployMonitoringAlerts",
             "deployValidationJobs requires deployApplication=true",
@@ -243,7 +366,8 @@ class AzureIacPolicyTests(unittest.TestCase):
                 self.assertIn(f"name: '{environment_name}'", self.source)
         self.assertIn("[Guid]::TryParse($OidcTenantId", self.preflight)
         self.assertIn("[Guid]::TryParse($OidcAudience", self.preflight)
-        self.assertIn("$jwks.Scheme -ne \"https\"", self.preflight)
+        self.assertIn("$OidcIssuer -cne $canonicalIssuer", self.preflight)
+        self.assertIn("$OidcJwksUrl -cne $canonicalJwksUrl", self.preflight)
         self.assertIn(
             "param oidcAudience = 'REPLACE_SENTINEL_APP_ID'",
             self.params,
