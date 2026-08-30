@@ -23,7 +23,7 @@ grants production or deployment approval.
 | Security assessment | Complete for the offline pre-live gate | The reviewed deterministic assessment passed for the paused source baseline; live identity, network, platform, and recovery controls remain unproven. |
 | Repository/offline IaC preflight | Complete for the source revision containing this document | PowerShell and Bicep fail closed on noncanonical Entra endpoints, wrong image repositories, mutable images, and reused runtime/validation digests. This performs no Azure mutation. |
 | Target Azure preflight | Pending | Subscription, region, provider registration, pricing and budget approval, cleanup ownership, and reviewed `what-if` output remain operator-owned prerequisites. |
-| Connector contracts | Pending | Reconfirm each supporting repository independently; no portfolio connector is production-connected by this checkpoint. |
+| Connector contracts | Complete for the audited offline source revisions | The signed-event, LogWatcher, JML-Automation, and Mini-SOAR boundaries fail closed under repository tests and are bound to the revisions in [`docs/connector-contracts.md`](docs/connector-contracts.md). No connector is claimed production-connected, and this grants no live-gate credit. |
 | Azure Live Validation | Pending: 0 of 8 current gates credited | Historical staging evidence cannot replace fresh validation against the current source revision. |
 | Target-environment security and recovery review | Pending | Complete the security assessment, access review, and disaster-recovery procedures with sanitized source-bound evidence before pilot entry. |
 | Limited Production Pilot | Not started | Requires all live gates, approved scope, capacity/failure-duration evidence, access review, disaster-recovery evidence, and security/go-live approval. |
@@ -809,11 +809,15 @@ contracts are not proof that their external controls have been deployed.
 
 ## Planned integration
 
+The source revisions and fail-closed rules behind these offline claims are
+recorded in [`docs/connector-contracts.md`](docs/connector-contracts.md).
+Changing any supporting repository revision requires a new boundary audit.
+
 | Integration | Current status |
 | --- | --- |
 | LogWatcher | **Connected and validated at synthetic-lab level.** The tracked fixture demonstrates 20 source events, 3 alerts, and idempotent finding replay. A strict `security_alert.v1` staging contract and offline lifecycle rehearsal are also included; no live source transport has been validated. |
-| JML-Automation | **Implemented as a read-only portfolio bridge and covered by repository tests.** It requires closed requests with passing verification records. No live directory changes are made. |
-| Mini-SOAR | **Implemented as a synthetic-evidence bridge and covered by repository tests.** It accepts `synthetic-lab` evidence and requires independent verification by default. |
+| JML-Automation | **Implemented as a read-only portfolio bridge and covered by repository tests.** It requires a closed request, a passing verification record bound to that request, and a verifier distinct from the requester and executor. No live directory changes are made. |
+| Mini-SOAR | **Implemented as a synthetic-evidence bridge and covered by repository tests.** It binds alert, finding, and verification identities across a `synthetic-lab` bundle and requires a verifier distinct from the executor by default. |
 | Windows, Elastic, SIEM, ITSM, Azure Blob, and SSO | **Adapters or contracts exist, but they have not been validated as live integrations in an organisation-owned environment.** |
 
 For the Azure IaC boundary, exact manual deployment steps, rollback, and

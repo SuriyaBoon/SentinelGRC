@@ -118,6 +118,11 @@ integration. The JSON schema is
 `schemas/security-alert.v1.schema.json`; runtime validation is implemented in
 `security_alert_contract.py`.
 
+The audited upstream revisions and the separate LogWatcher, JML-Automation,
+Mini-SOAR, and signed-event trust rules are recorded in
+[`connector-contracts.md`](connector-contracts.md). Those checks close only the
+source-bound offline contract gate; they do not establish a live connector.
+
 ```mermaid
 sequenceDiagram
     participant LW as LogWatcher export

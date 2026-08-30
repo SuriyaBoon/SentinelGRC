@@ -3,7 +3,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from connectors import ConnectorEventStore, ingest_event, sign_event
+from connectors import (
+    ConnectorEventConflictError,
+    ConnectorEventStore,
+    ingest_event,
+    sign_event,
+)
 
 
 class ConnectorTests(unittest.TestCase):
@@ -52,3 +57,58 @@ class ConnectorTests(unittest.TestCase):
                               signature=self.signature, secret="connector-secret", store=self.store)
         self.assertEqual(first["status"], "accepted")
         self.assertEqual(second["status"], "accepted")
+
+    def test_same_source_event_identity_cannot_change_payload(self):
+        ingest_event(
+            self.raw,
+            source="siem",
+            event_id="evt-1",
+            signature=self.signature,
+            secret="connector-secret",
+            store=self.store,
+        )
+        changed = json.dumps(
+            {"asset_id": "APP-1", "status": "closed"}
+        ).encode()
+
+        with self.assertRaisesRegex(
+            ConnectorEventConflictError, "belongs to a different payload"
+        ):
+            ingest_event(
+                changed,
+                source="siem",
+                event_id="evt-1",
+                signature=sign_event(changed, "connector-secret"),
+                secret="connector-secret",
+                store=self.store,
+            )
+
+        replay = ingest_event(
+            self.raw,
+            source="siem",
+            event_id="evt-1",
+            signature=self.signature,
+            secret="connector-secret",
+            store=self.store,
+        )
+        self.assertEqual(replay["status"], "duplicate")
+
+    def test_event_identity_must_be_canonical_before_reservation(self):
+        cases = (
+            ("SIEM", "evt-1"),
+            (" siem", "evt-1"),
+            ("siem", " evt-1"),
+            ("siem", "evt\n1"),
+            ("siem", "x" * 129),
+        )
+        for source, event_id in cases:
+            with self.subTest(source=source, event_id=event_id):
+                with self.assertRaises(ValueError):
+                    ingest_event(
+                        self.raw,
+                        source=source,
+                        event_id=event_id,
+                        signature=self.signature,
+                        secret="connector-secret",
+                        store=self.store,
+                    )

@@ -3,37 +3,22 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from datetime import datetime, timezone
 from typing import Any
 
 from contract_validation import (
+    EVIDENCE_REFERENCE,
+    EVIDENCE_REFERENCE_PATTERN,
+    IDENTIFIER,
+    SOURCE_IDENTIFIER,
+    SOURCE_IDENTIFIER_PATTERN,
     is_canonical_text,
     parse_rfc3339,
 )
 
 
-IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
-SOURCE_IDENTIFIER_PATTERN = r"^[a-z0-9][a-z0-9._:-]{0,127}$"
-SOURCE_IDENTIFIER = re.compile(SOURCE_IDENTIFIER_PATTERN, re.ASCII)
 ASSET_SCHEMA_VERSION = "asset_context.v1"
 TICKET_SCHEMA_VERSION = "remediation_ticket.v1"
-# Custom ports are intentionally excluded: no connector contract requires them.
-EVIDENCE_HOST_PATTERN = (
-    r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
-    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*"
-)
-EVIDENCE_TEXT_PATTERN = r"[^\s\u0000-\u001F\u007F\u0080-\u009F\u200B\u2028\u2029\uFEFF]"
-EVIDENCE_REFERENCE_PATTERN = (
-    r"^(?:urn:"
-    + EVIDENCE_TEXT_PATTERN
-    + r"+|(?:https|azblob|sample)://"
-    + EVIDENCE_HOST_PATTERN
-    + r"(?:[/?#]"
-    + EVIDENCE_TEXT_PATTERN
-    + r"*)?)$"
-)
-EVIDENCE_REFERENCE = re.compile(EVIDENCE_REFERENCE_PATTERN)
 CRITICALITIES = {"low", "medium", "high", "critical"}
 ASSET_STATUSES = {"active", "inactive", "retired", "unknown"}
 TICKET_STATUSES = {"new", "assigned", "in_progress", "on_hold", "resolved", "closed"}

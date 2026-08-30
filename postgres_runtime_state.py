@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import time
 import uuid
-import re
 from contextlib import closing
 from typing import Any
 
+from connectors import (
+    ConnectorEventConflictError,
+    validate_connector_event_identity,
+)
 from persistence import Database
 from outbox_delivery import GovernanceOutboxQueue as GovernanceOutbox
 
@@ -23,12 +26,7 @@ class PostgresConnectorEventStore:
         self.database = database
 
     def reserve(self, event_id: str, source: str, payload_hash: str) -> bool:
-        if (
-            not event_id.strip()
-            or not source.strip()
-            or re.fullmatch(r"[0-9a-f]{64}", payload_hash) is None
-        ):
-            raise ValueError("source, event_id, and SHA-256 payload_hash are required")
+        validate_connector_event_identity(event_id, source, payload_hash)
         with closing(self.database.connect()) as db:
             cursor = db.execute(
                 "INSERT INTO connector_events("
@@ -36,8 +34,30 @@ class PostgresConnectorEventStore:
                 ") VALUES (?, ?, ?, ?) ON CONFLICT(source, event_id) DO NOTHING",
                 (source, event_id, payload_hash, time.time()),
             )
+            accepted = cursor.rowcount == 1
+            if not accepted:
+                existing = db.execute(
+                    "SELECT payload_hash FROM connector_events "
+                    "WHERE source = ? AND event_id = ?",
+                    (source, event_id),
+                ).fetchone()
+                if existing is None:
+                    db.rollback()
+                    raise RuntimeError(
+                        "connector event reservation conflict could not be resolved"
+                    )
+                stored_hash = (
+                    existing["payload_hash"]
+                    if hasattr(existing, "keys")
+                    else existing[0]
+                )
+                if stored_hash != payload_hash:
+                    db.rollback()
+                    raise ConnectorEventConflictError(
+                        "connector event identity belongs to a different payload"
+                    )
             db.commit()
-            return cursor.rowcount == 1
+            return accepted
 
 
 class PostgresJobQueue:
