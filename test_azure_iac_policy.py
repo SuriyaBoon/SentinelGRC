@@ -261,8 +261,13 @@ class AzureIacPolicyTests(unittest.TestCase):
         tenant = "aaaaaaaa-1111-1111-1111-111111111111"
         audience = "bbbbbbbb-2222-2222-2222-222222222222"
         other_tenant = "cccccccc-3333-3333-3333-333333333333"
+        empty_guid = "00000000-0000-0000-0000-000000000000"
         issuer = f"https://login.microsoftonline.com/{tenant}/v2.0"
         jwks = f"https://login.microsoftonline.com/{tenant}/discovery/v2.0/keys"
+        empty_guid_issuer = f"https://login.microsoftonline.com/{empty_guid}/v2.0"
+        empty_guid_jwks = (
+            f"https://login.microsoftonline.com/{empty_guid}/discovery/v2.0/keys"
+        )
         cases = (
             ("attacker pair", {"issuer": "https://attacker.invalid/v2.0", "jwks": "https://attacker.invalid/keys"}),
             ("wrong issuer host", {"issuer": f"https://attacker.invalid/{tenant}/v2.0", "jwks": jwks}),
@@ -277,6 +282,8 @@ class AzureIacPolicyTests(unittest.TestCase):
             ("jwks trailing slash", {"issuer": issuer, "jwks": f"{jwks}/"}),
             ("noncanonical tenant", {"issuer": issuer, "jwks": jwks, "tenant": tenant.upper()}),
             ("noncanonical audience", {"issuer": issuer, "jwks": jwks, "audience": audience.upper()}),
+            ("empty tenant GUID", {"issuer": empty_guid_issuer, "jwks": empty_guid_jwks, "tenant": empty_guid}),
+            ("empty audience GUID", {"issuer": issuer, "jwks": jwks, "audience": empty_guid}),
         )
         for name, overrides in cases:
             with self.subTest(case=name):
@@ -301,7 +308,12 @@ class AzureIacPolicyTests(unittest.TestCase):
         application = self.source.split(
             "var deployValidatedApplication", 1
         )[1].split("var deployValidatedJobs", 1)[0]
+        self.assertIn("validationImageDigest == containerImageDigest", application)
         self.assertIn("!oidcTrustInputsCanonical", application)
+        self.assertLess(
+            application.index("validationImageDigest == containerImageDigest"),
+            application.index("!deployApplication"),
+        )
         self.assertLess(
             application.index("!oidcTrustInputsCanonical"),
             application.index("!deployApplication"),
@@ -316,6 +328,8 @@ class AzureIacPolicyTests(unittest.TestCase):
             "length(oidcAudienceWithoutHyphens) == 32",
             "substring(oidcTenantId, 23, 1) == '-'",
             "substring(oidcAudience, 23, 1) == '-'",
+            "oidcTenantId != emptyGuid",
+            "oidcAudience != emptyGuid",
             "oidcTenantIdCanonical && oidcAudienceCanonical",
         ):
             with self.subTest(contract=contract):
@@ -323,7 +337,7 @@ class AzureIacPolicyTests(unittest.TestCase):
         jobs = self.source.split("var deployValidatedJobs", 1)[1].split(
             "var deployValidatedMonitoring", 1
         )[0]
-        self.assertIn("validationImageDigest == containerImageDigest", jobs)
+        self.assertNotIn("validationImageDigest == containerImageDigest", jobs)
 
     def test_staging_assurance_documents_both_required_images(self):
         assurance = STAGING_ASSURANCE.read_text(encoding="utf-8")
@@ -338,7 +352,7 @@ class AzureIacPolicyTests(unittest.TestCase):
 
     def test_requested_application_jobs_and_monitoring_fail_instead_of_omitting(self):
         for contract in (
-            "var deployValidatedApplication = !oidcTrustInputsCanonical",
+            "var deployValidatedApplication = validationImageDigest == containerImageDigest",
             "var deployValidatedJobs = !deployValidationJobs",
             "var deployValidatedMonitoring = !deployMonitoringAlerts",
             "deployValidationJobs requires deployApplication=true",

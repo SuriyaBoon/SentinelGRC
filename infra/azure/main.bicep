@@ -131,6 +131,7 @@ var evidenceContainerName = 'evidence'
 var auditContainerName = 'audit-archive'
 var databaseSecretName = 'sentinel-database-url'
 var hexCharacters = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
+var emptyGuid = '00000000-0000-0000-0000-000000000000'
 var expectedRegistryHost = toLower('${containerRegistryName}.azurecr.io')
 var expectedRuntimeImageRepository = '${expectedRegistryHost}/sentinelgrc'
 var expectedValidationImageRepository = '${expectedRegistryHost}/sentinelgrc-assurance'
@@ -162,33 +163,33 @@ var oidcTenantIdInvalidCharacters = reduce(
   oidcTenantIdWithoutHyphens,
   (remaining, character) => replace(remaining, character, '')
 )
-var oidcTenantIdCanonical = oidcTenantId == toLower(oidcTenantId) && length(oidcTenantIdWithoutHyphens) == 32 && empty(oidcTenantIdInvalidCharacters) && substring(oidcTenantId, 8, 1) == '-' && substring(oidcTenantId, 13, 1) == '-' && substring(oidcTenantId, 18, 1) == '-' && substring(oidcTenantId, 23, 1) == '-'
+var oidcTenantIdCanonical = oidcTenantId != emptyGuid && oidcTenantId == toLower(oidcTenantId) && length(oidcTenantIdWithoutHyphens) == 32 && empty(oidcTenantIdInvalidCharacters) && substring(oidcTenantId, 8, 1) == '-' && substring(oidcTenantId, 13, 1) == '-' && substring(oidcTenantId, 18, 1) == '-' && substring(oidcTenantId, 23, 1) == '-'
 var oidcAudienceWithoutHyphens = replace(oidcAudience, '-', '')
 var oidcAudienceInvalidCharacters = reduce(
   hexCharacters,
   oidcAudienceWithoutHyphens,
   (remaining, character) => replace(remaining, character, '')
 )
-var oidcAudienceCanonical = oidcAudience == toLower(oidcAudience) && length(oidcAudienceWithoutHyphens) == 32 && empty(oidcAudienceInvalidCharacters) && substring(oidcAudience, 8, 1) == '-' && substring(oidcAudience, 13, 1) == '-' && substring(oidcAudience, 18, 1) == '-' && substring(oidcAudience, 23, 1) == '-'
+var oidcAudienceCanonical = oidcAudience != emptyGuid && oidcAudience == toLower(oidcAudience) && length(oidcAudienceWithoutHyphens) == 32 && empty(oidcAudienceInvalidCharacters) && substring(oidcAudience, 8, 1) == '-' && substring(oidcAudience, 13, 1) == '-' && substring(oidcAudience, 18, 1) == '-' && substring(oidcAudience, 23, 1) == '-'
 var canonicalOidcIssuer = 'https://login.microsoftonline.com/${oidcTenantId}/v2.0'
 var canonicalOidcJwksUrl = 'https://login.microsoftonline.com/${oidcTenantId}/discovery/v2.0/keys'
 var oidcTrustInputsCanonical = oidcTenantIdCanonical && oidcAudienceCanonical && oidcIssuer == canonicalOidcIssuer && oidcJwksUrl == canonicalOidcJwksUrl
-var deployValidatedApplication = !oidcTrustInputsCanonical
-  ? fail('oidcTenantId, oidcAudience, oidcIssuer, and oidcJwksUrl must be canonical tenant-bound Entra inputs')
-  : !deployApplication
-    ? false
-    : imageDigestPinned
-      ? true
-      : fail('deployApplication requires a lowercase digest-pinned runtime image from containerRegistryName.azurecr.io/sentinelgrc')
+var deployValidatedApplication = validationImageDigest == containerImageDigest
+  ? fail('containerImage and validationContainerImage must use separate sha256 digests')
+  : !oidcTrustInputsCanonical
+    ? fail('oidcTenantId, oidcAudience, oidcIssuer, and oidcJwksUrl must be canonical non-empty tenant-bound Entra inputs')
+    : !deployApplication
+      ? false
+      : imageDigestPinned
+        ? true
+        : fail('deployApplication requires a lowercase digest-pinned runtime image from containerRegistryName.azurecr.io/sentinelgrc')
 var deployValidatedJobs = !deployValidationJobs
   ? false
   : !deployValidatedApplication
     ? fail('deployValidationJobs requires deployApplication=true with valid canonical OIDC inputs and a valid runtime image')
     : !validationImageDigestPinned
       ? fail('deployValidationJobs requires a lowercase digest-pinned validation image from containerRegistryName.azurecr.io/sentinelgrc-assurance')
-      : validationImageDigest == containerImageDigest
-        ? fail('deployValidationJobs requires runtime and validation images to use separate sha256 digests')
-        : true
+      : true
 var deployValidatedMonitoring = !deployMonitoringAlerts
   ? false
   : deployValidatedApplication
