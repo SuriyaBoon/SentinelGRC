@@ -58,11 +58,22 @@ verification record, title, owner, severity, and evidence reference across the
 bundle, rejects unsupported kinds, and requires the verifier to differ from the
 execution actor by default.
 
-Before parsing records, the bridge requires `SHA256SUMS.txt`, verifies every
-declared regular-file entry, and requires entries for `alert.json`,
-`finding.json`, and `verification.json`. Symlinks, non-regular files, malformed
-or duplicate manifest entries, missing records, and checksum mismatches fail
-closed. The verified per-record hashes are retained in governed evidence.
+Before parsing records, the bridge requires both `SHA256SUMS.txt` and the
+lowercase SHA-256 of that manifest supplied through a trusted channel outside
+the evidence directory. It authenticates the manifest against that external
+pin, verifies every declared regular-file entry, and requires entries for
+`alert.json`, `finding.json`, and `verification.json`. The exact bytes that pass
+checksum verification are the bytes subsequently parsed. Symlinks,
+non-regular files, missing or malformed external pins, untrusted manifests,
+malformed or duplicate manifest entries, missing records, and checksum
+mismatches fail closed. The externally pinned manifest digest and verified
+per-record hashes are retained in governed evidence.
+
+The bundle-local checksum file is not treated as its own trust anchor. An
+operator must obtain and approve the manifest digest independently (for
+example, from a governed task packet or immutable release record) and pass it
+with `--expected-manifest-sha256`; a digest copied from the same untrusted
+bundle does not establish provenance.
 
 Mini-SOAR identifiers are treated as bounded canonical source text rather than
 SentinelGRC identifiers, so producer-valid values such as path-like asset IDs

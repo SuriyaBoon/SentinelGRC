@@ -238,7 +238,7 @@ flowchart LR
     G --> A["Audit and evidence records"]
 ```
 
-The JML bridge requires a closed request and a passing verification record. The Mini-SOAR bridge accepts synthetic-lab evidence and requires passing verification by default. Both boundaries are implemented and tested locally; neither is a live production integration.
+The JML bridge requires a closed request and a passing verification record. The Mini-SOAR bridge accepts synthetic-lab evidence, requires passing verification by default, and requires the bundle manifest digest to be pinned through a trusted channel outside the evidence directory. Both boundaries are implemented and tested locally; neither is a live production integration.
 
 ### Connected systems map
 
@@ -817,7 +817,7 @@ Changing any supporting repository revision requires a new boundary audit.
 | --- | --- |
 | LogWatcher | **Connected and validated at synthetic-lab level.** The tracked fixture demonstrates 20 source events, 3 alerts, and idempotent finding replay. A strict `security_alert.v1` staging contract and offline lifecycle rehearsal are also included; no live source transport has been validated. |
 | JML-Automation | **Implemented as a read-only portfolio bridge and covered by repository tests.** It requires a closed request, a passing verification record bound to that request, and a verifier distinct from the requester and executor. No live directory changes are made. |
-| Mini-SOAR | **Implemented as a synthetic-evidence bridge and covered by repository tests.** It binds alert, finding, and verification identities across a `synthetic-lab` bundle and requires a verifier distinct from the executor by default. |
+| Mini-SOAR | **Implemented as a synthetic-evidence bridge and covered by repository tests.** It authenticates the bundle manifest against an externally supplied digest, binds alert, finding, and verification identities across a `synthetic-lab` bundle, and requires a verifier distinct from the executor by default. |
 | Windows, Elastic, SIEM, ITSM, Azure Blob, and SSO | **Adapters or contracts exist, but they have not been validated as live integrations in an organisation-owned environment.** |
 
 For the Azure IaC boundary, exact manual deployment steps, rollback, and

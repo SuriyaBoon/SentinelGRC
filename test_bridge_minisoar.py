@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from scripts.bridge_minisoar import run_minisoar_bridge
+from scripts.bridge_minisoar import run_minisoar_bridge as _run_minisoar_bridge
 from state_store import SQLiteStateStore
 
 
@@ -20,6 +20,29 @@ def refresh_bundle_manifest(root: Path) -> None:
         checksums.append(f"{hashlib.sha256(encoded).hexdigest()}  {name}")
     (root / "SHA256SUMS.txt").write_text(
         "\n".join(sorted(checksums)) + "\n", encoding="utf-8"
+    )
+
+
+def bundle_manifest_sha256(root: Path) -> str:
+    return hashlib.sha256((root / "SHA256SUMS.txt").read_bytes()).hexdigest()
+
+
+def run_minisoar_bridge(
+    evidence_dir: str,
+    governance_db: str,
+    **kwargs: object,
+) -> dict[str, object]:
+    manifest_path = Path(evidence_dir) / "SHA256SUMS.txt"
+    expected_manifest_sha256 = (
+        hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        if manifest_path.is_file()
+        else "0" * 64
+    )
+    return _run_minisoar_bridge(
+        evidence_dir,
+        governance_db,
+        expected_manifest_sha256=expected_manifest_sha256,
+        **kwargs,
     )
 
 
@@ -455,6 +478,7 @@ class MiniSoarBridgeTests(unittest.TestCase):
             expected_alert_record_hash = hashlib.sha256(
                 (root / "alert.json").read_bytes()
             ).hexdigest()
+            expected_manifest_hash = bundle_manifest_sha256(root)
             database = root / "governance.db"
 
             result = run_minisoar_bridge(str(root), str(database))
@@ -471,6 +495,10 @@ class MiniSoarBridgeTests(unittest.TestCase):
         self.assertEqual(
             set(stored["details"]["bundle_record_hashes"]),
             set(_EXPORTED_RECORDS),
+        )
+        self.assertEqual(
+            stored["details"]["bundle_manifest_sha256"],
+            expected_manifest_hash,
         )
 
     def test_pinned_producer_identifiers_and_iso_timestamp_are_canonicalized(self):
@@ -553,6 +581,56 @@ class MiniSoarBridgeTests(unittest.TestCase):
                 result["skipped_reason"],
                 "could not verify required evidence bundle files",
             )
+
+    def test_bundle_requires_an_externally_pinned_manifest_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_bundle(root)
+
+            result = _run_minisoar_bridge(
+                str(root), str(root / "governance.db")
+            )
+
+        self.assertEqual(result["errors"], 1)
+        self.assertFalse(result["bundle_read"])
+        self.assertFalse(result["finding_created"])
+        self.assertEqual(
+            result["skipped_reason"],
+            "could not verify required evidence bundle files",
+        )
+
+    def test_regenerated_manifest_cannot_authenticate_forged_bundle_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_bundle(root)
+            trusted_manifest_sha256 = bundle_manifest_sha256(root)
+
+            finding_path = root / "finding.json"
+            finding = json.loads(finding_path.read_text(encoding="utf-8"))
+            finding["executor_id"] = "forged-worker"
+            write_export_record(root, "finding.json", finding)
+
+            verification_path = root / "verification.json"
+            verification = json.loads(
+                verification_path.read_text(encoding="utf-8")
+            )
+            verification["verifier_id"] = "forged-verifier"
+            write_export_record(root, "verification.json", verification)
+            refresh_bundle_manifest(root)
+
+            result = _run_minisoar_bridge(
+                str(root),
+                str(root / "governance.db"),
+                expected_manifest_sha256=trusted_manifest_sha256,
+            )
+
+        self.assertEqual(result["errors"], 1)
+        self.assertFalse(result["bundle_read"])
+        self.assertFalse(result["finding_created"])
+        self.assertEqual(
+            result["skipped_reason"],
+            "could not verify required evidence bundle files",
+        )
 
     def test_unsupported_alert_kind_is_rejected_instead_of_fallback_mapping(self):
         with tempfile.TemporaryDirectory() as directory:
