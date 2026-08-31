@@ -32,7 +32,7 @@ _REQUIRED_BUNDLE_RECORDS = frozenset(
     {"alert.json", "finding.json", "verification.json"}
 )
 _SHA256SUM_LINE = re.compile(
-    r"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._-]{0,127})", re.ASCII
+    r"([0-9a-f]{64}) {2}([A-Za-z0-9][A-Za-z0-9._-]{0,127})", re.ASCII
 )
 _LOWER_SHA256 = re.compile(r"[0-9a-f]{64}", re.ASCII)
 
@@ -197,7 +197,7 @@ def run_minisoar_bridge(
         finding, alert, verification, bundle_hashes, manifest_sha256 = _read_bundle(
             base, expected_manifest_sha256
         )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+    except (OSError, ValueError):
         return _fail(result, "could not verify required evidence bundle files")
 
     result["bundle_read"] = True
