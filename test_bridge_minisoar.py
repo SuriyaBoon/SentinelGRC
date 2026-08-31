@@ -10,6 +10,24 @@ from scripts.bridge_minisoar import run_minisoar_bridge
 from state_store import SQLiteStateStore
 
 
+_EXPORTED_RECORDS = ("alert.json", "finding.json", "verification.json")
+
+
+def refresh_bundle_manifest(root: Path) -> None:
+    checksums = []
+    for name in _EXPORTED_RECORDS:
+        encoded = (root / name).read_bytes()
+        checksums.append(f"{hashlib.sha256(encoded).hexdigest()}  {name}")
+    (root / "SHA256SUMS.txt").write_text(
+        "\n".join(sorted(checksums)) + "\n", encoding="utf-8"
+    )
+
+
+def write_export_record(root: Path, name: str, content: object) -> None:
+    encoded = json.dumps(content, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    (root / name).write_text(encoded, encoding="utf-8")
+
+
 def write_bundle(
     root: Path,
     *,
@@ -62,7 +80,7 @@ def write_bundle(
     ).hexdigest()
     alert_id = "ALT-" + identity_hash[:16].upper()
     finding_id = "FND-" + identity_hash[:16].upper()
-    (root / "finding.json").write_text(json.dumps({
+    finding = {
         "finding_id": finding_id,
         "alert_id": alert_id,
         "title": message,
@@ -74,7 +92,7 @@ def write_bundle(
         "executor_id": executor_id,
         "created_at": "2026-07-22T10:57:44Z",
         "updated_at": "2026-07-22T10:58:00Z",
-    }), encoding="utf-8")
+    }
     alert = {
         **source_payload,
         "evidence_ref": evidence_ref,
@@ -90,15 +108,21 @@ def write_bundle(
             ensure_ascii=False,
         ).encode("utf-8")
     ).hexdigest()
-    (root / "alert.json").write_text(json.dumps(alert), encoding="utf-8")
-    (root / "verification.json").write_text(json.dumps({
+    verification = {
         "finding_id": finding_id,
         "passed": passed,
         "notes": "simulated post-conditions",
         "verifier_id": verifier_id,
         "verification_id": "VER-0000000000000001",
         "verified_at": "2026-07-22T10:59:00Z",
-    }), encoding="utf-8")
+    }
+    for name, content in (
+        ("alert.json", alert),
+        ("finding.json", finding),
+        ("verification.json", verification),
+    ):
+        write_export_record(root, name, content)
+    refresh_bundle_manifest(root)
 
 
 class MiniSoarBridgeTests(unittest.TestCase):
@@ -397,7 +421,8 @@ class MiniSoarBridgeTests(unittest.TestCase):
             finding_path = root / "finding.json"
             finding = json.loads(finding_path.read_text(encoding="utf-8"))
             finding["alert_id"] = "ALT-0000000000000000"
-            finding_path.write_text(json.dumps(finding), encoding="utf-8")
+            write_export_record(root, "finding.json", finding)
+            refresh_bundle_manifest(root)
             result = run_minisoar_bridge(str(root), str(root / "governance.db"))
 
         self.assertEqual(result["errors"], 1)
@@ -411,7 +436,8 @@ class MiniSoarBridgeTests(unittest.TestCase):
             alert_path = root / "alert.json"
             alert = json.loads(alert_path.read_text(encoding="utf-8"))
             alert["message"] = "tampered outside the identity fields"
-            alert_path.write_text(json.dumps(alert), encoding="utf-8")
+            write_export_record(root, "alert.json", alert)
+            refresh_bundle_manifest(root)
 
             result = run_minisoar_bridge(str(root), str(root / "governance.db"))
 
@@ -426,6 +452,9 @@ class MiniSoarBridgeTests(unittest.TestCase):
             expected = json.loads(
                 (root / "alert.json").read_text(encoding="utf-8")
             )["payload_hash"]
+            expected_alert_record_hash = hashlib.sha256(
+                (root / "alert.json").read_bytes()
+            ).hexdigest()
             database = root / "governance.db"
 
             result = run_minisoar_bridge(str(root), str(database))
@@ -435,6 +464,14 @@ class MiniSoarBridgeTests(unittest.TestCase):
 
         self.assertEqual(result["errors"], 0)
         self.assertEqual(stored["details"]["source_payload_hash"], expected)
+        self.assertEqual(
+            stored["details"]["bundle_record_hashes"]["alert.json"],
+            expected_alert_record_hash,
+        )
+        self.assertEqual(
+            set(stored["details"]["bundle_record_hashes"]),
+            set(_EXPORTED_RECORDS),
+        )
 
     def test_pinned_producer_identifiers_and_iso_timestamp_are_canonicalized(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -482,7 +519,8 @@ class MiniSoarBridgeTests(unittest.TestCase):
                 finding_path = root / "finding.json"
                 finding = json.loads(finding_path.read_text(encoding="utf-8"))
                 finding[field] = value
-                finding_path.write_text(json.dumps(finding), encoding="utf-8")
+                write_export_record(root, "finding.json", finding)
+                refresh_bundle_manifest(root)
 
                 result = run_minisoar_bridge(
                     str(root), str(root / "governance.db")
@@ -491,6 +529,30 @@ class MiniSoarBridgeTests(unittest.TestCase):
             self.assertEqual(result["errors"], 1)
             self.assertFalse(result["finding_created"])
             self.assertIn("does not match", result["skipped_reason"])
+
+    def test_modified_sibling_records_fail_bundle_checksum_verification(self):
+        for name, field, value in (
+            ("finding.json", "executor_id", "forged-worker"),
+            ("verification.json", "verifier_id", "forged-verifier"),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                write_bundle(root)
+                record = json.loads((root / name).read_text(encoding="utf-8"))
+                record[field] = value
+                write_export_record(root, name, record)
+
+                result = run_minisoar_bridge(
+                    str(root), str(root / "governance.db")
+                )
+
+            self.assertEqual(result["errors"], 1)
+            self.assertFalse(result["bundle_read"])
+            self.assertFalse(result["finding_created"])
+            self.assertEqual(
+                result["skipped_reason"],
+                "could not verify required evidence bundle files",
+            )
 
     def test_unsupported_alert_kind_is_rejected_instead_of_fallback_mapping(self):
         with tempfile.TemporaryDirectory() as directory:

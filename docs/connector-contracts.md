@@ -58,6 +58,12 @@ verification record, title, owner, severity, and evidence reference across the
 bundle, rejects unsupported kinds, and requires the verifier to differ from the
 execution actor by default.
 
+Before parsing records, the bridge requires `SHA256SUMS.txt`, verifies every
+declared regular-file entry, and requires entries for `alert.json`,
+`finding.json`, and `verification.json`. Symlinks, non-regular files, malformed
+or duplicate manifest entries, missing records, and checksum mismatches fail
+closed. The verified per-record hashes are retained in governed evidence.
+
 Mini-SOAR identifiers are treated as bounded canonical source text rather than
 SentinelGRC identifiers, so producer-valid values such as path-like asset IDs
 remain importable without being reinterpreted. Mini-SOAR's timezone-aware ISO

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
 import json
 import os
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -26,10 +28,43 @@ from path_security import (
 from state_store import SQLiteStateStore
 
 CONNECTOR_ACTOR = "minisoar-bridge-connector"
+_REQUIRED_BUNDLE_RECORDS = frozenset(
+    {"alert.json", "finding.json", "verification.json"}
+)
+_SHA256SUM_LINE = re.compile(
+    r"([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._-]{0,127})", re.ASCII
+)
+
+
+def _read_regular_bytes(path: Path) -> bytes:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("bundle entry must be a regular file")
+    return path.read_bytes()
 
 
 def _read_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(_read_regular_bytes(path).decode("utf-8"))
+
+
+def _verified_bundle_hashes(base: Path) -> dict[str, str]:
+    manifest = _read_regular_bytes(base / "SHA256SUMS.txt").decode("utf-8")
+    declared: dict[str, str] = {}
+    for line in manifest.splitlines():
+        match = _SHA256SUM_LINE.fullmatch(line)
+        if match is None:
+            raise ValueError("bundle checksum manifest is invalid")
+        digest, name = match.groups()
+        if name in declared:
+            raise ValueError("bundle checksum manifest has duplicate entries")
+        declared[name] = digest
+    if not _REQUIRED_BUNDLE_RECORDS.issubset(declared):
+        raise ValueError("bundle checksum manifest is incomplete")
+
+    for name, expected in declared.items():
+        actual = hashlib.sha256(_read_regular_bytes(base / name)).hexdigest()
+        if not hmac.compare_digest(actual, expected):
+            raise ValueError("bundle checksum verification failed")
+    return dict(sorted(declared.items()))
 
 
 def _new_result() -> dict[str, Any]:
@@ -67,12 +102,15 @@ def _select_runtime_root(
         raise ValueError("bridge paths must share a common runtime root") from exc
 
 
-def _read_bundle(base: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
+def _read_bundle(
+    base: Path,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None, dict[str, str]]:
+    bundle_hashes = _verified_bundle_hashes(base)
     finding = _read_json(base / "finding.json")
     alert = _read_json(base / "alert.json")
     verification_path = base / "verification.json"
-    verification = _read_json(verification_path) if verification_path.exists() else None
-    return finding, alert, verification
+    verification = _read_json(verification_path)
+    return finding, alert, verification, bundle_hashes
 
 
 def _resolve_storage_paths(
@@ -134,9 +172,9 @@ def run_minisoar_bridge(
         return _fail(result, str(exc))
 
     try:
-        finding, alert, verification = _read_bundle(base)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return _fail(result, "could not read required evidence bundle files")
+        finding, alert, verification, bundle_hashes = _read_bundle(base)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return _fail(result, "could not verify required evidence bundle files")
 
     result["bundle_read"] = True
     try:
@@ -150,6 +188,7 @@ def run_minisoar_bridge(
     if normalized is None:
         result["skipped_reason"] = "incident is not closed, synthetic, or independently verified"
         return result
+    normalized["details"]["bundle_record_hashes"] = bundle_hashes
 
     try:
         database_path, audit_path = _resolve_storage_paths(
