@@ -33,7 +33,11 @@ EVIDENCE_REFERENCE_PATTERN = (
     + EVIDENCE_TEXT_PATTERN
     + r"*)?)$"
 )
-EVIDENCE_REFERENCE = re.compile(EVIDENCE_REFERENCE_PATTERN, re.ASCII)
+# Do not use re.ASCII here: EVIDENCE_TEXT_PATTERN intentionally uses ``\s``
+# to reject Unicode whitespace as well as ASCII whitespace.  The authority
+# grammar is already explicitly ASCII-only, so the flag only weakened the URI
+# text contract and made runtime validation diverge from JSON Schema.
+EVIDENCE_REFERENCE = re.compile(EVIDENCE_REFERENCE_PATTERN)
 # The optional fractional-second group is deliberately capped at six digits:
 # datetime storage and this repository's normalization are microsecond-based,
 # so a longer fraction could not be represented faithfully - distinct instants

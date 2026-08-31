@@ -11,7 +11,7 @@ Azure deployment, or operational service-level objective.
 | --- | --- | --- |
 | LogWatcher | `SuriyaBoon/LogWatcher@0622bba18df602d079e227d7033f3a26e0c807f1` | `security_alert.v1` schema and runtime normalizer |
 | JML-Automation | `SuriyaBoon/JML-Automation@07e82ba8f178fcf7d2e28534ed1d486e0edda0b3` (`agent/jml-mvp`) | read-only SQLite bridge for closed, independently verified requests |
-| Mini-SOAR | `SuriyaBoon/Mini-SOAR@49f49931c6be3561a78628a2ceb353cb71e3e573` | synthetic evidence-bundle bridge with cross-record identity checks |
+| Mini-SOAR | `SuriyaBoon/Mini-SOAR@49f49931c6be3561a78628a2ceb353cb71e3e573` | bounded synthetic export-profile bridge with payload and cross-record identity checks |
 
 Any upstream revision change makes this source-bound audit stale until the
 boundary is reviewed again. SentinelGRC does not import code from these
@@ -50,12 +50,24 @@ validated again at the SentinelGRC trust boundary.
 
 ### Mini-SOAR
 
-The bridge accepts `synthetic-lab` evidence only. It recomputes the upstream
-alert identity hash, binds the alert ID, finding ID, verification record,
-severity, and evidence reference across the bundle, rejects unsupported kinds,
-and requires the verifier to differ from the execution actor by default. The
-explicit unverified demonstration switch remains a local concept-only override
-and grants no production or live-gate credit.
+The bridge accepts `synthetic-lab` evidence only. It recomputes both the
+upstream alert identity hash and the SHA-256 digest of the bounded canonical
+producer-input profile represented by the export, then preserves the verified
+source digest in governed finding evidence. It binds the alert ID, finding ID,
+verification record, title, owner, severity, and evidence reference across the
+bundle, rejects unsupported kinds, and requires the verifier to differ from the
+execution actor by default.
+
+Mini-SOAR identifiers are treated as bounded canonical source text rather than
+SentinelGRC identifiers, so producer-valid values such as path-like asset IDs
+remain importable without being reinterpreted. Mini-SOAR's timezone-aware ISO
+timestamp profile is accepted at this boundary and normalized to UTC RFC3339
+for governed evidence. Inputs whose original producer representation cannot be
+reconstructed from that canonical export profile fail closed; this is not a
+claim that every value accepted by Mini-SOAR's broader input normalizer is an
+accepted connector payload. The explicit unverified demonstration switch
+remains a local concept-only override and grants no production or live-gate
+credit.
 
 ## Verification
 
@@ -77,7 +89,7 @@ CI and container qualification paths remain the publication gate.
 
 ## Readiness boundary
 
-This closes only the audited repository/offline connector-contract workstream.
+This closes only the audited repository/offline connector-profile workstream.
 Azure Live Validation remains `0 of 8`, and the product verdict remains
 `NO_GO_PENDING_LIVE_EVIDENCE` until fresh live evidence, a limited pilot, and
 an explicit human GO decision exist.

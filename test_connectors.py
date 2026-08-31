@@ -70,6 +70,7 @@ class ConnectorTests(unittest.TestCase):
         changed = json.dumps(
             {"asset_id": "APP-1", "status": "closed"}
         ).encode()
+        changed_signature = sign_event(changed, "connector-secret")
 
         with self.assertRaisesRegex(
             ConnectorEventConflictError, "belongs to a different payload"
@@ -78,7 +79,7 @@ class ConnectorTests(unittest.TestCase):
                 changed,
                 source="siem",
                 event_id="evt-1",
-                signature=sign_event(changed, "connector-secret"),
+                signature=changed_signature,
                 secret="connector-secret",
                 store=self.store,
             )

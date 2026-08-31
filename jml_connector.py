@@ -19,6 +19,7 @@ _CONTROL_BY_REQUEST_TYPE = {
 }
 _REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", re.ASCII)
 _USERNAME = re.compile(r"[A-Za-z0-9._-]{1,64}", re.ASCII)
+_JML_REQUEST = "JML request"
 
 
 def _text(record: dict[str, Any], name: str, maximum: int, label: str) -> str:
@@ -41,19 +42,19 @@ def normalize_jml_request(
     if not isinstance(verification, dict) or verification.get("result") != "passed":
         return None
 
-    request_type = _text(request, "request_type", 16, "JML request")
+    request_type = _text(request, "request_type", 16, _JML_REQUEST)
     if request_type not in _CONTROL_BY_REQUEST_TYPE:
         raise ValueError(f"unsupported JML request_type: {request_type!r}")
-    request_id = _text(request, "request_id", 64, "JML request")
+    request_id = _text(request, "request_id", 64, _JML_REQUEST)
     if _REQUEST_ID.fullmatch(request_id) is None:
         raise ValueError("JML request request_id is invalid")
-    username = _text(request, "username", 64, "JML request")
+    username = _text(request, "username", 64, _JML_REQUEST)
     if _USERNAME.fullmatch(username) is None:
         raise ValueError("JML request username is invalid")
-    department = _text(request, "department", 128, "JML request")
-    manager_id = _text(request, "manager_id", 128, "JML request")
-    employee_id = _text(request, "employee_id", 128, "JML request")
-    requested_by = _text(request, "requested_by", 128, "JML request")
+    department = _text(request, "department", 128, _JML_REQUEST)
+    manager_id = _text(request, "manager_id", 128, _JML_REQUEST)
+    employee_id = _text(request, "employee_id", 128, _JML_REQUEST)
+    requested_by = _text(request, "requested_by", 128, _JML_REQUEST)
 
     if verification.get("request_id") != request_id:
         raise ValueError("JML verification does not belong to the request")

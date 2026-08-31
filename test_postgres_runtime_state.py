@@ -78,12 +78,13 @@ class PostgresRuntimeStateTests(unittest.TestCase):
         )
         self.assertEqual(other["status"], "accepted")
         changed = b'{"kind":"changed"}'
+        changed_signature = sign_event(changed, "secret")
         with self.assertRaises(ConnectorEventConflictError):
             ingest_event(
                 changed,
                 source="logwatcher",
                 event_id="event-1",
-                signature=sign_event(changed, "secret"),
+                signature=changed_signature,
                 secret="secret",
                 store=store,
             )

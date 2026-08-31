@@ -136,6 +136,7 @@ class SecurityAlertContractTests(unittest.TestCase):
             ("observed_at", "2026-07-03T02:14:25.1234567Z"),
             ("source", "LogWatcher"),
             ("evidence_refs", ["https://:443/path"]),
+            ("evidence_refs", ["https://example.invalid/a\u00a0b"]),
             ("evidence_refs", ["https://example.invalid/path\ufeff"]),
         ):
             payload = copy.deepcopy(alert())
@@ -175,6 +176,7 @@ class SecurityAlertContractTests(unittest.TestCase):
             ("source", "LogWatcher"),
             ("source_ip", "999.1.1.1"),
             ("evidence_refs", ["https://:443/path"]),
+            ("evidence_refs", ["https://example.invalid/a\u00a0b"]),
             ("event_code", 4740),
         )
         for field, value in cases:

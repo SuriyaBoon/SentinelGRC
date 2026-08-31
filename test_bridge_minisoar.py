@@ -20,14 +20,37 @@ def write_bundle(
     severity="high",
     executor_id="worker-01",
     verifier_id="verifier-01",
+    source_event_id="EVT-4625-DEMO-001",
+    asset_id="WIN-DC01",
+    detected_at="2026-07-22T10:00:00Z",
+    message="Five failed logons within five minutes",
+    evidence_ref="sample://logwatcher/alerts/001",
 ):
-    identity_fields = {
+    source_payload = {
         "source": "logwatcher",
-        "source_event_id": "EVT-4625-DEMO-001",
+        "source_event_id": source_event_id,
         "kind": kind,
-        "asset_id": "WIN-DC01",
+        "severity": severity,
+        "detected_at": detected_at,
+        "asset_id": asset_id,
         "account": "alice",
         "source_ip": "203.0.113.45",
+        "message": message,
+        "environment": environment,
+        "risk_owner": "asset-owner-01",
+    }
+    if evidence_ref is not None:
+        source_payload["evidence_ref"] = evidence_ref
+    identity_fields = {
+        key: source_payload[key]
+        for key in (
+            "source",
+            "source_event_id",
+            "kind",
+            "asset_id",
+            "account",
+            "source_ip",
+        )
     }
     identity_hash = hashlib.sha256(
         json.dumps(
@@ -42,7 +65,7 @@ def write_bundle(
     (root / "finding.json").write_text(json.dumps({
         "finding_id": finding_id,
         "alert_id": alert_id,
-        "title": "Five failed logons within five minutes",
+        "title": message,
         "risk_owner": "asset-owner-01",
         "severity": severity,
         "status": status,
@@ -53,18 +76,19 @@ def write_bundle(
         "updated_at": "2026-07-22T10:58:00Z",
     }), encoding="utf-8")
     alert = {
-        **identity_fields,
+        **source_payload,
+        "evidence_ref": evidence_ref,
         "alert_id": alert_id,
         "identity_hash": identity_hash,
-        "severity": severity,
-        "risk_owner": "asset-owner-01",
-        "environment": environment,
-        "detected_at": "2026-07-22T10:00:00Z",
-        "message": "Five failed logons within five minutes",
-        "evidence_ref": "sample://logwatcher/alerts/001",
+        "supported": kind in {"brute_force", "privilege_escalation", "malware"},
     }
     alert["payload_hash"] = hashlib.sha256(
-        json.dumps(alert, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(
+            source_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
     ).hexdigest()
     (root / "alert.json").write_text(json.dumps(alert), encoding="utf-8")
     (root / "verification.json").write_text(json.dumps({
@@ -379,6 +403,94 @@ class MiniSoarBridgeTests(unittest.TestCase):
         self.assertEqual(result["errors"], 1)
         self.assertFalse(result["finding_created"])
         self.assertIn("does not belong", result["skipped_reason"])
+
+    def test_alert_payload_hash_is_verified_before_import(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_bundle(root)
+            alert_path = root / "alert.json"
+            alert = json.loads(alert_path.read_text(encoding="utf-8"))
+            alert["message"] = "tampered outside the identity fields"
+            alert_path.write_text(json.dumps(alert), encoding="utf-8")
+
+            result = run_minisoar_bridge(str(root), str(root / "governance.db"))
+
+        self.assertEqual(result["errors"], 1)
+        self.assertFalse(result["finding_created"])
+        self.assertIn("payload_hash", result["skipped_reason"])
+
+    def test_verified_source_payload_hash_is_preserved_in_governed_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_bundle(root)
+            expected = json.loads(
+                (root / "alert.json").read_text(encoding="utf-8")
+            )["payload_hash"]
+            database = root / "governance.db"
+
+            result = run_minisoar_bridge(str(root), str(database))
+            stored = SQLiteStateStore(database).get_external_finding(
+                result["sentinel_finding_id"]
+            )
+
+        self.assertEqual(result["errors"], 0)
+        self.assertEqual(stored["details"]["source_payload_hash"], expected)
+
+    def test_pinned_producer_identifiers_and_iso_timestamp_are_canonicalized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_bundle(
+                root,
+                source_event_id="events/prod/4625",
+                asset_id="hosts/prod/dc01",
+                detected_at="2026-08-30 12:00:00+00:00",
+            )
+            database = root / "governance.db"
+
+            result = run_minisoar_bridge(str(root), str(database))
+            stored = SQLiteStateStore(database).get_external_finding(
+                result["sentinel_finding_id"]
+            )
+
+        self.assertEqual(result["errors"], 0)
+        self.assertEqual(stored["asset_id"], "hosts/prod/dc01")
+        self.assertEqual(
+            stored["details"]["source_detected_at"],
+            "2026-08-30 12:00:00+00:00",
+        )
+        self.assertEqual(stored["details"]["detected_at"], "2026-08-30T12:00:00Z")
+
+    def test_unicode_whitespace_in_evidence_reference_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_bundle(root, evidence_ref="https://example.invalid/a\u00a0b")
+
+            result = run_minisoar_bridge(str(root), str(root / "governance.db"))
+
+        self.assertEqual(result["errors"], 1)
+        self.assertFalse(result["finding_created"])
+        self.assertIn("evidence_ref", result["skipped_reason"])
+
+    def test_finding_title_and_owner_must_match_the_alert(self):
+        for field, value in (
+            ("title", "tampered title"),
+            ("risk_owner", "different-owner"),
+        ):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                write_bundle(root)
+                finding_path = root / "finding.json"
+                finding = json.loads(finding_path.read_text(encoding="utf-8"))
+                finding[field] = value
+                finding_path.write_text(json.dumps(finding), encoding="utf-8")
+
+                result = run_minisoar_bridge(
+                    str(root), str(root / "governance.db")
+                )
+
+            self.assertEqual(result["errors"], 1)
+            self.assertFalse(result["finding_created"])
+            self.assertIn("does not match", result["skipped_reason"])
 
     def test_unsupported_alert_kind_is_rejected_instead_of_fallback_mapping(self):
         with tempfile.TemporaryDirectory() as directory:
