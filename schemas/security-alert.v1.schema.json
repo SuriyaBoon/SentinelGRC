@@ -19,23 +19,63 @@
   ],
   "properties": {
     "schema_version": { "const": "security_alert.v1" },
-    "source": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$" },
+    "source": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{0,63}$" },
     "source_event_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
-    "observed_at": { "type": "string", "format": "date-time" },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time",
+      "maxLength": 64,
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
     "asset_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
     "kind": { "enum": ["brute_force", "account_lockout", "privilege_escalation"] },
     "severity": { "enum": ["low", "medium", "high", "critical"] },
-    "title": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\\s\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF](?:[^\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF]*[^\\s\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF])?$"
+    },
     "risk_owner": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" },
     "event_code": { "enum": [4625, 4740, 4672] },
-    "source_ip": { "type": ["string", "null"], "format": "ip" },
-    "target_user": { "type": ["string", "null"], "minLength": 1, "maxLength": 256 },
+    "source_ip": {
+      "anyOf": [
+        { "type": "null" },
+        { "type": "string", "format": "ipv4" },
+        { "type": "string", "format": "ipv6" }
+      ]
+    },
+    "target_user": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\s\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF](?:[^\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF]*[^\\s\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF])?$"
+    },
     "evidence_refs": {
       "type": "array",
       "minItems": 1,
       "maxItems": 20,
       "uniqueItems": true,
-      "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512,
+        "pattern": "^(?:urn:[^\\s\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF]+|(?:https|azblob|sample)://[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*(?:[/?#][^\\s\\u0000-\\u001F\\u007F\\u0080-\\u009F\\u200B\\u2028\\u2029\\uFEFF]*)?)$"
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "brute_force" } }, "required": ["kind"] },
+      "then": { "properties": { "event_code": { "const": 4625 } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "account_lockout" } }, "required": ["kind"] },
+      "then": { "properties": { "event_code": { "const": 4740 } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "privilege_escalation" } }, "required": ["kind"] },
+      "then": { "properties": { "event_code": { "const": 4672 } } }
+    }
+  ]
 }

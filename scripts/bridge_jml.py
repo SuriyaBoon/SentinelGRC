@@ -40,6 +40,17 @@ def _latest_verification(connection: sqlite3.Connection, request_id: str) -> dic
     return None if row is None else dict(row)
 
 
+def _latest_execution_actor(
+    connection: sqlite3.Connection, request_id: str
+) -> str | None:
+    row = connection.execute(
+        "SELECT actor_id FROM executions "
+        "WHERE request_id = ? ORDER BY execution_id DESC LIMIT 1",
+        (request_id,),
+    ).fetchone()
+    return None if row is None else str(row[0])
+
+
 def run_jml_bridge(
     jml_db: str,
     governance_db: str,
@@ -79,7 +90,9 @@ def run_jml_bridge(
             request = dict(row)
             try:
                 normalized = normalize_jml_request(
-                    request, _latest_verification(connection, request["request_id"]),
+                    request,
+                    _latest_verification(connection, request["request_id"]),
+                    _latest_execution_actor(connection, request["request_id"]),
                 )
             except (TypeError, ValueError):
                 result["errors"] += 1

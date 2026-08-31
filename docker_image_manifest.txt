@@ -5,6 +5,7 @@ audit_delivery.py
 audit_log.py
 audit_worker.py
 connectors.py
+contract_validation.py
 crypto_agility.py
 deployment_contract.py
 domain_packs.py

@@ -8,7 +8,7 @@ from unittest.mock import patch
 from audit_archive import MemoryAuditArchive
 from audit_delivery import AuditExportQueue, AuditExportWorker
 from outbox_delivery import OutboxMessage, PublishReceipt
-from connectors import ingest_event, sign_event
+from connectors import ConnectorEventConflictError, ingest_event, sign_event
 from governance_core import ActorContext, GovernanceCore
 from migration_runner import PostgresMigrationRunner
 from persistence import Database
@@ -77,6 +77,17 @@ class PostgresRuntimeStateTests(unittest.TestCase):
             store=store,
         )
         self.assertEqual(other["status"], "accepted")
+        changed = b'{"kind":"changed"}'
+        changed_signature = sign_event(changed, "secret")
+        with self.assertRaises(ConnectorEventConflictError):
+            ingest_event(
+                changed,
+                source="logwatcher",
+                event_id="event-1",
+                signature=changed_signature,
+                secret="secret",
+                store=store,
+            )
         with self.assertRaises(PermissionError):
             ingest_event(
                 raw,

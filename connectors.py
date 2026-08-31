@@ -5,11 +5,34 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import sqlite3
 import time
 from contextlib import closing
 from pathlib import Path
 from typing import Any
+
+from contract_validation import is_identifier, is_source_identifier
+
+
+SHA256_DIGEST = re.compile(r"[0-9a-f]{64}", re.ASCII)
+
+
+class ConnectorEventConflictError(ValueError):
+    """The same source event identity was reused for different bytes."""
+
+
+def validate_connector_event_identity(
+    event_id: object, source: object, payload_hash: object | None = None
+) -> None:
+    """Validate the stable replay key and, when supplied, its payload digest."""
+    if not is_source_identifier(source) or not is_identifier(event_id):
+        raise ValueError("source and event_id must be canonical identifiers")
+    if payload_hash is not None and (
+        not isinstance(payload_hash, str)
+        or SHA256_DIGEST.fullmatch(payload_hash) is None
+    ):
+        raise ValueError("payload_hash must be a lowercase SHA-256 digest")
 
 
 class ConnectorEventStore:
@@ -45,6 +68,7 @@ class ConnectorEventStore:
             db.commit()
 
     def reserve(self, event_id: str, source: str, payload_hash: str) -> bool:
+        validate_connector_event_identity(event_id, source, payload_hash)
         with closing(sqlite3.connect(self.path, timeout=10)) as db:
             try:
                 db.execute(
@@ -53,6 +77,19 @@ class ConnectorEventStore:
                 )
             except sqlite3.IntegrityError:
                 db.rollback()
+                existing = db.execute(
+                    "SELECT payload_hash FROM connector_events "
+                    "WHERE source = ? AND event_id = ?",
+                    (source, event_id),
+                ).fetchone()
+                if existing is None:
+                    raise RuntimeError(
+                        "connector event reservation conflict could not be resolved"
+                    )
+                if existing[0] != payload_hash:
+                    raise ConnectorEventConflictError(
+                        "connector event identity belongs to a different payload"
+                    )
                 return False
             db.commit()
             return True
@@ -78,8 +115,7 @@ def ingest_event(
     store: ConnectorEventStore,
     max_bytes: int = 1_048_576,
 ) -> dict[str, Any]:
-    if not source.strip() or not event_id.strip():
-        raise ValueError("source and event_id are required")
+    validate_connector_event_identity(event_id, source)
     if len(raw) > max_bytes:
         raise ValueError("connector payload exceeds size limit")
     if not verify_event_signature(raw, signature, secret):

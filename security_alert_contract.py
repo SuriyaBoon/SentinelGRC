@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
-import re
-from datetime import datetime
+from datetime import timezone
 from typing import Any
-from urllib.parse import urlsplit
+
+from contract_validation import (
+    IDENTIFIER,
+    SOURCE_IDENTIFIER,
+    is_canonical_text,
+    is_evidence_reference,
+    parse_rfc3339,
+)
 
 
 SCHEMA_VERSION = "security_alert.v1"
@@ -39,7 +45,6 @@ REQUIRED_FIELDS = {
     "event_code",
     "evidence_refs",
 }
-IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 CONTROL_BY_KIND = {
     "brute_force": "SEC-AUTH-001",
     "account_lockout": "SEC-IAM-002",
@@ -51,27 +56,18 @@ EVENT_CODE_BY_KIND = {
     "privilege_escalation": 4672,
 }
 SEVERITIES = {"low", "medium", "high", "critical"}
-EVIDENCE_SCHEMES = {"https", "urn", "azblob", "sample"}
 
 
 def _required_text(payload: dict[str, Any], name: str, maximum: int) -> str:
     value = payload.get(name)
-    if not isinstance(value, str) or not value.strip() or len(value.strip()) > maximum:
+    if not is_canonical_text(value, maximum):
         raise ValueError(f"security alert {name} is invalid")
-    return value.strip()
+    return value
 
 
 def _timestamp(value: Any) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("security alert observed_at is invalid")
-    normalized = value.strip().replace("Z", "+00:00")
-    try:
-        parsed = datetime.fromisoformat(normalized)
-    except ValueError as error:
-        raise ValueError("security alert observed_at is invalid") from error
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise ValueError("security alert observed_at must include a timezone")
-    return value.strip()
+    parsed = parse_rfc3339(value, "security alert", "observed_at")
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _evidence_refs(value: Any) -> list[str]:
@@ -79,21 +75,18 @@ def _evidence_refs(value: Any) -> list[str]:
         raise ValueError("security alert evidence_refs must contain 1-20 references")
     references: list[str] = []
     for item in value:
-        if not isinstance(item, str) or not item.strip() or len(item.strip()) > 512:
-            raise ValueError("security alert evidence reference is invalid")
-        reference = item.strip()
-        parsed = urlsplit(reference)
-        if parsed.scheme not in EVIDENCE_SCHEMES or parsed.username or parsed.password:
+        if not is_evidence_reference(item):
             raise ValueError("security alert evidence reference is not approved")
-        if parsed.scheme in {"https", "azblob", "sample"} and not parsed.netloc:
-            raise ValueError("security alert evidence reference is incomplete")
-        references.append(reference)
+        references.append(item)
     if len(set(references)) != len(references):
         raise ValueError("security alert evidence references must be unique")
     return references
 
 
 def _validate_alert_shape(alert: dict[str, Any]) -> None:
+    for key in alert:
+        if not isinstance(key, str):
+            raise ValueError("security alert field names must be strings")
     unknown = sorted(set(alert) - ALLOWED_FIELDS)
     missing = sorted(REQUIRED_FIELDS - set(alert))
     if unknown:
@@ -107,7 +100,7 @@ def _validate_alert_shape(alert: dict[str, Any]) -> None:
 def _required_alert_fields(
     alert: dict[str, Any],
 ) -> tuple[str, str, str, str, str]:
-    source = _required_text(alert, "source", 64).lower()
+    source = _required_text(alert, "source", 64)
     source_event_id = _required_text(alert, "source_event_id", 128)
     asset_id = _required_text(alert, "asset_id", 128)
     title = _required_text(alert, "title", 512)
@@ -120,14 +113,16 @@ def _required_alert_fields(
     ):
         if IDENTIFIER.fullmatch(value) is None:
             raise ValueError(f"security alert {name} is invalid")
+    if SOURCE_IDENTIFIER.fullmatch(source) is None:
+        raise ValueError("security alert source must use canonical lowercase")
     return source, source_event_id, asset_id, title, risk_owner
 
 
 def _event_fields(
     alert: dict[str, Any],
 ) -> tuple[str, str, Any, str, list[str]]:
-    kind = _required_text(alert, "kind", 64).lower()
-    severity = _required_text(alert, "severity", 16).lower()
+    kind = _required_text(alert, "kind", 64)
+    severity = _required_text(alert, "severity", 16)
     if kind not in CONTROL_BY_KIND:
         raise ValueError(f"unsupported security alert kind: {kind}")
     if severity not in SEVERITIES:
@@ -143,23 +138,16 @@ def _event_fields(
 def _optional_context(alert: dict[str, Any]) -> tuple[str | None, str | None]:
     source_ip = alert.get("source_ip")
     if source_ip is not None:
-        if not isinstance(source_ip, str):
+        if not is_canonical_text(source_ip, 64):
             raise ValueError("security alert source_ip is invalid")
         try:
             ipaddress.ip_address(source_ip)
         except ValueError as error:
             raise ValueError("security alert source_ip is invalid") from error
     target_user = alert.get("target_user")
-    if target_user is not None and (
-        not isinstance(target_user, str)
-        or not target_user.strip()
-        or len(target_user.strip()) > 256
-    ):
+    if target_user is not None and not is_canonical_text(target_user, 256):
         raise ValueError("security alert target_user is invalid")
-    normalized_user = (
-        target_user.strip() if isinstance(target_user, str) else None
-    )
-    return source_ip, normalized_user
+    return source_ip, target_user
 
 
 def normalize_security_alert_v1(alert: dict[str, Any]) -> dict[str, Any]:

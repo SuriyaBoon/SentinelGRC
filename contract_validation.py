@@ -11,6 +11,33 @@ CANONICAL_TEXT_PATTERN = (
     r"[^\s\u0000-\u001F\u007F\u0080-\u009F\u200B\u2028\u2029\uFEFF])?$"
 )
 CANONICAL_TEXT = re.compile(CANONICAL_TEXT_PATTERN)
+IDENTIFIER_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
+IDENTIFIER = re.compile(IDENTIFIER_PATTERN, re.ASCII)
+SOURCE_IDENTIFIER_PATTERN = r"^[a-z0-9][a-z0-9._:-]{0,127}$"
+SOURCE_IDENTIFIER = re.compile(SOURCE_IDENTIFIER_PATTERN, re.ASCII)
+# Connector evidence does not require custom ports. Keeping one shared profile
+# prevents a looser connector from bypassing the portfolio contract boundary.
+EVIDENCE_HOST_PATTERN = (
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*"
+)
+EVIDENCE_TEXT_PATTERN = (
+    r"[^\s\u0000-\u001F\u007F\u0080-\u009F\u200B\u2028\u2029\uFEFF]"
+)
+EVIDENCE_REFERENCE_PATTERN = (
+    r"^(?:urn:"
+    + EVIDENCE_TEXT_PATTERN
+    + r"+|(?:https|azblob|sample)://"
+    + EVIDENCE_HOST_PATTERN
+    + r"(?:[/?#]"
+    + EVIDENCE_TEXT_PATTERN
+    + r"*)?)$"
+)
+# Do not use re.ASCII here: EVIDENCE_TEXT_PATTERN intentionally uses ``\s``
+# to reject Unicode whitespace as well as ASCII whitespace.  The authority
+# grammar is already explicitly ASCII-only, so the flag only weakened the URI
+# text contract and made runtime validation diverge from JSON Schema.
+EVIDENCE_REFERENCE = re.compile(EVIDENCE_REFERENCE_PATTERN)
 # The optional fractional-second group is deliberately capped at six digits:
 # datetime storage and this repository's normalization are microsecond-based,
 # so a longer fraction could not be represented faithfully - distinct instants
@@ -40,6 +67,27 @@ def is_canonical_text(value: object, maximum: int) -> bool:
         isinstance(value, str)
         and 1 <= len(value) <= maximum
         and CANONICAL_TEXT.fullmatch(value) is not None
+    )
+
+
+def is_identifier(value: object) -> bool:
+    """Accept one canonical external identifier."""
+    return isinstance(value, str) and IDENTIFIER.fullmatch(value) is not None
+
+
+def is_source_identifier(value: object) -> bool:
+    """Accept one canonical lowercase external source identifier."""
+    return (
+        isinstance(value, str)
+        and SOURCE_IDENTIFIER.fullmatch(value) is not None
+    )
+
+
+def is_evidence_reference(value: object) -> bool:
+    """Accept one canonical evidence URI from the repository allowlist."""
+    return (
+        is_canonical_text(value, 512)
+        and EVIDENCE_REFERENCE.fullmatch(value) is not None
     )
 
 

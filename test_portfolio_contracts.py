@@ -338,6 +338,9 @@ class PortfolioContractTests(unittest.TestCase):
         "urn:evidence\x01id",
         "https://example.invalid/a\x1fb",
         "urn:evidence\x7fid",
+        "https://example.invalid/a\u00a0b",
+        "sample://inventory/a\u2003b",
+        "urn:evidence\u202fid",
         "urn:evidence\u200bid",
         "urn:evidence\ufeffid",
     )

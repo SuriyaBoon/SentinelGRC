@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 import tempfile
@@ -5,8 +6,49 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from scripts.bridge_minisoar import run_minisoar_bridge
+from scripts.bridge_minisoar import run_minisoar_bridge as _run_minisoar_bridge
 from state_store import SQLiteStateStore
+
+
+_EXPORTED_RECORDS = ("alert.json", "finding.json", "verification.json")
+
+
+def refresh_bundle_manifest(root: Path) -> None:
+    checksums = []
+    for name in _EXPORTED_RECORDS:
+        encoded = (root / name).read_bytes()
+        checksums.append(f"{hashlib.sha256(encoded).hexdigest()}  {name}")
+    (root / "SHA256SUMS.txt").write_text(
+        "\n".join(sorted(checksums)) + "\n", encoding="utf-8"
+    )
+
+
+def bundle_manifest_sha256(root: Path) -> str:
+    return hashlib.sha256((root / "SHA256SUMS.txt").read_bytes()).hexdigest()
+
+
+def run_minisoar_bridge(
+    evidence_dir: str,
+    governance_db: str,
+    **kwargs: object,
+) -> dict[str, object]:
+    manifest_path = Path(evidence_dir) / "SHA256SUMS.txt"
+    expected_manifest_sha256 = (
+        hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        if manifest_path.is_file()
+        else "0" * 64
+    )
+    return _run_minisoar_bridge(
+        evidence_dir,
+        governance_db,
+        expected_manifest_sha256=expected_manifest_sha256,
+        **kwargs,
+    )
+
+
+def write_export_record(root: Path, name: str, content: object) -> None:
+    encoded = json.dumps(content, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    (root / name).write_text(encoded, encoding="utf-8")
 
 
 def write_bundle(
@@ -17,29 +59,93 @@ def write_bundle(
     kind="brute_force",
     environment="synthetic-lab",
     severity="high",
+    executor_id="worker-01",
+    verifier_id="verifier-01",
+    source_event_id="EVT-4625-DEMO-001",
+    asset_id="WIN-DC01",
+    detected_at="2026-07-22T10:00:00Z",
+    message="Five failed logons within five minutes",
+    evidence_ref="sample://logwatcher/alerts/001",
 ):
-    (root / "finding.json").write_text(json.dumps({
-        "finding_id": "FND-TESTBUNDLE01",
-        "title": "Five failed logons within five minutes",
+    source_payload = {
+        "source": "logwatcher",
+        "source_event_id": source_event_id,
+        "kind": kind,
+        "severity": severity,
+        "detected_at": detected_at,
+        "asset_id": asset_id,
+        "account": "alice",
+        "source_ip": "203.0.113.45",
+        "message": message,
+        "environment": environment,
+        "risk_owner": "asset-owner-01",
+    }
+    if evidence_ref is not None:
+        source_payload["evidence_ref"] = evidence_ref
+    identity_fields = {
+        key: source_payload[key]
+        for key in (
+            "source",
+            "source_event_id",
+            "kind",
+            "asset_id",
+            "account",
+            "source_ip",
+        )
+    }
+    identity_hash = hashlib.sha256(
+        json.dumps(
+            identity_fields,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    alert_id = "ALT-" + identity_hash[:16].upper()
+    finding_id = "FND-" + identity_hash[:16].upper()
+    finding = {
+        "finding_id": finding_id,
+        "alert_id": alert_id,
+        "title": message,
         "risk_owner": "asset-owner-01",
         "severity": severity,
         "status": status,
         "playbook_id": "PB-BF-001",
         "playbook_version": 1,
-    }), encoding="utf-8")
-    (root / "alert.json").write_text(json.dumps({
-        "alert_id": "ALT-TESTBUNDLE01",
-        "asset_id": "WIN-DC01",
-        "kind": kind,
-        "severity": severity,
-        "risk_owner": "asset-owner-01",
-        "environment": environment,
-    }), encoding="utf-8")
-    (root / "verification.json").write_text(json.dumps({
-        "finding_id": "FND-TESTBUNDLE01",
+        "executor_id": executor_id,
+        "created_at": "2026-07-22T10:57:44Z",
+        "updated_at": "2026-07-22T10:58:00Z",
+    }
+    alert = {
+        **source_payload,
+        "evidence_ref": evidence_ref,
+        "alert_id": alert_id,
+        "identity_hash": identity_hash,
+        "supported": kind in {"brute_force", "privilege_escalation", "malware"},
+    }
+    alert["payload_hash"] = hashlib.sha256(
+        json.dumps(
+            source_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    verification = {
+        "finding_id": finding_id,
         "passed": passed,
         "notes": "simulated post-conditions",
-    }), encoding="utf-8")
+        "verifier_id": verifier_id,
+        "verification_id": "VER-0000000000000001",
+        "verified_at": "2026-07-22T10:59:00Z",
+    }
+    for name, content in (
+        ("alert.json", alert),
+        ("finding.json", finding),
+        ("verification.json", verification),
+    ):
+        write_export_record(root, name, content)
+    refresh_bundle_manifest(root)
 
 
 class MiniSoarBridgeTests(unittest.TestCase):
@@ -320,6 +426,221 @@ class MiniSoarBridgeTests(unittest.TestCase):
             self.assertTrue(result["bundle_read"])
             self.assertFalse(result["finding_created"])
             self.assertIn("verified", result["skipped_reason"])
+
+    def test_executor_cannot_supply_independent_verification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_bundle(root, executor_id="same-actor", verifier_id="same-actor")
+            result = run_minisoar_bridge(str(root), str(root / "governance.db"))
+
+        self.assertFalse(result["finding_created"])
+        self.assertEqual(result["errors"], 0)
+        self.assertIn("verified", result["skipped_reason"])
+
+    def test_cross_record_identity_mismatch_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_bundle(root)
+            finding_path = root / "finding.json"
+            finding = json.loads(finding_path.read_text(encoding="utf-8"))
+            finding["alert_id"] = "ALT-0000000000000000"
+            write_export_record(root, "finding.json", finding)
+            refresh_bundle_manifest(root)
+            result = run_minisoar_bridge(str(root), str(root / "governance.db"))
+
+        self.assertEqual(result["errors"], 1)
+        self.assertFalse(result["finding_created"])
+        self.assertIn("does not belong", result["skipped_reason"])
+
+    def test_alert_payload_hash_is_verified_before_import(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_bundle(root)
+            alert_path = root / "alert.json"
+            alert = json.loads(alert_path.read_text(encoding="utf-8"))
+            alert["message"] = "tampered outside the identity fields"
+            write_export_record(root, "alert.json", alert)
+            refresh_bundle_manifest(root)
+
+            result = run_minisoar_bridge(str(root), str(root / "governance.db"))
+
+        self.assertEqual(result["errors"], 1)
+        self.assertFalse(result["finding_created"])
+        self.assertIn("payload_hash", result["skipped_reason"])
+
+    def test_verified_source_payload_hash_is_preserved_in_governed_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_bundle(root)
+            expected = json.loads(
+                (root / "alert.json").read_text(encoding="utf-8")
+            )["payload_hash"]
+            expected_alert_record_hash = hashlib.sha256(
+                (root / "alert.json").read_bytes()
+            ).hexdigest()
+            expected_manifest_hash = bundle_manifest_sha256(root)
+            database = root / "governance.db"
+
+            result = run_minisoar_bridge(str(root), str(database))
+            stored = SQLiteStateStore(database).get_external_finding(
+                result["sentinel_finding_id"]
+            )
+
+        self.assertEqual(result["errors"], 0)
+        self.assertEqual(stored["details"]["source_payload_hash"], expected)
+        self.assertEqual(
+            stored["details"]["bundle_record_hashes"]["alert.json"],
+            expected_alert_record_hash,
+        )
+        self.assertEqual(
+            set(stored["details"]["bundle_record_hashes"]),
+            set(_EXPORTED_RECORDS),
+        )
+        self.assertEqual(
+            stored["details"]["bundle_manifest_sha256"],
+            expected_manifest_hash,
+        )
+
+    def test_pinned_producer_identifiers_and_iso_timestamp_are_canonicalized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_bundle(
+                root,
+                source_event_id="events/prod/4625",
+                asset_id="hosts/prod/dc01",
+                detected_at="2026-08-30 12:00:00+00:00",
+            )
+            database = root / "governance.db"
+
+            result = run_minisoar_bridge(str(root), str(database))
+            stored = SQLiteStateStore(database).get_external_finding(
+                result["sentinel_finding_id"]
+            )
+
+        self.assertEqual(result["errors"], 0)
+        self.assertEqual(stored["asset_id"], "hosts/prod/dc01")
+        self.assertEqual(
+            stored["details"]["source_detected_at"],
+            "2026-08-30 12:00:00+00:00",
+        )
+        self.assertEqual(stored["details"]["detected_at"], "2026-08-30T12:00:00Z")
+
+    def test_unicode_whitespace_in_evidence_reference_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_bundle(root, evidence_ref="https://example.invalid/a\u00a0b")
+
+            result = run_minisoar_bridge(str(root), str(root / "governance.db"))
+
+        self.assertEqual(result["errors"], 1)
+        self.assertFalse(result["finding_created"])
+        self.assertIn("evidence_ref", result["skipped_reason"])
+
+    def test_finding_title_and_owner_must_match_the_alert(self):
+        for field, value in (
+            ("title", "tampered title"),
+            ("risk_owner", "different-owner"),
+        ):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                write_bundle(root)
+                finding_path = root / "finding.json"
+                finding = json.loads(finding_path.read_text(encoding="utf-8"))
+                finding[field] = value
+                write_export_record(root, "finding.json", finding)
+                refresh_bundle_manifest(root)
+
+                result = run_minisoar_bridge(
+                    str(root), str(root / "governance.db")
+                )
+
+            self.assertEqual(result["errors"], 1)
+            self.assertFalse(result["finding_created"])
+            self.assertIn("does not match", result["skipped_reason"])
+
+    def test_modified_sibling_records_fail_bundle_checksum_verification(self):
+        for name, field, value in (
+            ("finding.json", "executor_id", "forged-worker"),
+            ("verification.json", "verifier_id", "forged-verifier"),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                write_bundle(root)
+                record = json.loads((root / name).read_text(encoding="utf-8"))
+                record[field] = value
+                write_export_record(root, name, record)
+
+                result = run_minisoar_bridge(
+                    str(root), str(root / "governance.db")
+                )
+
+            self.assertEqual(result["errors"], 1)
+            self.assertFalse(result["bundle_read"])
+            self.assertFalse(result["finding_created"])
+            self.assertEqual(
+                result["skipped_reason"],
+                "could not verify required evidence bundle files",
+            )
+
+    def test_bundle_requires_an_externally_pinned_manifest_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_bundle(root)
+
+            result = _run_minisoar_bridge(
+                str(root), str(root / "governance.db")
+            )
+
+        self.assertEqual(result["errors"], 1)
+        self.assertFalse(result["bundle_read"])
+        self.assertFalse(result["finding_created"])
+        self.assertEqual(
+            result["skipped_reason"],
+            "could not verify required evidence bundle files",
+        )
+
+    def test_regenerated_manifest_cannot_authenticate_forged_bundle_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_bundle(root)
+            trusted_manifest_sha256 = bundle_manifest_sha256(root)
+
+            finding_path = root / "finding.json"
+            finding = json.loads(finding_path.read_text(encoding="utf-8"))
+            finding["executor_id"] = "forged-worker"
+            write_export_record(root, "finding.json", finding)
+
+            verification_path = root / "verification.json"
+            verification = json.loads(
+                verification_path.read_text(encoding="utf-8")
+            )
+            verification["verifier_id"] = "forged-verifier"
+            write_export_record(root, "verification.json", verification)
+            refresh_bundle_manifest(root)
+
+            result = _run_minisoar_bridge(
+                str(root),
+                str(root / "governance.db"),
+                expected_manifest_sha256=trusted_manifest_sha256,
+            )
+
+        self.assertEqual(result["errors"], 1)
+        self.assertFalse(result["bundle_read"])
+        self.assertFalse(result["finding_created"])
+        self.assertEqual(
+            result["skipped_reason"],
+            "could not verify required evidence bundle files",
+        )
+
+    def test_unsupported_alert_kind_is_rejected_instead_of_fallback_mapping(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_bundle(root, kind="unknown_kind")
+            result = run_minisoar_bridge(str(root), str(root / "governance.db"))
+
+        self.assertEqual(result["errors"], 1)
+        self.assertFalse(result["finding_created"])
+        self.assertIn("unsupported", result["skipped_reason"])
 
     def test_unverified_incident_can_be_explicitly_allowed(self):
         with tempfile.TemporaryDirectory() as directory:
