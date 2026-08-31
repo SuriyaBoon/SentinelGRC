@@ -23,6 +23,16 @@ def encoded(value):
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
 
+def tamper_signature(token):
+    header, payload, signature = token.split(".")
+    raw_signature = bytearray(
+        base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4))
+    )
+    raw_signature[0] ^= 1
+    tampered = base64.urlsafe_b64encode(raw_signature).rstrip(b"=").decode()
+    return f"{header}.{payload}.{tampered}"
+
+
 class FakeKeys:
     def __init__(self, key, key_id="key-1", ready=True):
         self.key = key
@@ -98,7 +108,7 @@ class OidcAuthenticationTests(unittest.TestCase):
     def test_tampering_wrong_key_algorithm_and_kid_fail_closed(self):
         verifier = self.verifier()
         cases = [
-            self.token({**self.claims(), "sub": "tampered"})[:-2] + "aa",
+            tamper_signature(self.token({**self.claims(), "sub": "tampered"})),
             self.token(key=self.other_key),
             self.token(algorithm="HS256"),
             self.token(key_id="unknown"),
