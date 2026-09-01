@@ -28,6 +28,7 @@ DLQ_REASON = "SentinelGRCSyntheticGateFailure"
 DLQ_DESCRIPTION = "Approved synthetic live-gate failure"
 UTC_OFFSET = "+00:00"
 APPLICATION_PROPERTIES_INVALID = "Service Bus application properties are invalid"
+EVIDENCE_HMAC_KEY_INVALID = "evidence_hmac_key is invalid"
 REQUIRED_POSTGRES_TABLES = frozenset(
     {
         "action_items",
@@ -127,13 +128,13 @@ def _azure_resource_id(value: str) -> str:
 
 def _evidence_hmac_key(value: str) -> bytes:
     if not isinstance(value, str) or not 32 <= len(value) <= 256:
-        raise ValueError("evidence_hmac_key is invalid")
+        raise ValueError(EVIDENCE_HMAC_KEY_INVALID)
     try:
         encoded = value.encode("ascii")
     except UnicodeEncodeError as error:
-        raise ValueError("evidence_hmac_key is invalid") from error
+        raise ValueError(EVIDENCE_HMAC_KEY_INVALID) from error
     if any(character < 0x21 or character == 0x7F for character in encoded):
-        raise ValueError("evidence_hmac_key is invalid")
+        raise ValueError(EVIDENCE_HMAC_KEY_INVALID)
     return encoded
 
 
