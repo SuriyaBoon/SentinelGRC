@@ -94,11 +94,11 @@ They prove state-machine behavior, not Azure availability.
 
 | Scenario | Expected invariant | Repository evidence | Live evidence still required |
 |---|---|---|---|
-| Worker crashes after broker acceptance | Stable message identity; replay does not create a second logical message | `test_crash_after_publish_replays_same_identity_without_duplicate` | Kill the real sidecar after send and inspect the session-aware consumer |
+| Worker crashes after broker acceptance | Stable message identity; replay does not create a second logical message | `test_crash_after_publish_replays_same_identity_without_duplicate` | Stop the real publisher app after send and inspect the session-aware consumer |
 | Publisher unavailable | Record remains pending/retrying and is never acknowledged | `test_publisher_interruption_never_acknowledges_and_then_recovers` | Block Service Bus access and observe retry/alert/recovery |
 | Database unavailable | No publish or acknowledgement occurs without a fenced claim | `test_database_claim_failure_cannot_publish_or_acknowledge` | Interrupt PostgreSQL connectivity and verify supervisor behavior |
 | Poison payload | Permanent validation failure enters dead state without repeated sends | `test_invalid_payload_is_dead_lettered_without_retry` | Inject an approved synthetic invalid record and rehearse recovery |
-| Stale worker | Lease token prevents a stale worker from acknowledging reclaimed work | `test_fencing_ordering_retry_dead_letter_and_exact_requeue` | Restart sidecar during a held claim |
+| Stale worker | Lease token prevents a stale worker from acknowledging reclaimed work | `test_fencing_ordering_retry_dead_letter_and_exact_requeue` | Restart the publisher app during a held claim |
 | Duplicate alert | Same source identity reassesses one finding | `test_canonical_contract_is_strict_and_replay_safe` | Replay the same Service Bus message and inspect downstream idempotency |
 | Per-finding ordering | Later events wait for the prior undelivered sequence | `test_fencing_ordering_retry_dead_letter_and_exact_requeue` | Verify Service Bus SessionId ordering |
 
@@ -172,9 +172,9 @@ Service Bus source.
 | Forged or ambiguous alert | Strict version, required fields, event-kind mapping, timezone, IP, evidence-reference and unknown-field validation | Rejected fixture and test output | Real source authentication and transport path |
 | Duplicate/replayed alert | Server-derived stable finding ID and idempotent upsert | First/replay report and finding IDs | Downstream Service Bus consumer idempotency |
 | Caller impersonates approver | Governance actors come from authenticated server context | Separation-of-duties tests and audit events | Entra role/group assignment correctness |
-| Message tampering | Canonical JSON, metadata match, SHA-256 property, stable MessageId | Outbox payload and integrity tests | Broker and consumer-side verification |
+| Message tampering | Canonical JSON, metadata match, SHA-256 property, stable MessageId | Outbox payload and live-gate harness integrity tests | Live broker receipt and settlement |
 | Stale or competing worker | Lease token, worker ID, expiry fencing and ordered claims | Fencing/reclaim tests | Sidecar restart and scale-out behavior |
-| Shared-key credential theft | Managed Identity only; local/shared-key fallback rejected | Configuration and IaC tests | Actual RBAC scope and identity assignment |
+| Shared-key credential theft | Managed Identity only; local/shared-key fallback rejected | Configuration and IaC tests, queue-scoped receiver plus separate source/restored database identities | Actual RBAC assignment and live negative-access tests |
 | Evidence deletion or overwrite | Create-only content-addressed evidence and audit adapters | Integrity/replay tests | Locked retention, restore, legal hold |
 | Private-service exposure | IaC disables public access and declares private endpoints | Bicep policy/compile result | Tenant deployment and DNS validation |
 | Secret leakage in logs/repo | Redaction, secret scan, identifier-only examples | CI hygiene and review evidence | Azure diagnostic settings and operator practice |
@@ -183,7 +183,7 @@ Service Bus source.
 
 | Signal | Default threshold | Severity | Required operator response |
 |---|---:|---|---|
-| Outbox worker heartbeat age | greater than 120 seconds | High | Check sidecar revision, identity and database connectivity |
+| Outbox worker heartbeat age | greater than 120 seconds | High | Check publisher-app revision, identity and database connectivity |
 | Oldest pending outbox age | greater than 300 seconds | High | Check Service Bus reachability and ordered blocking item |
 | Retrying outbox count | greater than 0 | Medium | Inspect sanitized error class and recovery trend |
 | Dead outbox count | greater than 0 | Critical | Stop release progression; review payload and exact requeue |
@@ -204,7 +204,7 @@ tuned using staging measurements and documented approval.
    count and lag; do not bypass Managed Identity with a connection string.
 3. **Dead outbox item:** preserve the payload hash and error, stop release
    progression, correct the cause, obtain approval, and use exact requeue.
-4. **Worker stale:** confirm only one intended sidecar configuration, inspect
+4. **Worker stale:** confirm only one intended publisher-app configuration, inspect
    heartbeat and lease age, restart the revision, then prove stale acknowledgement
    is rejected.
 5. **Alert-contract rejection:** retain a sanitized rejected sample and reason;
@@ -215,6 +215,20 @@ tuned using staging measurements and documented approval.
 7. **Rollback:** activate the recorded last-known-good application revision.
    Never delete migration files or downgrade schema in place. Restore PostgreSQL
    into a new server and use an approved cutover when data rollback is required.
+8. **Service Bus live-gate observation:** run only the manual assurance job with
+   exact synthetic message ID, session ID, payload hash and settlement action.
+   Reason and description must both match the exact approved dead-letter
+   contract. A mismatch is abandoned and fails the gate; no message body or
+   broker description is retained.
+9. **PostgreSQL restore verification:** snapshot the approved synthetic prefix
+   on source and restored servers with `scripts.azure_live_gate_harness`, then
+   compare migration checksums, schema count, per-table count/hash and the
+   application-read hash. Every snapshot uses one read-only repeatable-read
+   transaction. Bicep binds each URL to the declared Azure server resource and
+   canonical FQDN; a per-run HMAC pseudonymizes the resource and observed
+   database identity. Matching target HMACs fail because they do not prove an
+   isolated restore. The restored identity must be dynamically denied access
+   to the source secret before Gate 6 can receive credit.
 
 ## Go/no-go evidence
 
@@ -224,7 +238,7 @@ boolean `true` in a separately retained evidence file. Unknown, missing, string,
 or false values produce `NO_GO`.
 
 Required live evidence includes Managed Identity authentication, private
-network validation, Service Bus delivery, sidecar restart recovery, dead-letter
+network validation, Service Bus delivery, publisher-app restart recovery, dead-letter
 recovery, backup restore, observed monitoring alerts, and rollback rehearsal.
 Store screenshots, command output, resource IDs, timestamps, operator/reviewer
 identity and hashes in an approved private evidence location - not this public

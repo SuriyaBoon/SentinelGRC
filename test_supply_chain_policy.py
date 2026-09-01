@@ -104,9 +104,12 @@ class SupplyChainPolicyTests(unittest.TestCase):
                 self.assertIn(required, dockerfile)
         self.assertNotIn("staging_assurance.py", dockerfile)
         self.assertNotIn("scripts/azure_staging_validator.py", dockerfile)
+        self.assertNotIn("live_gate_harness.py", dockerfile)
         self.assertIn("ARG RUNTIME_IMAGE", assurance)
         self.assertIn("FROM ${RUNTIME_IMAGE}", assurance)
         self.assertIn("scripts/azure_staging_validator.py", assurance)
+        self.assertIn("scripts/azure_live_gate_harness.py", assurance)
+        self.assertIn("live_gate_harness.py", assurance)
         self.assertIn("COPY --chown=0:0", assurance)
         self.assertIn("chmod 0444", assurance)
         self.assertNotIn("--chown=10001:10001", assurance)
@@ -190,7 +193,7 @@ class SupplyChainPolicyTests(unittest.TestCase):
         expected_runtime_modules = (
             "test_agent_keys test_audit_archive test_audit_delivery test_audit_log test_azure_iac_policy test_azure_staging_validator test_bridge_jml test_bridge_minisoar test_connectors "
             "test_crypto_agility test_crypto_import_isolation test_deployment_contract test_domain_packs test_enterprise_safety test_evidence_metadata test_evidence_store test_governance test_governance_api "
-            "test_governance_core test_governance_http test_hermetic_recovery test_historical_evidence_archive test_human_identity test_ingestion_api test_job_queue test_load_soak_baseline test_migrate_json "
+            "test_governance_core test_governance_http test_hermetic_recovery test_historical_evidence_archive test_human_identity test_ingestion_api test_job_queue test_live_gate_harness test_load_soak_baseline test_migrate_json "
             "test_migration_runner test_observability test_offline_evidence test_oidc_auth test_oidc_contract test_outbox_delivery test_path_policy test_path_security test_persistence test_pipeline test_pipeline_worker "
             "test_postgres_integration test_postgres_runtime_state test_pre_live_reliability test_production_contract test_reporting test_runtime_app test_security_alert_contract test_security_event_connector "
             "test_security_pack test_sentinelgrc test_sonar_configuration test_sonar_security_decisions test_staging_assurance test_staging_logwatcher test_state_store test_workflow"

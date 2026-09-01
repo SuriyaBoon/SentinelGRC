@@ -361,9 +361,9 @@ class AzureIacPolicyTests(unittest.TestCase):
         ):
             with self.subTest(contract=contract):
                 self.assertIn(contract, self.source)
-        self.assertEqual(self.source.count("= if (deployValidatedJobs)"), 6)
+        self.assertEqual(self.source.count("= if (deployValidatedJobs)"), 12)
         self.assertEqual(self.source.count("= if (deployValidatedMonitoring)"), 5)
-        self.assertEqual(self.source.count("= if (deployValidatedApplication)"), 1)
+        self.assertEqual(self.source.count("= if (deployValidatedApplication)"), 2)
         self.assertNotIn("deployApplication && deployValidationJobs", self.source)
         self.assertNotIn("deployApplication && deployMonitoringAlerts", self.source)
         self.assertNotIn("deployApplication && imageDigestPinned", self.source)
@@ -401,6 +401,7 @@ class AzureIacPolicyTests(unittest.TestCase):
             "4633458b-17de-408a-b874-0445c86b69e6",
             "ba92f5b4-2d11-453d-a403-e96b0029c9fe",
             "69a216fc-b8fb-44d8-bc22-1f3c2cd27a39",
+            "4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0",
         ):
             with self.subTest(role_id=role_id):
                 self.assertTrue(
@@ -416,18 +417,70 @@ class AzureIacPolicyTests(unittest.TestCase):
         self.assertNotIn("listKeys(", self.source)
 
     def test_outbox_worker_is_sender_only_and_ordered(self):
-        self.assertIn("name: 'outbox-publisher'", self.source)
-        self.assertIn("'outbox_worker.py'", self.source)
+        publisher_app = self.source.split(
+            "resource outboxPublisherApp 'Microsoft.App/containerApps@2025-01-01'",
+            1,
+        )[1].split("resource monitoringQueryReader", 1)[0]
+        self.assertIn("name: 'outbox-publisher'", publisher_app)
+        self.assertIn("'outbox_worker.py'", publisher_app)
         self.assertIn("requiresDuplicateDetection: true", self.source)
         self.assertIn("requiresSession: true", self.source)
         self.assertIn("enablePartitioning: false", self.source)
         self.assertNotIn("enablePartitioning: true", self.source)
-        self.assertIn("serviceBusSender", self.source)
-        self.assertNotIn("serviceBusReceiver", self.source)
+        container_app = self.source.split(
+            "resource containerApp 'Microsoft.App/containerApps@2025-01-01'", 1
+        )[1].split("resource outboxPublisherApp", 1)[0]
+        self.assertNotIn("name: 'outbox-publisher'", container_app)
+        self.assertNotIn("serviceBusReceiver", container_app)
+        self.assertIn("serviceBusSender", publisher_app)
+        self.assertNotIn("serviceBusReceiver", publisher_app)
+
+    def test_api_publisher_and_runtime_image_pull_identities_are_separate(self):
+        container_app = self.source.split(
+            "resource containerApp 'Microsoft.App/containerApps@2025-01-01'", 1
+        )[1].split("resource outboxPublisherApp", 1)[0]
+        publisher_app = self.source.split(
+            "resource outboxPublisherApp 'Microsoft.App/containerApps@2025-01-01'",
+            1,
+        )[1].split("resource monitoringQueryReader", 1)[0]
+        self.assertIn("'${appIdentity.id}': {}", container_app)
+        self.assertIn("'${runtimeImagePullIdentity.id}': {}", container_app)
+        self.assertNotIn("publisherIdentity", container_app)
+        self.assertNotIn("serviceBusSender", container_app)
+        self.assertIn("'${publisherIdentity.id}': {}", publisher_app)
+        self.assertIn("'${runtimeImagePullIdentity.id}': {}", publisher_app)
+        self.assertNotIn("appIdentity", publisher_app)
+        self.assertNotIn("SENTINEL_EVIDENCE_STORE_URL", publisher_app)
+        self.assertNotIn("SENTINEL_AUDIT_ARCHIVE_URL", publisher_app)
+        self.assertNotIn("SENTINEL_OIDC_", publisher_app)
+        self.assertIn(
+            "value: publisherIdentity.properties.clientId", publisher_app
+        )
+        sender = self.source.split(
+            "resource serviceBusSender", 1
+        )[1].split("resource publisherDatabaseSecretReader", 1)[0]
+        self.assertIn("principalId: publisherIdentity.properties.principalId", sender)
+        self.assertNotIn("appIdentity", sender)
+        publisher_secret = self.source.split(
+            "resource publisherDatabaseSecretReader", 1
+        )[1].split("resource validationServiceBusReceiver", 1)[0]
+        self.assertIn("scope: databaseUrlSecret", publisher_secret)
+        self.assertIn(
+            "principalId: publisherIdentity.properties.principalId",
+            publisher_secret,
+        )
+        acr_pull = self.source.split("module acrPull", 1)[1].split(
+            "module validationAcrPull", 1
+        )[0]
+        self.assertIn(
+            "principalId: runtimeImagePullIdentity.properties.principalId",
+            acr_pull,
+        )
+        self.assertNotIn("principalId: appIdentity", acr_pull)
 
     def test_validation_jobs_isolate_role_bearing_identities(self):
         self.assertIn("param deployValidationJobs bool = false", self.source)
-        self.assertEqual(self.source.count("image: validationContainerImage"), 2)
+        self.assertEqual(self.source.count("image: validationContainerImage"), 5)
         self.assertNotIn(
             "image: containerImage\n          name: 'sentinel-validation'",
             self.source,
@@ -437,7 +490,7 @@ class AzureIacPolicyTests(unittest.TestCase):
         )[1].split("resource validationApproverJob", 1)[0]
         approver_job = self.source.split(
             "resource validationApproverJob", 1
-        )[1].split("resource availabilityAlert", 1)[0]
+        )[1].split("resource validationServiceBusJob", 1)[0]
         self.assertIn("validationImagePullIdentity.id", analyst_job)
         self.assertIn("validationAnalystIdentity.id", analyst_job)
         self.assertNotIn("validationApproverIdentity.id", analyst_job)
@@ -485,10 +538,110 @@ class AzureIacPolicyTests(unittest.TestCase):
         )
         self.assertNotIn("external: true", self.source)
 
+    def test_live_gate_jobs_keep_receiver_and_database_identities_isolated(self):
+        receiver_role = self.source.split(
+            "resource validationServiceBusReceiver '", 1
+        )[1].split("resource validationSourceDatabaseSecretReader", 1)[0]
+        self.assertIn("scope: governanceQueue", receiver_role)
+        self.assertIn(
+            "principalId: validationServiceBusReceiverIdentity!.properties.principalId",
+            receiver_role,
+        )
+        self.assertIn("roleDefinitionId: serviceBusReceiverRoleId", receiver_role)
+        self.assertNotIn("serviceBusSenderRoleId", receiver_role)
+
+        receiver_job = self.source.split(
+            "resource validationServiceBusJob", 1
+        )[1].split("resource validationSourceDatabaseJob", 1)[0]
+        self.assertIn("validationImagePullIdentity.id", receiver_job)
+        self.assertIn("validationServiceBusReceiverIdentity.id", receiver_job)
+        self.assertNotIn("validationAnalystIdentity.id", receiver_job)
+        self.assertNotIn("validationApproverIdentity.id", receiver_job)
+        self.assertNotIn("appIdentity.id", receiver_job)
+        self.assertIn("'scripts.azure_live_gate_harness'", receiver_job)
+        self.assertIn("'service-bus'", receiver_job)
+        self.assertIn("value: 'REQUIRED_AT_START'", receiver_job)
+
+        secret_role = self.source.split(
+            "resource validationSourceDatabaseSecretReader", 1
+        )[1].split("resource containerApp", 1)[0]
+        self.assertIn("scope: databaseUrlSecret", secret_role)
+        self.assertIn(
+            "principalId: validationSourceDatabaseIdentity!.properties.principalId",
+            secret_role,
+        )
+        self.assertNotIn("validationRestoredDatabaseIdentity", secret_role)
+
+        source_database_job = self.source.split(
+            "resource validationSourceDatabaseJob", 1
+        )[1].split("resource validationRestoredDatabaseJob", 1)[0]
+        self.assertIn("validationSourceDatabaseIdentity.id", source_database_job)
+        self.assertNotIn(
+            "validationRestoredDatabaseIdentity.id", source_database_job
+        )
+        self.assertIn(
+            "keyVaultUrl: databaseUrlSecret.properties.secretUriWithVersion",
+            source_database_job,
+        )
+        self.assertIn("secretRef: 'source-database-url'", source_database_job)
+        self.assertIn("value: postgres.id", source_database_job)
+        self.assertIn(
+            "value: toLower(postgres.properties.fullyQualifiedDomainName)",
+            source_database_job,
+        )
+        self.assertIn("secretRef: 'evidence-hmac-key'", source_database_job)
+        self.assertNotIn("validationServiceBusReceiverIdentity", source_database_job)
+        self.assertNotIn("validationAnalystIdentity", source_database_job)
+        self.assertNotIn("validationApproverIdentity", source_database_job)
+
+        restored_database_job = self.source.split(
+            "resource validationRestoredDatabaseJob", 1
+        )[1].split("resource availabilityAlert", 1)[0]
+        self.assertIn("if (deployValidatedRestoreJob)", restored_database_job)
+        self.assertIn(
+            "validationRestoredDatabaseIdentity.id", restored_database_job
+        )
+        self.assertNotIn("validationSourceDatabaseIdentity.id", restored_database_job)
+        self.assertIn("value: restoredDatabaseUrl", restored_database_job)
+        self.assertIn("secretRef: 'restored-database-url'", restored_database_job)
+        self.assertNotIn("databaseUrlSecret", restored_database_job)
+        self.assertIn("value: restoredPostgres!.id", restored_database_job)
+        self.assertIn(
+            "value: toLower(restoredPostgres!.properties.fullyQualifiedDomainName)",
+            restored_database_job,
+        )
+        self.assertIn("secretRef: 'evidence-hmac-key'", restored_database_job)
+        self.assertRegex(
+            self.source,
+            r"@secure\(\)[\s\S]*?param restoredDatabaseUrl string = ''",
+        )
+        self.assertIn(
+            "deployRestoreValidationJob requires deployValidationJobs=true",
+            self.source,
+        )
+        self.assertIn(
+            "resource restoredPostgres "
+            "'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' existing",
+            self.source,
+        )
+        self.assertIn(
+            "deployRestoreValidationJob requires a distinct existing "
+            "restoredDatabaseServerName",
+            self.source,
+        )
+        self.assertRegex(
+            self.source,
+            r"@secure\(\)[\s\S]*?param validationEvidenceHmacKey string = ''",
+        )
+        self.assertIn(
+            "deployValidationJobs requires a 32-256 character evidence HMAC key",
+            self.source,
+        )
+
     def test_client_certificate_decision_does_not_claim_unimplemented_mtls(self):
         container_app = self.source.split(
             "resource containerApp 'Microsoft.App/containerApps@2025-01-01'", 1
-        )[1].split("resource analystValidationJob", 1)[0]
+        )[1].split("resource outboxPublisherApp", 1)[0]
         decision = SECURITY_REMEDIATION.read_text(encoding="utf-8")
         self.assertIn("allowInsecure: false", container_app)
         self.assertIn("external: false", container_app)
@@ -535,6 +688,7 @@ class AzureIacPolicyTests(unittest.TestCase):
         self.assertNotIn("dimensions: []", outbox_alert)
         self.assertIn("ContainerAppConsoleLogs_CL", self.source)
         self.assertIn('ContainerName_s == "outbox-publisher"', self.source)
+        self.assertIn('ContainerAppName_s == "${publisherAppName}"', self.source)
         self.assertIn("toint(payload.dead) > 0", self.source)
         self.assertEqual(self.source.count("autoMitigate: true"), 2)
         self.assertNotIn("autoMitigate: false", self.source)

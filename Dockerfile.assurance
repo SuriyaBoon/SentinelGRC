@@ -1,7 +1,12 @@
 ARG RUNTIME_IMAGE=sentinelgrc:runtime-image-required
 FROM ${RUNTIME_IMAGE}
 USER root
-COPY --chown=0:0 scripts/__init__.py scripts/azure_staging_validator.py /app/scripts/
+COPY --chown=0:0 live_gate_harness.py /app/live_gate_harness.py
+COPY --chown=0:0 scripts/__init__.py scripts/azure_staging_validator.py scripts/azure_live_gate_harness.py /app/scripts/
 RUN chmod 0555 /app/scripts \
-    && chmod 0444 /app/scripts/__init__.py /app/scripts/azure_staging_validator.py
+    && chmod 0444 \
+        /app/live_gate_harness.py \
+        /app/scripts/__init__.py \
+        /app/scripts/azure_staging_validator.py \
+        /app/scripts/azure_live_gate_harness.py
 USER 10001:10001

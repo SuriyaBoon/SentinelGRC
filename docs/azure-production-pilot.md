@@ -31,7 +31,7 @@ metadata, and records success, retry, or dead-letter state. Crash replay is
 create-only and idempotent.
 
 The same governance transaction creates a broker-outbox record. A dedicated
-Container Apps sidecar claims PostgreSQL records with lease fencing and
+Container App, isolated from the API identity, claims PostgreSQL records with lease fencing and
 publishes canonical messages to a session-enabled Azure Service Bus queue. It
 uses a stable server-generated `MessageId`, finding-scoped session and
 partition keys, managed identity, bounded SDK retries/timeouts, heartbeat and
@@ -51,11 +51,11 @@ flowchart LR
     User["Human user"] --> Entra["Microsoft Entra ID"]
     Agent["Evidence connector"] --> Edge["WAF and TLS edge"]
     Entra --> Edge
-    Edge --> App["Azure Container Apps"]
+    Edge --> App["API Container App"]
     App --> Pg["Azure Database for PostgreSQL"]
     App --> Blob["Blob evidence storage"]
     App --> Outbox["PostgreSQL transactional outbox"]
-    Outbox --> Worker["Fenced publisher sidecar"]
+    Outbox --> Worker["Isolated publisher Container App"]
     Worker --> Queue["Session-enabled Service Bus queue"]
     App --> Vault["Key Vault"]
     App --> Monitor["Azure Monitor"]
@@ -67,7 +67,7 @@ flowchart LR
 1. Deploy and validate the implemented PostgreSQL outbox publisher against the
    private Service Bus queue. Prove managed-identity authentication, stable
    message/session identity, crash-after-send replay, delivery-lag alerts,
-   dead-letter recovery, sidecar restart and downstream idempotency. No
+   dead-letter recovery, publisher-app restart and downstream idempotency. No
    external broker has been exercised by repository tests.
 2. Provision and validate the real Entra application registration, app roles,
    assignments, Conditional Access/MFA policy, issuer, audience, tenant, and

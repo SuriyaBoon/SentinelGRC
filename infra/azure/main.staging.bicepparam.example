@@ -5,7 +5,12 @@ param environmentName = 'staging'
 param location = 'southeastasia'
 param deployApplication = false
 param deployValidationJobs = false
+param deployRestoreValidationJob = false
 param deployMonitoringAlerts = false
+param restoredDatabaseServerName = ''
+// restoredDatabaseUrl and validationEvidenceHmacKey are intentionally absent.
+// Supply both only as secure deployment parameters after an approved private
+// point-in-time restore exists. The HMAC key must be unique to the evidence run.
 // Optional. Keep empty until an approved Action Group exists.
 param monitoringActionGroupResourceId = ''
 
