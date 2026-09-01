@@ -277,16 +277,22 @@ class ProductionImageClosureTests(unittest.TestCase):
         overlay = _copied_python_files(REPO_ROOT, ASSURANCE_DOCKERFILE_PATH)
         self.assertEqual(
             overlay,
-            {"scripts/__init__.py", "scripts/azure_staging_validator.py"},
+            {
+                "live_gate_harness.py",
+                "scripts/__init__.py",
+                "scripts/azure_live_gate_harness.py",
+                "scripts/azure_staging_validator.py",
+            },
         )
         available = self.copied | overlay
-        missing = (
-            _imports_for_file(
-                REPO_ROOT, "scripts/azure_staging_validator.py"
-            ).local_imports
-            - available
-        )
-        self.assertEqual(missing, set())
+        for module in (
+            "live_gate_harness.py",
+            "scripts/azure_live_gate_harness.py",
+            "scripts/azure_staging_validator.py",
+        ):
+            with self.subTest(module=module):
+                missing = _imports_for_file(REPO_ROOT, module).local_imports - available
+                self.assertEqual(missing, set())
     def test_qualification_overlay_adds_only_hash_locked_assessment_dependencies(self) -> None:
         instructions = _effective_docker_instructions(QUALIFICATION_DOCKERFILE_PATH)
         self.assertEqual(

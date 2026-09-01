@@ -783,11 +783,16 @@ This repository is **not** a production deployment. Before even a limited intern
   it can be tested safely; an authorised operator must validate it, lock it,
   monitor delivery lag/dead letters, and retain proof.
 - Validation of the implemented managed-identity Service Bus publisher and
-  supervised outbox sidecar against the real private queue. Repository tests
+  separately isolated outbox publisher app against the real private queue. Repository tests
   cover stable message IDs, sessions, duplicate-safe replay, fencing,
   heartbeat/readiness, retry and dead-letter recovery. Historical synthetic
   Azure messaging observations are retained only as old-revision evidence and
   grant no current live-gate credit.
+- The assurance image now includes a fail-closed, session-aware Service Bus
+  receiver probe and PostgreSQL source/restore snapshot verifier. Their Bicep
+  jobs use separate queue-receiver and database-verifier identities, expose no
+  message body or database URL, default runtime inputs to `REQUIRED_AT_START`,
+  and remain manual evidence tools rather than current Azure proof.
 - Live centralized logging, metrics, tracing, alert observation and resolution,
   backup/restore rehearsal, and disaster-recovery procedures. The offline
   repository security assessment is complete; target-environment assessment

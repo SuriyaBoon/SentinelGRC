@@ -17,6 +17,11 @@ The template provisions:
   existing Azure Container Registry;
 - a user-assigned application identity with resource-scoped RBAC;
 - opt-in analyst and approver validation jobs with isolated role identities;
+- an opt-in session-aware Service Bus validation job whose workload identity
+  has `Azure Service Bus Data Receiver` only on the governance queue;
+- a source PostgreSQL snapshot job whose workload identity can read only the
+  versioned database-URL secret, plus a separately opt-in restored-database
+  job that accepts its URL only through a secure deployment parameter;
 - a digest-pinned assurance image for validation jobs, separate from the
   production runtime image;
 - a separate validation image-pull identity with `AcrPull` only;
@@ -31,9 +36,15 @@ creation and queue partitioning is immutable. Do not change the child flag to
 `true`: an infrastructure-first deployment followed by an application-enabled
 redeployment would fail instead of converging idempotently.
 
-The application revision contains an API container and a supervised outbox
-publisher sidecar. The sidecar has sender-only Service Bus RBAC; consumers must
-use session-aware, idempotent processing and have their own receiver identity.
+The API and supervised outbox publisher are separate Container Apps. The API
+uses the application identity; the publisher uses a different identity with
+queue-scoped sender RBAC and secret-scoped access to the database URL. A third
+identity performs runtime image pulls only. Consumers must use session-aware,
+idempotent processing and have their own receiver identity.
+The assurance receiver is separate from the application and publisher. It
+settles only one exact synthetic message after validating the stable message
+ID, finding-scoped session ID, canonical body, correlation ID, event sequence,
+and payload SHA-256. Its output excludes the message body and endpoint names.
 
 `main.staging.bicepparam.example` contains identifiers only. The PostgreSQL
 bootstrap password is intentionally absent and must be supplied securely at
@@ -60,3 +71,12 @@ response was lost, but rejects states outside its explicit allowlist. The jobs
 bind each verified token subject to the corresponding managed-identity object
 ID, compare it with the peer identity, and exercise server-side self-approval
 rejection during the live rehearsal.
+
+The PostgreSQL jobs call `scripts.azure_live_gate_harness`. They compare the
+repository migration IDs and checksums, required schema objects, synthetic-only
+row counts and canonical row hashes, and one application-level finding read.
+The source and restored snapshots must have different target hashes and equal
+integrity evidence. `deployRestoreValidationJob` defaults to `false` and fails
+closed unless validation jobs are enabled and a secure PostgreSQL URL is
+provided. These jobs do not create a restore and do not grant live-gate credit
+without an approved Azure execution and independently retained evidence.

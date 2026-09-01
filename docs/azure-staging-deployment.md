@@ -19,15 +19,16 @@ flowchart LR
     Operator["Human operator"] -->|"manual review and deployment"| ARM["Azure Resource Manager"]
     ARM --> VNet["Private virtual network"]
     VNet --> CAE["Internal Container Apps environment"]
-    CAE --> API["SentinelGRC API container"]
-    CAE --> Worker["Outbox publisher sidecar"]
+    CAE --> API["SentinelGRC API app"]
+    CAE --> Worker["Outbox publisher app"]
     API -->|"managed identity"| KV["Key Vault"]
     API -->|"TLS and private DNS"| PG["PostgreSQL Flexible Server"]
     API -->|"managed identity"| Blob["Evidence and immutable audit containers"]
     Worker -->|"fenced claims and heartbeat"| PG
     Worker -->|"sender-only managed identity"| SB["Session-enabled Service Bus queue and DLQ"]
     CAE --> Monitor["Azure Monitor and Log Analytics"]
-    ACR["Existing Azure Container Registry"] -->|"digest-pinned image and AcrPull"| App
+    ACR["Existing Azure Container Registry"] -->|"digest-pinned image and pull-only identity"| API
+    ACR -->|"same reviewed runtime digest"| Worker
 ```
 
 ## User-owned prerequisites
@@ -236,11 +237,12 @@ change only `deployApplication` to `true`, rerun the preflight and `what-if`,
 and then run the same deployment command.
 
 The Container App is internal-only and receives a user-assigned managed
-identity. The revision contains the API and a supervised outbox-publisher
-sidecar. Both receive the database URL through a Key Vault reference; only the
-sidecar has sender-scoped Service Bus access. No ACR password, storage key,
-Service Bus connection string, or Key Vault access policy is embedded in the
-application.
+identity. The API and supervised outbox publisher are separate Container Apps.
+They share only the reviewed runtime image and PostgreSQL state: the API has
+the application identity, while the publisher has a different identity with
+queue-scoped sender RBAC and secret-scoped access to the database URL. A third
+identity performs runtime image pulls only. No ACR password, storage key,
+Service Bus connection string, or Key Vault access policy is embedded.
 
 ## 7. Validate
 
@@ -272,16 +274,16 @@ From an approved private-network execution point, validate:
 - `/ready` returns HTTP 200 and both PostgreSQL stores are reachable;
 - a synthetic finding completes the tested governance lifecycle;
 - replay does not create a duplicate finding;
-- the outbox sidecar heartbeat makes `/ready` pass only while delivery is
+- the outbox publisher app heartbeat makes `/ready` pass only while delivery is
   current and no outbox dead letter exists;
 - one synthetic lifecycle produces ordered `governance.event.v1` messages
   with the expected stable `MessageId`, finding-scoped `SessionId`, and
   `payload_sha256` property;
-- stopping the sidecar makes readiness fail after the configured heartbeat
+- stopping the publisher app makes readiness fail after the configured heartbeat
   age, and restarting it recovers without duplicate logical delivery;
 - a forced send failure exercises PostgreSQL retry and exact-confirmation
-  dead-letter recovery; Service Bus DLQ behavior must be tested separately by
-  an authorised session-aware consumer;
+  dead-letter recovery; the role-isolated `validationServiceBusJob` validates
+  and settles only the exact approved synthetic active-queue or DLQ message;
 - evidence and audit objects are accessible only through managed identity;
 - `python audit_worker.py --max-items 100` drains synthetic audit exports in
   event order, replay creates no duplicate object, and retry/dead-letter
@@ -290,7 +292,20 @@ From an approved private-network execution point, validate:
   locked only through a separately approved operator change after retention
   and recovery tests pass;
 - logs contain request IDs but no secrets or bearer tokens;
-- backup restore succeeds into an isolated validation server.
+- the source database snapshot job captures migration checksums, required
+  schema objects, synthetic-only row counts/hashes and an application read;
+- backup restore succeeds into an isolated private validation server, after
+  which `deployRestoreValidationJob=true` is reviewed with
+  `restoredDatabaseUrl` supplied as a secure parameter and the restored
+  snapshot matches the source snapshot while proving a different target hash.
+
+The live-gate jobs default their correlation inputs to `REQUIRED_AT_START`.
+Never start one without an approved run ID, exact synthetic message/finding
+identifiers, expected payload checksum, settlement action, and evidence owner.
+The Service Bus job has queue-scoped receiver RBAC and no Sentinel application
+role. The database-validation identity has no Sentinel application role; its
+source secret permission is scoped to the versioned database URL secret. The
+restored database URL must never be committed or printed.
 
 These checks require live operational work beyond repository tests. Do not
 describe the deployment as production-ready until they pass and evidence is

@@ -5,7 +5,10 @@ param environmentName = 'staging'
 param location = 'southeastasia'
 param deployApplication = false
 param deployValidationJobs = false
+param deployRestoreValidationJob = false
 param deployMonitoringAlerts = false
+// restoredDatabaseUrl is intentionally absent. Supply it only as a secure
+// deployment parameter after an approved private point-in-time restore exists.
 // Optional. Keep empty until an approved Action Group exists.
 param monitoringActionGroupResourceId = ''
 

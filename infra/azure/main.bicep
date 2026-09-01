@@ -37,6 +37,13 @@ param deployApplication bool = false
 @description('Deploy role-isolated manual staging validation jobs after the private application exists.')
 param deployValidationJobs bool = false
 
+@description('Deploy the isolated restored-PostgreSQL validation job only after a private point-in-time restore exists.')
+param deployRestoreValidationJob bool = false
+
+@secure()
+@description('Private restored PostgreSQL URL used only by the opt-in restore validation job.')
+param restoredDatabaseUrl string = ''
+
 @description('Deploy staging availability and outbox-health alert rules.')
 param deployMonitoringAlerts bool = false
 
@@ -110,11 +117,18 @@ var containerSubnetName = 'container-apps'
 var databaseSubnetName = 'postgresql'
 var privateEndpointSubnetName = 'private-endpoints'
 var identityName = '${baseName}-app-id'
+var runtimeImagePullIdentityName = '${baseName}-runtime-pull-id'
+var publisherIdentityName = '${baseName}-publisher-id'
 var validationImagePullIdentityName = '${baseName}-validation-pull-id'
 var validationAnalystIdentityName = '${baseName}-validation-analyst-id'
 var validationApproverIdentityName = '${baseName}-validation-approver-id'
+var validationServiceBusReceiverIdentityName = '${baseName}-validation-bus-receiver-id'
+var validationDatabaseIdentityName = '${baseName}-validation-database-id'
 var validationAnalystJobName = '${baseName}-analyst-validation'
 var validationApproverJobName = '${baseName}-approver-validation'
+var validationServiceBusJobName = '${baseName}-bus-validation'
+var validationSourceDatabaseJobName = '${baseName}-source-db-validation'
+var validationRestoredDatabaseJobName = '${baseName}-restored-db-validation'
 var monitoringQueryIdentityName = '${baseName}-monitor-query-id'
 var availabilityAlertName = '${baseName}-no-replicas'
 var outboxHealthAlertName = '${baseName}-outbox-health'
@@ -122,6 +136,7 @@ var workspaceName = '${baseName}-logs'
 var appInsightsName = '${baseName}-appi'
 var environmentResourceName = '${baseName}-cae'
 var appName = '${baseName}-api'
+var publisherAppName = '${baseName}-publisher'
 var databaseName = 'sentinelgrc'
 var storageAccountName = take('${compactName}data', 24)
 var keyVaultName = take('${baseName}-kv', 24)
@@ -190,6 +205,13 @@ var deployValidatedJobs = !deployValidationJobs
     : !validationImageDigestPinned
       ? fail('deployValidationJobs requires a lowercase digest-pinned validation image from containerRegistryName.azurecr.io/sentinelgrc-assurance')
       : true
+var deployValidatedRestoreJob = !deployRestoreValidationJob
+  ? false
+  : !deployValidatedJobs
+    ? fail('deployRestoreValidationJob requires deployValidationJobs=true with valid application and validation images')
+    : !startsWith(restoredDatabaseUrl, 'postgresql://') && !startsWith(restoredDatabaseUrl, 'postgresql+psycopg://')
+      ? fail('deployRestoreValidationJob requires a secure PostgreSQL restoredDatabaseUrl')
+      : true
 var deployValidatedMonitoring = !deployMonitoringAlerts
   ? false
   : deployValidatedApplication
@@ -207,6 +229,10 @@ var storageBlobContributorRoleId = subscriptionResourceId(
 var serviceBusSenderRoleId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39'
+)
+var serviceBusReceiverRoleId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0'
 )
 var logAnalyticsReaderRoleId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
@@ -403,6 +429,38 @@ resource validationApproverIdentity 'Microsoft.ManagedIdentity/userAssignedIdent
   tags: union(tags, {
     purpose: 'staging-lifecycle-validation'
     sentinelRole: 'approver'
+  })
+}
+
+resource runtimeImagePullIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: runtimeImagePullIdentityName
+  location: location
+  tags: union(tags, {
+    purpose: 'runtime-image-pull'
+  })
+}
+
+resource publisherIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: publisherIdentityName
+  location: location
+  tags: union(tags, {
+    purpose: 'service-bus-publisher'
+  })
+}
+
+resource validationServiceBusReceiverIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (deployValidatedJobs) {
+  name: validationServiceBusReceiverIdentityName
+  location: location
+  tags: union(tags, {
+    purpose: 'service-bus-receiver-validation'
+  })
+}
+
+resource validationDatabaseIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (deployValidatedJobs) {
+  name: validationDatabaseIdentityName
+  location: location
+  tags: union(tags, {
+    purpose: 'postgresql-restore-validation'
   })
 }
 
@@ -866,11 +924,41 @@ resource auditBlobContributor 'Microsoft.Authorization/roleAssignments@2022-04-0
 
 resource serviceBusSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: governanceQueue
-  name: guid(governanceQueue.id, appIdentity.id, serviceBusSenderRoleId)
+  name: guid(governanceQueue.id, publisherIdentity.id, serviceBusSenderRoleId)
   properties: {
-    principalId: appIdentity.properties.principalId
+    principalId: publisherIdentity.properties.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: serviceBusSenderRoleId
+  }
+}
+
+resource publisherDatabaseSecretReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: databaseUrlSecret
+  name: guid(databaseUrlSecret.id, publisherIdentity.id, keyVaultSecretsUserRoleId)
+  properties: {
+    principalId: publisherIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: keyVaultSecretsUserRoleId
+  }
+}
+
+resource validationServiceBusReceiver 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployValidatedJobs) {
+  scope: governanceQueue
+  name: guid(governanceQueue.id, validationServiceBusReceiverIdentity!.id, serviceBusReceiverRoleId)
+  properties: {
+    principalId: validationServiceBusReceiverIdentity!.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: serviceBusReceiverRoleId
+  }
+}
+
+resource validationSourceDatabaseSecretReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployValidatedJobs) {
+  scope: databaseUrlSecret
+  name: guid(databaseUrlSecret.id, validationDatabaseIdentity!.id, keyVaultSecretsUserRoleId)
+  properties: {
+    principalId: validationDatabaseIdentity!.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: keyVaultSecretsUserRoleId
   }
 }
 
@@ -881,6 +969,7 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = if (deployValid
     type: 'UserAssigned'
     userAssignedIdentities: {
       '${appIdentity.id}': {}
+      '${runtimeImagePullIdentity.id}': {}
     }
   }
   dependsOn: [
@@ -889,8 +978,6 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = if (deployValid
     auditBlobContributor
     blobPrivateDnsGroup
     keyVaultSecretsUser
-    serviceBusPrivateDnsGroup
-    serviceBusSender
     vaultPrivateDnsGroup
   ]
   tags: tags
@@ -909,7 +996,7 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = if (deployValid
       }
       registries: [
         {
-          identity: appIdentity.id
+          identity: runtimeImagePullIdentity.id
           server: registry.properties.loginServer
         }
       ]
@@ -1020,6 +1107,68 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = if (deployValid
             memory: '1Gi'
           }
         }
+      ]
+      scale: {
+        maxReplicas: 2
+        minReplicas: 1
+        rules: [
+          {
+            custom: {
+              metadata: {
+                concurrentRequests: '20'
+              }
+              type: 'http'
+            }
+            name: 'http-concurrency'
+          }
+        ]
+      }
+    }
+    workloadProfileName: 'Consumption'
+  }
+}
+
+resource outboxPublisherApp 'Microsoft.App/containerApps@2025-01-01' = if (deployValidatedApplication) {
+  name: publisherAppName
+  location: location
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${publisherIdentity.id}': {}
+      '${runtimeImagePullIdentity.id}': {}
+    }
+  }
+  dependsOn: [
+    acrPrivateDnsGroup
+    acrPull
+    publisherDatabaseSecretReader
+    serviceBusPrivateDnsGroup
+    serviceBusSender
+    vaultPrivateDnsGroup
+  ]
+  tags: union(tags, {
+    purpose: 'service-bus-publisher'
+  })
+  properties: {
+    configuration: {
+      activeRevisionsMode: 'Single'
+      registries: [
+        {
+          identity: runtimeImagePullIdentity.id
+          server: registry.properties.loginServer
+        }
+      ]
+      secrets: [
+        {
+          identity: publisherIdentity.id
+          keyVaultUrl: databaseUrlSecret.properties.secretUriWithVersion
+          name: 'database-url'
+        }
+      ]
+    }
+    environmentId: containerEnvironment.id
+    template: {
+      containers: [
         {
           args: [
             'outbox_worker.py'
@@ -1045,7 +1194,7 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = if (deployValid
             }
             {
               name: 'SENTINEL_AZURE_CLIENT_ID'
-              value: appIdentity.properties.clientId
+              value: publisherIdentity.properties.clientId
             }
             {
               name: 'SENTINEL_SERVICE_BUS_NAMESPACE'
@@ -1065,19 +1214,8 @@ resource containerApp 'Microsoft.App/containerApps@2025-01-01' = if (deployValid
         }
       ]
       scale: {
-        maxReplicas: 2
+        maxReplicas: 1
         minReplicas: 1
-        rules: [
-          {
-            custom: {
-              metadata: {
-                concurrentRequests: '20'
-              }
-              type: 'http'
-            }
-            name: 'http-concurrency'
-          }
-        ]
       }
     }
     workloadProfileName: 'Consumption'
@@ -1280,6 +1418,259 @@ resource validationApproverJob 'Microsoft.App/jobs@2025-01-01' = if (deployValid
   }
 }
 
+resource validationServiceBusJob 'Microsoft.App/jobs@2025-01-01' = if (deployValidatedJobs) {
+  name: validationServiceBusJobName
+  location: location
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${validationImagePullIdentity.id}': {}
+      '${validationServiceBusReceiverIdentity.id}': {}
+    }
+  }
+  dependsOn: [
+    acrPrivateDnsGroup
+    serviceBusPrivateDnsGroup
+    validationAcrPull
+    validationServiceBusReceiver
+  ]
+  tags: union(tags, {
+    purpose: 'service-bus-receiver-validation'
+  })
+  properties: {
+    configuration: {
+      manualTriggerConfig: {
+        parallelism: 1
+        replicaCompletionCount: 1
+      }
+      registries: [
+        {
+          identity: validationImagePullIdentity.id
+          server: registry.properties.loginServer
+        }
+      ]
+      replicaRetryLimit: 0
+      replicaTimeout: 900
+      triggerType: 'Manual'
+    }
+    environmentId: containerEnvironment.id
+    template: {
+      containers: [
+        {
+          args: [
+            '-m'
+            'scripts.azure_live_gate_harness'
+            'service-bus'
+          ]
+          command: [
+            'python'
+          ]
+          env: [
+            {
+              name: 'SENTINEL_SERVICE_BUS_NAMESPACE'
+              value: '${serviceBus.name}.servicebus.windows.net'
+            }
+            {
+              name: 'SENTINEL_SERVICE_BUS_QUEUE'
+              value: governanceQueue.name
+            }
+            {
+              name: 'SENTINEL_AZURE_CLIENT_ID'
+              value: validationServiceBusReceiverIdentity!.properties.clientId
+            }
+            {
+              name: 'SENTINEL_GATE_MESSAGE_ID'
+              value: 'REQUIRED_AT_START'
+            }
+            {
+              name: 'SENTINEL_GATE_SESSION_ID'
+              value: 'REQUIRED_AT_START'
+            }
+            {
+              name: 'SENTINEL_GATE_PAYLOAD_SHA256'
+              value: 'REQUIRED_AT_START'
+            }
+            {
+              name: 'SENTINEL_GATE_SETTLEMENT'
+              value: 'REQUIRED_AT_START'
+            }
+            {
+              name: 'SENTINEL_GATE_FROM_DEAD_LETTER'
+              value: 'false'
+            }
+          ]
+          image: validationContainerImage
+          name: 'service-bus-validator'
+          resources: {
+            cpu: json('0.5')
+            memory: '1Gi'
+          }
+        }
+      ]
+    }
+    workloadProfileName: 'Consumption'
+  }
+}
+
+resource validationSourceDatabaseJob 'Microsoft.App/jobs@2025-01-01' = if (deployValidatedJobs) {
+  name: validationSourceDatabaseJobName
+  location: location
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${validationImagePullIdentity.id}': {}
+      '${validationDatabaseIdentity.id}': {}
+    }
+  }
+  dependsOn: [
+    acrPrivateDnsGroup
+    validationAcrPull
+    validationSourceDatabaseSecretReader
+    vaultPrivateDnsGroup
+  ]
+  tags: union(tags, {
+    purpose: 'source-postgresql-validation'
+  })
+  properties: {
+    configuration: {
+      manualTriggerConfig: {
+        parallelism: 1
+        replicaCompletionCount: 1
+      }
+      registries: [
+        {
+          identity: validationImagePullIdentity.id
+          server: registry.properties.loginServer
+        }
+      ]
+      replicaRetryLimit: 0
+      replicaTimeout: 900
+      secrets: [
+        {
+          identity: validationDatabaseIdentity.id
+          keyVaultUrl: databaseUrlSecret.properties.secretUriWithVersion
+          name: 'source-database-url'
+        }
+      ]
+      triggerType: 'Manual'
+    }
+    environmentId: containerEnvironment.id
+    template: {
+      containers: [
+        {
+          args: [
+            '-m'
+            'scripts.azure_live_gate_harness'
+            'postgres-snapshot'
+          ]
+          command: [
+            'python'
+          ]
+          env: [
+            {
+              name: 'SENTINEL_RESTORE_DATABASE_URL'
+              secretRef: 'source-database-url'
+            }
+            {
+              name: 'SENTINEL_GATE_SYNTHETIC_PREFIX'
+              value: 'REQUIRED_AT_START'
+            }
+            {
+              name: 'SENTINEL_GATE_FINDING_ID'
+              value: 'REQUIRED_AT_START'
+            }
+          ]
+          image: validationContainerImage
+          name: 'source-database-validator'
+          resources: {
+            cpu: json('0.5')
+            memory: '1Gi'
+          }
+        }
+      ]
+    }
+    workloadProfileName: 'Consumption'
+  }
+}
+
+resource validationRestoredDatabaseJob 'Microsoft.App/jobs@2025-01-01' = if (deployValidatedRestoreJob) {
+  name: validationRestoredDatabaseJobName
+  location: location
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${validationImagePullIdentity.id}': {}
+      '${validationDatabaseIdentity.id}': {}
+    }
+  }
+  dependsOn: [
+    acrPrivateDnsGroup
+    validationAcrPull
+  ]
+  tags: union(tags, {
+    purpose: 'restored-postgresql-validation'
+  })
+  properties: {
+    configuration: {
+      manualTriggerConfig: {
+        parallelism: 1
+        replicaCompletionCount: 1
+      }
+      registries: [
+        {
+          identity: validationImagePullIdentity.id
+          server: registry.properties.loginServer
+        }
+      ]
+      replicaRetryLimit: 0
+      replicaTimeout: 900
+      secrets: [
+        {
+          name: 'restored-database-url'
+          value: restoredDatabaseUrl
+        }
+      ]
+      triggerType: 'Manual'
+    }
+    environmentId: containerEnvironment.id
+    template: {
+      containers: [
+        {
+          args: [
+            '-m'
+            'scripts.azure_live_gate_harness'
+            'postgres-snapshot'
+          ]
+          command: [
+            'python'
+          ]
+          env: [
+            {
+              name: 'SENTINEL_RESTORE_DATABASE_URL'
+              secretRef: 'restored-database-url'
+            }
+            {
+              name: 'SENTINEL_GATE_SYNTHETIC_PREFIX'
+              value: 'REQUIRED_AT_START'
+            }
+            {
+              name: 'SENTINEL_GATE_FINDING_ID'
+              value: 'REQUIRED_AT_START'
+            }
+          ]
+          image: validationContainerImage
+          name: 'restored-database-validator'
+          resources: {
+            cpu: json('0.5')
+            memory: '1Gi'
+          }
+        }
+      ]
+    }
+    workloadProfileName: 'Consumption'
+  }
+}
+
 resource availabilityAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = if (deployValidatedMonitoring) {
   name: availabilityAlertName
   location: 'global'
@@ -1351,7 +1742,7 @@ resource outboxHealthAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' =
           operator: 'GreaterThan'
           query: '''
 ContainerAppConsoleLogs_CL
-| where ContainerAppName_s == "${appName}"
+| where ContainerAppName_s == "${publisherAppName}"
 | where ContainerName_s == "outbox-publisher"
 | extend payload = parse_json(Log_s)
 | where toint(payload.dead) > 0 or toint(payload.retry) > 0 or toint(payload.stale) > 0
@@ -1378,7 +1769,7 @@ module acrPull 'acr-pull-role.bicep' = {
   name: '${deployment().name}-acr-pull'
   scope: resourceGroup(containerRegistrySubscriptionId, containerRegistryResourceGroup)
   params: {
-    principalId: appIdentity.properties.principalId
+    principalId: runtimeImagePullIdentity.properties.principalId
     registryName: containerRegistryName
   }
 }
@@ -1394,15 +1785,23 @@ module validationAcrPull 'acr-pull-role.bicep' = if (deployValidatedJobs) {
 
 output deploymentMode string = deployValidatedApplication ? 'infrastructure-and-application' : 'infrastructure-only'
 output managedIdentityResourceId string = appIdentity.id
+output runtimeImagePullIdentityResourceId string = runtimeImagePullIdentity.id
+output publisherIdentityResourceId string = publisherIdentity.id
 output validationImagePullIdentityResourceId string = deployValidatedJobs ? validationImagePullIdentity.id : ''
 output validationAnalystIdentityResourceId string = deployValidatedJobs ? validationAnalystIdentity.id : ''
 output validationApproverIdentityResourceId string = deployValidatedJobs ? validationApproverIdentity.id : ''
+output validationServiceBusReceiverIdentityResourceId string = deployValidatedJobs ? validationServiceBusReceiverIdentity.id : ''
+output validationDatabaseIdentityResourceId string = deployValidatedJobs ? validationDatabaseIdentity.id : ''
 output validationAnalystJobResourceId string = deployValidatedJobs ? validationAnalystJob.id : ''
 output validationApproverJobResourceId string = deployValidatedJobs ? validationApproverJob.id : ''
+output validationServiceBusJobResourceId string = deployValidatedJobs ? validationServiceBusJob.id : ''
+output validationSourceDatabaseJobResourceId string = deployValidatedJobs ? validationSourceDatabaseJob.id : ''
+output validationRestoredDatabaseJobResourceId string = deployValidatedRestoreJob ? validationRestoredDatabaseJob.id : ''
 output monitoringQueryIdentityResourceId string = deployValidatedMonitoring ? monitoringQueryIdentity.id : ''
 output availabilityAlertResourceId string = deployValidatedMonitoring ? availabilityAlert.id : ''
 output outboxHealthAlertResourceId string = deployValidatedMonitoring ? outboxHealthAlert.id : ''
 output containerAppResourceId string = deployValidatedApplication ? containerApp.id : ''
+output outboxPublisherAppResourceId string = deployValidatedApplication ? outboxPublisherApp.id : ''
 output containerEnvironmentResourceId string = containerEnvironment.id
 output postgresServerName string = postgres.name
 output evidenceStorageAccountName string = storage.name

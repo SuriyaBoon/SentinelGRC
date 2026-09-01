@@ -153,9 +153,9 @@ jobs:
       - name: Verify runtime and assurance import boundaries
         run: |
           docker run --rm --entrypoint python sentinelgrc:${{ github.sha }} -c \
-            "import importlib.util, pathlib, runtime_app; assert importlib.util.find_spec('staging_assurance') is None; assert not pathlib.Path('/app/scripts/azure_staging_validator.py').exists()"
+            "import importlib.util, pathlib, runtime_app; assert importlib.util.find_spec('staging_assurance') is None; assert not pathlib.Path('/app/live_gate_harness.py').exists(); assert not pathlib.Path('/app/scripts/azure_staging_validator.py').exists()"
           docker run --rm --entrypoint python sentinelgrc-assurance:${{ github.sha }} -c \
-            "import scripts.azure_staging_validator"
+            "import live_gate_harness, scripts.azure_live_gate_harness, scripts.azure_staging_validator"
 
       - name: Reject unreachable PostgreSQL at application construction
         run: |
