@@ -283,7 +283,8 @@ From an approved private-network execution point, validate:
   age, and restarting it recovers without duplicate logical delivery;
 - a forced send failure exercises PostgreSQL retry and exact-confirmation
   dead-letter recovery; the role-isolated `validationServiceBusJob` validates
-  and settles only the exact approved synthetic active-queue or DLQ message;
+  and settles only the exact approved synthetic active-queue or DLQ message,
+  including exact dead-letter reason and description;
 - evidence and audit objects are accessible only through managed identity;
 - `python audit_worker.py --max-items 100` drains synthetic audit exports in
   event order, replay creates no duplicate object, and retry/dead-letter
@@ -296,16 +297,21 @@ From an approved private-network execution point, validate:
   schema objects, synthetic-only row counts/hashes and an application read;
 - backup restore succeeds into an isolated private validation server, after
   which `deployRestoreValidationJob=true` is reviewed with
-  `restoredDatabaseUrl` supplied as a secure parameter and the restored
-  snapshot matches the source snapshot while proving a different target hash.
+  `restoredDatabaseServerName`, secure `restoredDatabaseUrl`, and a secure
+  per-run `validationEvidenceHmacKey`. The source and restored jobs have
+  different identities; the restored identity has no source-secret role. Each
+  job binds its URL to the canonical FQDN of the declared Azure server, reads
+  database metadata in one read-only repeatable-read transaction, and emits a
+  target-identity HMAC. Integrity evidence must match while target HMACs differ.
 
 The live-gate jobs default their correlation inputs to `REQUIRED_AT_START`.
 Never start one without an approved run ID, exact synthetic message/finding
 identifiers, expected payload checksum, settlement action, and evidence owner.
 The Service Bus job has queue-scoped receiver RBAC and no Sentinel application
-role. The database-validation identity has no Sentinel application role; its
-source secret permission is scoped to the versioned database URL secret. The
-restored database URL must never be committed or printed.
+  role. The source-database identity has no Sentinel application role and its
+  secret permission is scoped to the versioned source URL. The restored job
+  uses another identity with no source-secret permission. Database URLs and the
+  evidence HMAC key must never be committed or printed.
 
 These checks require live operational work beyond repository tests. Do not
 describe the deployment as production-ready until they pass and evidence is

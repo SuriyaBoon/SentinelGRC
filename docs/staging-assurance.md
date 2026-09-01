@@ -174,7 +174,7 @@ Service Bus source.
 | Caller impersonates approver | Governance actors come from authenticated server context | Separation-of-duties tests and audit events | Entra role/group assignment correctness |
 | Message tampering | Canonical JSON, metadata match, SHA-256 property, stable MessageId | Outbox payload and live-gate harness integrity tests | Live broker receipt and settlement |
 | Stale or competing worker | Lease token, worker ID, expiry fencing and ordered claims | Fencing/reclaim tests | Sidecar restart and scale-out behavior |
-| Shared-key credential theft | Managed Identity only; local/shared-key fallback rejected | Configuration and IaC tests, queue-scoped receiver and secret-scoped database verifier identities | Actual RBAC assignment and live token use |
+| Shared-key credential theft | Managed Identity only; local/shared-key fallback rejected | Configuration and IaC tests, queue-scoped receiver plus separate source/restored database identities | Actual RBAC assignment and live negative-access tests |
 | Evidence deletion or overwrite | Create-only content-addressed evidence and audit adapters | Integrity/replay tests | Locked retention, restore, legal hold |
 | Private-service exposure | IaC disables public access and declares private endpoints | Bicep policy/compile result | Tenant deployment and DNS validation |
 | Secret leakage in logs/repo | Redaction, secret scan, identifier-only examples | CI hygiene and review evidence | Azure diagnostic settings and operator practice |
@@ -217,12 +217,18 @@ tuned using staging measurements and documented approval.
    into a new server and use an approved cutover when data rollback is required.
 8. **Service Bus live-gate observation:** run only the manual assurance job with
    exact synthetic message ID, session ID, payload hash and settlement action.
-   A mismatch is abandoned and fails the gate; no message body is retained.
+   Reason and description must both match the exact approved dead-letter
+   contract. A mismatch is abandoned and fails the gate; no message body or
+   broker description is retained.
 9. **PostgreSQL restore verification:** snapshot the approved synthetic prefix
    on source and restored servers with `scripts.azure_live_gate_harness`, then
    compare migration checksums, schema count, per-table count/hash and the
-   application-read hash. Matching target hashes fail because they do not prove
-   an isolated restore.
+   application-read hash. Every snapshot uses one read-only repeatable-read
+   transaction. Bicep binds each URL to the declared Azure server resource and
+   canonical FQDN; a per-run HMAC pseudonymizes the resource and observed
+   database identity. Matching target HMACs fail because they do not prove an
+   isolated restore. The restored identity must be dynamically denied access
+   to the source secret before Gate 6 can receive credit.
 
 ## Go/no-go evidence
 

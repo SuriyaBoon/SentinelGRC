@@ -76,7 +76,17 @@ def _postgres_snapshot(_: argparse.Namespace) -> dict[str, Any]:
     database = None
     try:
         database = Database(_required_env("SENTINEL_RESTORE_DATABASE_URL"))
-        return PostgresRestoreVerifier(database, MIGRATIONS).snapshot(
+        return PostgresRestoreVerifier(
+            database,
+            MIGRATIONS,
+            expected_target_resource_id=_required_env(
+                "SENTINEL_GATE_EXPECTED_TARGET_RESOURCE_ID"
+            ),
+            expected_hostname=_required_env(
+                "SENTINEL_GATE_EXPECTED_TARGET_HOSTNAME"
+            ),
+            evidence_hmac_key=_required_env("SENTINEL_GATE_EVIDENCE_HMAC_KEY"),
+        ).snapshot(
             _required_env("SENTINEL_GATE_SYNTHETIC_PREFIX"),
             _required_env("SENTINEL_GATE_FINDING_ID"),
         )
@@ -117,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     try:
         result = args.handler(args)
-    except (LiveGateError, RuntimeError, ValueError) as error:
+    except (LiveGateError, ValueError) as error:
         print(
             json.dumps(
                 {"status": "BLOCKED", "error": str(error)}, sort_keys=True

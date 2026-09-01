@@ -20,8 +20,8 @@ The template provisions:
 - an opt-in session-aware Service Bus validation job whose workload identity
   has `Azure Service Bus Data Receiver` only on the governance queue;
 - a source PostgreSQL snapshot job whose workload identity can read only the
-  versioned database-URL secret, plus a separately opt-in restored-database
-  job that accepts its URL only through a secure deployment parameter;
+  versioned source database-URL secret, plus a separately opt-in restored job
+  with a different identity and no source-secret role;
 - a digest-pinned assurance image for validation jobs, separate from the
   production runtime image;
 - a separate validation image-pull identity with `AcrPull` only;
@@ -47,8 +47,8 @@ ID, finding-scoped session ID, canonical body, correlation ID, event sequence,
 and payload SHA-256. Its output excludes the message body and endpoint names.
 
 `main.staging.bicepparam.example` contains identifiers only. The PostgreSQL
-bootstrap password is intentionally absent and must be supplied securely at
-deployment time.
+bootstrap password, restored URL, and per-run evidence HMAC key are
+intentionally absent and must be supplied securely at deployment time.
 
 The offline IaC preflight binds the runtime image to the digest-pinned
 `<acr-name>.azurecr.io/sentinelgrc` repository and the validation image to the
@@ -75,8 +75,11 @@ rejection during the live rehearsal.
 The PostgreSQL jobs call `scripts.azure_live_gate_harness`. They compare the
 repository migration IDs and checksums, required schema objects, synthetic-only
 row counts and canonical row hashes, and one application-level finding read.
-The source and restored snapshots must have different target hashes and equal
-integrity evidence. `deployRestoreValidationJob` defaults to `false` and fails
-closed unless validation jobs are enabled and a secure PostgreSQL URL is
-provided. These jobs do not create a restore and do not grant live-gate credit
-without an approved Azure execution and independently retained evidence.
+Every snapshot runs all identity, migration, schema, row, and application reads
+inside one read-only repeatable-read transaction. Target identity is a per-run
+HMAC over the Bicep-bound Azure server resource, canonical server FQDN, and
+database-observed name, OID, address, and port. The source and restored HMACs
+must differ while integrity evidence remains equal. The restored job rejects a
+URL whose host is not the canonical FQDN of the declared existing restored
+server. `deployRestoreValidationJob` defaults to `false`; these jobs do not
+create a restore or grant live-gate credit without approved Azure execution.

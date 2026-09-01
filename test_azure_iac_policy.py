@@ -567,16 +567,29 @@ class AzureIacPolicyTests(unittest.TestCase):
         )[1].split("resource containerApp", 1)[0]
         self.assertIn("scope: databaseUrlSecret", secret_role)
         self.assertIn(
-            "principalId: validationDatabaseIdentity!.properties.principalId",
+            "principalId: validationSourceDatabaseIdentity!.properties.principalId",
             secret_role,
         )
+        self.assertNotIn("validationRestoredDatabaseIdentity", secret_role)
 
         source_database_job = self.source.split(
             "resource validationSourceDatabaseJob", 1
         )[1].split("resource validationRestoredDatabaseJob", 1)[0]
-        self.assertIn("validationDatabaseIdentity.id", source_database_job)
-        self.assertIn("keyVaultUrl: databaseUrlSecret.properties.secretUriWithVersion", source_database_job)
+        self.assertIn("validationSourceDatabaseIdentity.id", source_database_job)
+        self.assertNotIn(
+            "validationRestoredDatabaseIdentity.id", source_database_job
+        )
+        self.assertIn(
+            "keyVaultUrl: databaseUrlSecret.properties.secretUriWithVersion",
+            source_database_job,
+        )
         self.assertIn("secretRef: 'source-database-url'", source_database_job)
+        self.assertIn("value: postgres.id", source_database_job)
+        self.assertIn(
+            "value: toLower(postgres.properties.fullyQualifiedDomainName)",
+            source_database_job,
+        )
+        self.assertIn("secretRef: 'evidence-hmac-key'", source_database_job)
         self.assertNotIn("validationServiceBusReceiverIdentity", source_database_job)
         self.assertNotIn("validationAnalystIdentity", source_database_job)
         self.assertNotIn("validationApproverIdentity", source_database_job)
@@ -585,15 +598,43 @@ class AzureIacPolicyTests(unittest.TestCase):
             "resource validationRestoredDatabaseJob", 1
         )[1].split("resource availabilityAlert", 1)[0]
         self.assertIn("if (deployValidatedRestoreJob)", restored_database_job)
+        self.assertIn(
+            "validationRestoredDatabaseIdentity.id", restored_database_job
+        )
+        self.assertNotIn("validationSourceDatabaseIdentity.id", restored_database_job)
         self.assertIn("value: restoredDatabaseUrl", restored_database_job)
         self.assertIn("secretRef: 'restored-database-url'", restored_database_job)
         self.assertNotIn("databaseUrlSecret", restored_database_job)
+        self.assertIn("value: restoredPostgres!.id", restored_database_job)
+        self.assertIn(
+            "value: toLower(restoredPostgres!.properties.fullyQualifiedDomainName)",
+            restored_database_job,
+        )
+        self.assertIn("secretRef: 'evidence-hmac-key'", restored_database_job)
         self.assertRegex(
             self.source,
             r"@secure\(\)[\s\S]*?param restoredDatabaseUrl string = ''",
         )
         self.assertIn(
             "deployRestoreValidationJob requires deployValidationJobs=true",
+            self.source,
+        )
+        self.assertIn(
+            "resource restoredPostgres "
+            "'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' existing",
+            self.source,
+        )
+        self.assertIn(
+            "deployRestoreValidationJob requires a distinct existing "
+            "restoredDatabaseServerName",
+            self.source,
+        )
+        self.assertRegex(
+            self.source,
+            r"@secure\(\)[\s\S]*?param validationEvidenceHmacKey string = ''",
+        )
+        self.assertIn(
+            "deployValidationJobs requires a 32-256 character evidence HMAC key",
             self.source,
         )
 

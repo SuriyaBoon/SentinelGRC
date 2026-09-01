@@ -44,6 +44,13 @@ param deployRestoreValidationJob bool = false
 @description('Private restored PostgreSQL URL used only by the opt-in restore validation job.')
 param restoredDatabaseUrl string = ''
 
+@description('Existing isolated PostgreSQL Flexible Server created by the approved point-in-time restore.')
+param restoredDatabaseServerName string = ''
+
+@secure()
+@description('Per-run HMAC key used only to pseudonymize database target identity in validation evidence.')
+param validationEvidenceHmacKey string = ''
+
 @description('Deploy staging availability and outbox-health alert rules.')
 param deployMonitoringAlerts bool = false
 
@@ -123,7 +130,8 @@ var validationImagePullIdentityName = '${baseName}-validation-pull-id'
 var validationAnalystIdentityName = '${baseName}-validation-analyst-id'
 var validationApproverIdentityName = '${baseName}-validation-approver-id'
 var validationServiceBusReceiverIdentityName = '${baseName}-validation-bus-receiver-id'
-var validationDatabaseIdentityName = '${baseName}-validation-database-id'
+var validationSourceDatabaseIdentityName = '${baseName}-validation-source-db-id'
+var validationRestoredDatabaseIdentityName = '${baseName}-validation-restored-db-id'
 var validationAnalystJobName = '${baseName}-analyst-validation'
 var validationApproverJobName = '${baseName}-approver-validation'
 var validationServiceBusJobName = '${baseName}-bus-validation'
@@ -204,12 +212,17 @@ var deployValidatedJobs = !deployValidationJobs
     ? fail('deployValidationJobs requires deployApplication=true with valid canonical OIDC inputs and a valid runtime image')
     : !validationImageDigestPinned
       ? fail('deployValidationJobs requires a lowercase digest-pinned validation image from containerRegistryName.azurecr.io/sentinelgrc-assurance')
-      : true
+      : length(validationEvidenceHmacKey) < 32 || length(validationEvidenceHmacKey) > 256
+        ? fail('deployValidationJobs requires a 32-256 character evidence HMAC key supplied as a secure parameter')
+        : true
+var restoredDatabaseServerNameCanonical = length(restoredDatabaseServerName) >= 3 && length(restoredDatabaseServerName) <= 63 && restoredDatabaseServerName == toLower(restoredDatabaseServerName) && !startsWith(restoredDatabaseServerName, '-') && !endsWith(restoredDatabaseServerName, '-')
 var deployValidatedRestoreJob = !deployRestoreValidationJob
   ? false
   : !deployValidatedJobs
     ? fail('deployRestoreValidationJob requires deployValidationJobs=true with valid application and validation images')
-    : !startsWith(restoredDatabaseUrl, 'postgresql://') && !startsWith(restoredDatabaseUrl, 'postgresql+psycopg://')
+    : !restoredDatabaseServerNameCanonical || restoredDatabaseServerName == databaseServerName
+      ? fail('deployRestoreValidationJob requires a distinct existing restoredDatabaseServerName')
+      : !startsWith(restoredDatabaseUrl, 'postgresql://') && !startsWith(restoredDatabaseUrl, 'postgresql+psycopg://')
       ? fail('deployRestoreValidationJob requires a secure PostgreSQL restoredDatabaseUrl')
       : true
 var deployValidatedMonitoring = !deployMonitoringAlerts
@@ -218,24 +231,25 @@ var deployValidatedMonitoring = !deployMonitoringAlerts
     ? true
     : fail('deployMonitoringAlerts requires deployApplication=true with valid canonical OIDC inputs and a valid runtime image')
 
+var roleDefinitionResourceType = 'Microsoft.Authorization/roleDefinitions'
 var keyVaultSecretsUserRoleId = subscriptionResourceId(
-  'Microsoft.Authorization/roleDefinitions',
+  roleDefinitionResourceType,
   '4633458b-17de-408a-b874-0445c86b69e6'
 )
 var storageBlobContributorRoleId = subscriptionResourceId(
-  'Microsoft.Authorization/roleDefinitions',
+  roleDefinitionResourceType,
   'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 )
 var serviceBusSenderRoleId = subscriptionResourceId(
-  'Microsoft.Authorization/roleDefinitions',
+  roleDefinitionResourceType,
   '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39'
 )
 var serviceBusReceiverRoleId = subscriptionResourceId(
-  'Microsoft.Authorization/roleDefinitions',
+  roleDefinitionResourceType,
   '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0'
 )
 var logAnalyticsReaderRoleId = subscriptionResourceId(
-  'Microsoft.Authorization/roleDefinitions',
+  roleDefinitionResourceType,
   '73c42c96-874c-492b-b04d-ab87d138a893'
 )
 
@@ -257,6 +271,10 @@ resource privateEndpointSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-0
 resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
   scope: resourceGroup(containerRegistrySubscriptionId, containerRegistryResourceGroup)
   name: containerRegistryName
+}
+
+resource restoredPostgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' existing = if (deployValidatedRestoreJob) {
+  name: restoredDatabaseServerName
 }
 
 resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
@@ -456,11 +474,19 @@ resource validationServiceBusReceiverIdentity 'Microsoft.ManagedIdentity/userAss
   })
 }
 
-resource validationDatabaseIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (deployValidatedJobs) {
-  name: validationDatabaseIdentityName
+resource validationSourceDatabaseIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (deployValidatedJobs) {
+  name: validationSourceDatabaseIdentityName
   location: location
   tags: union(tags, {
-    purpose: 'postgresql-restore-validation'
+    purpose: 'source-postgresql-validation'
+  })
+}
+
+resource validationRestoredDatabaseIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (deployValidatedRestoreJob) {
+  name: validationRestoredDatabaseIdentityName
+  location: location
+  tags: union(tags, {
+    purpose: 'restored-postgresql-validation'
   })
 }
 
@@ -954,9 +980,9 @@ resource validationServiceBusReceiver 'Microsoft.Authorization/roleAssignments@2
 
 resource validationSourceDatabaseSecretReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployValidatedJobs) {
   scope: databaseUrlSecret
-  name: guid(databaseUrlSecret.id, validationDatabaseIdentity!.id, keyVaultSecretsUserRoleId)
+  name: guid(databaseUrlSecret.id, validationSourceDatabaseIdentity!.id, keyVaultSecretsUserRoleId)
   properties: {
-    principalId: validationDatabaseIdentity!.properties.principalId
+    principalId: validationSourceDatabaseIdentity!.properties.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: keyVaultSecretsUserRoleId
   }
@@ -1519,7 +1545,7 @@ resource validationSourceDatabaseJob 'Microsoft.App/jobs@2025-01-01' = if (deplo
     type: 'UserAssigned'
     userAssignedIdentities: {
       '${validationImagePullIdentity.id}': {}
-      '${validationDatabaseIdentity.id}': {}
+      '${validationSourceDatabaseIdentity.id}': {}
     }
   }
   dependsOn: [
@@ -1547,9 +1573,13 @@ resource validationSourceDatabaseJob 'Microsoft.App/jobs@2025-01-01' = if (deplo
       replicaTimeout: 900
       secrets: [
         {
-          identity: validationDatabaseIdentity.id
+          identity: validationSourceDatabaseIdentity.id
           keyVaultUrl: databaseUrlSecret.properties.secretUriWithVersion
           name: 'source-database-url'
+        }
+        {
+          name: 'evidence-hmac-key'
+          value: validationEvidenceHmacKey
         }
       ]
       triggerType: 'Manual'
@@ -1579,6 +1609,18 @@ resource validationSourceDatabaseJob 'Microsoft.App/jobs@2025-01-01' = if (deplo
               name: 'SENTINEL_GATE_FINDING_ID'
               value: 'REQUIRED_AT_START'
             }
+            {
+              name: 'SENTINEL_GATE_EXPECTED_TARGET_RESOURCE_ID'
+              value: postgres.id
+            }
+            {
+              name: 'SENTINEL_GATE_EXPECTED_TARGET_HOSTNAME'
+              value: toLower(postgres.properties.fullyQualifiedDomainName)
+            }
+            {
+              name: 'SENTINEL_GATE_EVIDENCE_HMAC_KEY'
+              secretRef: 'evidence-hmac-key'
+            }
           ]
           image: validationContainerImage
           name: 'source-database-validator'
@@ -1600,7 +1642,7 @@ resource validationRestoredDatabaseJob 'Microsoft.App/jobs@2025-01-01' = if (dep
     type: 'UserAssigned'
     userAssignedIdentities: {
       '${validationImagePullIdentity.id}': {}
-      '${validationDatabaseIdentity.id}': {}
+      '${validationRestoredDatabaseIdentity.id}': {}
     }
   }
   dependsOn: [
@@ -1629,6 +1671,10 @@ resource validationRestoredDatabaseJob 'Microsoft.App/jobs@2025-01-01' = if (dep
           name: 'restored-database-url'
           value: restoredDatabaseUrl
         }
+        {
+          name: 'evidence-hmac-key'
+          value: validationEvidenceHmacKey
+        }
       ]
       triggerType: 'Manual'
     }
@@ -1656,6 +1702,18 @@ resource validationRestoredDatabaseJob 'Microsoft.App/jobs@2025-01-01' = if (dep
             {
               name: 'SENTINEL_GATE_FINDING_ID'
               value: 'REQUIRED_AT_START'
+            }
+            {
+              name: 'SENTINEL_GATE_EXPECTED_TARGET_RESOURCE_ID'
+              value: restoredPostgres!.id
+            }
+            {
+              name: 'SENTINEL_GATE_EXPECTED_TARGET_HOSTNAME'
+              value: toLower(restoredPostgres!.properties.fullyQualifiedDomainName)
+            }
+            {
+              name: 'SENTINEL_GATE_EVIDENCE_HMAC_KEY'
+              secretRef: 'evidence-hmac-key'
             }
           ]
           image: validationContainerImage
@@ -1791,7 +1849,8 @@ output validationImagePullIdentityResourceId string = deployValidatedJobs ? vali
 output validationAnalystIdentityResourceId string = deployValidatedJobs ? validationAnalystIdentity.id : ''
 output validationApproverIdentityResourceId string = deployValidatedJobs ? validationApproverIdentity.id : ''
 output validationServiceBusReceiverIdentityResourceId string = deployValidatedJobs ? validationServiceBusReceiverIdentity.id : ''
-output validationDatabaseIdentityResourceId string = deployValidatedJobs ? validationDatabaseIdentity.id : ''
+output validationSourceDatabaseIdentityResourceId string = deployValidatedJobs ? validationSourceDatabaseIdentity.id : ''
+output validationRestoredDatabaseIdentityResourceId string = deployValidatedRestoreJob ? validationRestoredDatabaseIdentity.id : ''
 output validationAnalystJobResourceId string = deployValidatedJobs ? validationAnalystJob.id : ''
 output validationApproverJobResourceId string = deployValidatedJobs ? validationApproverJob.id : ''
 output validationServiceBusJobResourceId string = deployValidatedJobs ? validationServiceBusJob.id : ''
