@@ -704,7 +704,7 @@ class AzureIacPolicyTests(unittest.TestCase):
         self.assertIn("param deployMonitoringAlerts = false", self.params)
 
     def test_container_app_and_job_names_fit_azure_limit(self):
-        self.assertIn("var validationJobBaseName = toLower('${take(namePrefix, 5)}-${suffix}')", self.source)
+        self.assertIn("var validationJobBaseName = toLower('${take(namePrefix, 5)}-${validationJobSuffix}')", self.source)
         roles = ("analyst", "approver", "bus", "source-db", "restore-db")
         for role in roles:
             self.assertIn("'${validationJobBaseName}-" + role + "'", self.source)
@@ -721,6 +721,22 @@ class AzureIacPolicyTests(unittest.TestCase):
                 self.assertLessEqual(len(name), 32)
                 self.assertRegex(name, r"^[a-z][a-z0-9-]*[a-z0-9]$")
                 self.assertNotIn("--", name)
+
+    def test_validation_job_hash_uses_complete_prefix_and_resource_group(self):
+        # This is a source-binding regression, not an implementation of Azure's hash.
+        # Both inputs must reach uniqueString; truncation is display-only.
+        self.assertIn(
+            "var validationJobSuffix = uniqueString(resourceGroup().id, toLower(namePrefix))",
+            self.source,
+        )
+        self.assertIn(
+            "var validationJobBaseName = toLower('${take(namePrefix, 5)}-${validationJobSuffix}')",
+            self.source,
+        )
+        self.assertNotIn(
+            "var validationJobBaseName = toLower('${take(namePrefix, 5)}-${suffix}')",
+            self.source,
+        )
 
     def test_stateful_services_are_private_and_encrypted(self):
         self.assertGreaterEqual(

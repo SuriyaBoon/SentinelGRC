@@ -133,8 +133,10 @@ var validationServiceBusReceiverIdentityName = '${baseName}-validation-bus-recei
 var validationSourceDatabaseIdentityName = '${baseName}-validation-source-db-id'
 var validationRestoredDatabaseIdentityName = '${baseName}-validation-restored-db-id'
 // Container Apps and Jobs enforce a 32-character resource-name limit.
-// Keep the complete resource-group hash and a distinct role suffix.
-var validationJobBaseName = toLower('${take(namePrefix, 5)}-${suffix}')
+// Hash the complete normalized prefix with the resource group, not its display abbreviation.
+// Keep the complete generated hash and a distinct role suffix within the name limit.
+var validationJobSuffix = uniqueString(resourceGroup().id, toLower(namePrefix))
+var validationJobBaseName = toLower('${take(namePrefix, 5)}-${validationJobSuffix}')
 var validationAnalystJobName = '${validationJobBaseName}-analyst'
 var validationApproverJobName = '${validationJobBaseName}-approver'
 var validationServiceBusJobName = '${validationJobBaseName}-bus'
