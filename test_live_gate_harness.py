@@ -312,8 +312,9 @@ class LiveGateHarnessTests(unittest.TestCase):
             client_factory=lambda **kwargs: FakeClient(fake_receiver, captured, **kwargs),
             dead_letter_sub_queue="dead-letter",
         )
+        expected = self.expected(message)
         with self.assertRaisesRegex(LiveGateError, "session identity does not match"):
-            gate.receive_one(self.expected(message), action="complete", from_dead_letter=True)
+            gate.receive_one(expected, action="complete", from_dead_letter=True)
         self.assertNotIn("session_id", captured["receiver"])
         self.assertEqual(captured["receiver"]["sub_queue"], "dead-letter")
         self.assertEqual([action[0] for action in fake_receiver.actions], ["abandon"])
