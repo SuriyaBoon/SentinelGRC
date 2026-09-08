@@ -686,14 +686,41 @@ class AzureIacPolicyTests(unittest.TestCase):
         self.assertNotIn("validationApproverIdentity", outbox_alert)
         self.assertNotIn("validationImagePullIdentity", outbox_alert)
         self.assertNotIn("dimensions: []", outbox_alert)
-        self.assertIn("ContainerAppConsoleLogs_CL", self.source)
-        self.assertIn('ContainerName_s == "outbox-publisher"', self.source)
-        self.assertIn('ContainerAppName_s == "${publisherAppName}"', self.source)
+        self.assertIn("destination: 'azure-monitor'", self.source)
+        self.assertIn("ContainerAppConsoleLogs\n", outbox_alert)
+        self.assertNotIn("ContainerAppConsoleLogs_CL", outbox_alert)
+        self.assertIn('ContainerName == "outbox-publisher"', outbox_alert)
+        self.assertIn("query: format('''", outbox_alert)
+        self.assertIn('ContainerAppName == "{0}"', outbox_alert)
+        self.assertIn("''', publisherAppName)", outbox_alert)
+        self.assertNotIn('ContainerAppName == "${publisherAppName}"', outbox_alert)
+        self.assertIn("windowSize: 'PT30M'", outbox_alert)
+        self.assertIn("parse_json(Log)", outbox_alert)
+        self.assertIn("skipQueryValidation: false", outbox_alert)
         self.assertIn("toint(payload.dead) > 0", self.source)
         self.assertEqual(self.source.count("autoMitigate: true"), 2)
         self.assertNotIn("autoMitigate: false", self.source)
         self.assertIn("monitoringActionGroupResourceId", self.source)
         self.assertIn("param deployMonitoringAlerts = false", self.params)
+
+    def test_container_app_and_job_names_fit_azure_limit(self):
+        self.assertIn("var validationJobBaseName = toLower('${take(namePrefix, 5)}-${suffix}')", self.source)
+        roles = ("analyst", "approver", "bus", "source-db", "restore-db")
+        for role in roles:
+            self.assertIn("'${validationJobBaseName}-" + role + "'", self.source)
+        self.assertIn("var appName = '${take(baseName, 28)}-api'", self.source)
+        self.assertIn("var publisherAppName = '${take(baseName, 22)}-publisher'", self.source)
+        for size in range(3, 11):
+            prefix = "a" * size
+            suffix = "4vxom5afi3y74"
+            base = f"{prefix}-staging-{suffix}"
+            jobs = [f"{prefix[:5]}-{suffix}-{role}" for role in roles]
+            names = jobs + [base[:28] + "-api", base[:22] + "-publisher"]
+            self.assertEqual(len(names), len(set(names)))
+            for name in names:
+                self.assertLessEqual(len(name), 32)
+                self.assertRegex(name, r"^[a-z][a-z0-9-]*[a-z0-9]$")
+                self.assertNotIn("--", name)
 
     def test_stateful_services_are_private_and_encrypted(self):
         self.assertGreaterEqual(

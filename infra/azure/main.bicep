@@ -132,19 +132,22 @@ var validationApproverIdentityName = '${baseName}-validation-approver-id'
 var validationServiceBusReceiverIdentityName = '${baseName}-validation-bus-receiver-id'
 var validationSourceDatabaseIdentityName = '${baseName}-validation-source-db-id'
 var validationRestoredDatabaseIdentityName = '${baseName}-validation-restored-db-id'
-var validationAnalystJobName = '${baseName}-analyst-validation'
-var validationApproverJobName = '${baseName}-approver-validation'
-var validationServiceBusJobName = '${baseName}-bus-validation'
-var validationSourceDatabaseJobName = '${baseName}-source-db-validation'
-var validationRestoredDatabaseJobName = '${baseName}-restored-db-validation'
+// Container Apps and Jobs enforce a 32-character resource-name limit.
+// Keep the complete resource-group hash and a distinct role suffix.
+var validationJobBaseName = toLower('${take(namePrefix, 5)}-${suffix}')
+var validationAnalystJobName = '${validationJobBaseName}-analyst'
+var validationApproverJobName = '${validationJobBaseName}-approver'
+var validationServiceBusJobName = '${validationJobBaseName}-bus'
+var validationSourceDatabaseJobName = '${validationJobBaseName}-source-db'
+var validationRestoredDatabaseJobName = '${validationJobBaseName}-restore-db'
 var monitoringQueryIdentityName = '${baseName}-monitor-query-id'
 var availabilityAlertName = '${baseName}-no-replicas'
 var outboxHealthAlertName = '${baseName}-outbox-health'
 var workspaceName = '${baseName}-logs'
 var appInsightsName = '${baseName}-appi'
 var environmentResourceName = '${baseName}-cae'
-var appName = '${baseName}-api'
-var publisherAppName = '${baseName}-publisher'
+var appName = '${take(baseName, 28)}-api'
+var publisherAppName = '${take(baseName, 22)}-publisher'
 var databaseName = 'sentinelgrc'
 var storageAccountName = take('${compactName}data', 24)
 var keyVaultName = take('${baseName}-kv', 24)
@@ -1798,13 +1801,13 @@ resource outboxHealthAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01' =
             numberOfEvaluationPeriods: 1
           }
           operator: 'GreaterThan'
-          query: '''
-ContainerAppConsoleLogs_CL
-| where ContainerAppName_s == "${publisherAppName}"
-| where ContainerName_s == "outbox-publisher"
-| extend payload = parse_json(Log_s)
+          query: format('''
+ContainerAppConsoleLogs
+| where ContainerAppName == "{0}"
+| where ContainerName == "outbox-publisher"
+| extend payload = parse_json(Log)
 | where toint(payload.dead) > 0 or toint(payload.retry) > 0 or toint(payload.stale) > 0
-'''
+''', publisherAppName)
           threshold: 0
           timeAggregation: 'Count'
         }
@@ -1819,7 +1822,8 @@ ContainerAppConsoleLogs_CL
     ]
     severity: 1
     skipQueryValidation: false
-    windowSize: 'PT5M'
+    // Resource-specific container logs may arrive after the five-minute evaluation interval.
+    windowSize: 'PT30M'
   }
 }
 

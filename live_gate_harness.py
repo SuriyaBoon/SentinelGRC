@@ -241,10 +241,20 @@ def _verify_service_bus_properties(
     message: Any,
     expected: ExpectedServiceBusMessage,
     payload: dict[str, Any],
+    *,
+    from_dead_letter: bool = False,
 ) -> int:
     properties = _properties(message)
-    if set(properties) != {"event_sequence", "payload_sha256"}:
+    expected_keys = {"event_sequence", "payload_sha256"}
+    if from_dead_letter:
+        expected_keys |= {"DeadLetterReason", "DeadLetterErrorDescription"}
+    if set(properties) != expected_keys:
         raise LiveGateError("Service Bus application properties do not match")
+    if from_dead_letter and (
+        properties["DeadLetterReason"] != DLQ_REASON
+        or properties["DeadLetterErrorDescription"] != DLQ_DESCRIPTION
+    ):
+        raise LiveGateError("Service Bus dead-letter property contract does not match")
     if properties.get("payload_sha256") != expected.payload_sha256:
         raise LiveGateError("Service Bus checksum property does not match")
     event_sequence = properties.get("event_sequence")
@@ -274,12 +284,12 @@ def _delivery_count(message: Any) -> int:
 
 
 def verify_service_bus_message(
-    message: Any, expected: ExpectedServiceBusMessage
+    message: Any, expected: ExpectedServiceBusMessage, *, from_dead_letter: bool = False
 ) -> dict[str, Any]:
     """Verify exact broker metadata and canonical body without returning the body."""
     _verify_service_bus_metadata(message, expected)
     payload = _verify_service_bus_payload(message, expected)
-    event_sequence = _verify_service_bus_properties(message, expected, payload)
+    event_sequence = _verify_service_bus_properties(message, expected, payload, from_dead_letter=from_dead_letter)
     return {
         "message_id": expected.message_id,
         "session_id": expected.session_id,
@@ -347,11 +357,12 @@ class AzureServiceBusGateReceiver:
     ) -> dict[str, Any]:
         receiver_kwargs: dict[str, Any] = {
             "queue_name": self.queue_name,
-            "session_id": expected.session_id,
             "max_wait_time": self.timeout_seconds,
         }
         if from_dead_letter:
             receiver_kwargs["sub_queue"] = self.dead_letter_sub_queue
+        else:
+            receiver_kwargs["session_id"] = expected.session_id
         return receiver_kwargs
 
     @staticmethod
@@ -359,9 +370,11 @@ class AzureServiceBusGateReceiver:
         receiver: Any,
         message: Any,
         expected: ExpectedServiceBusMessage,
+        *,
+        from_dead_letter: bool = False,
     ) -> dict[str, Any]:
         try:
-            return verify_service_bus_message(message, expected)
+            return verify_service_bus_message(message, expected, from_dead_letter=from_dead_letter)
         except Exception:
             receiver.abandon_message(message)
             raise
@@ -421,13 +434,11 @@ class AzureServiceBusGateReceiver:
                             "the expected Service Bus message was not available"
                         )
                     message = messages[0]
+                    dlq_observation = self._dead_letter_observation(receiver, message) if from_dead_letter else {}
                     observation = self._verified_observation(
-                        receiver, message, expected
+                        receiver, message, expected, from_dead_letter=from_dead_letter
                     )
-                    if from_dead_letter:
-                        observation.update(
-                            self._dead_letter_observation(receiver, message)
-                        )
+                    observation.update(dlq_observation)
                     self._settle(receiver, message, action)
         except (LiveGateError, ValueError):
             raise
@@ -561,7 +572,7 @@ class PostgresRestoreVerifier:
         target = db.execute(
             "SELECT current_database() AS database_name, "
             "(SELECT oid FROM pg_database WHERE datname = current_database()) "
-            "AS database_oid, inet_server_addr()::text AS server_address, "
+            "AS database_oid, host(inet_server_addr()) AS server_address, "
             "inet_server_port() AS server_port"
         ).fetchone()
         database_name, database_oid, canonical_address, server_port = (
