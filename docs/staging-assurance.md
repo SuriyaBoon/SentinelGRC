@@ -326,9 +326,26 @@ internal consistency checks. The unkeyed checksum detects accidental corruption
 but is not proof that the collector or a person with artifact-write access is
 authentic. No cryptographic attestation or production performance claim is made.
 
+Schema `sentinel.hermetic_load_soak.v2` also captures a source snapshot of
+committed outbox message IDs and payload checksums before delivery. After drain,
+it compares those identities and bytes with the in-memory sink. The sanitized
+report retains expected/observed counts, missing/unexpected/mismatched counts,
+and canonical aggregate hashes, not raw event payloads or message IDs. The
+`all_events_delivered_once` gate requires exact reconciliation as well as the
+expected successful-ACK count. A sink returning successful receipts but storing
+different IDs or bytes fails the gate, even if its total count is unchanged.
+
+Here, "once" means one correct logical outcome per ID in the idempotent memory
+sink, not a claim that a transport was called exactly once. This remains a
+hermetic test, not proof of Service Bus delivery. V1 count-only evidence is
+historical and is rejected by the V2 validator; regenerate evidence rather than
+relabelling an old file. Aggregate hashes are consistency evidence, not signatures.
+
 The fixed defaults are intentionally broad CI regression guards: minimum
 throughput 1 operation per second, maximum p95 latency 2000 ms, and maximum
-peak traced memory 128 MiB. The CLI does not expose these thresholds. They are
+peak traced memory 128 MiB. The CLI exposes explicit threshold overrides; retain
+the approved profile with the evidence and never lower it after a failed run to
+claim the original profile passed. These defaults are
 not a production SLO or Azure capacity statement. Exit code `0` means all hermetic
 thresholds passed, `1` means a valid evidence document contains a `NO_GO`
 decision, and `2` means configuration or evidence validation failed.

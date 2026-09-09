@@ -11,6 +11,7 @@ import threading
 import time
 import tracemalloc
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ from governance_core import ActorContext, GovernanceCore
 from outbox_delivery import GovernanceOutboxQueue, MemoryOutboxPublisher, OutboxWorker
 
 
-SCHEMA_VERSION = "sentinel.hermetic_load_soak.v1"
+SCHEMA_VERSION = "sentinel.hermetic_load_soak.v2"
 PRODUCTION_DECISION = "NO_GO_PENDING_LIVE_EVIDENCE"
 SOURCE_SHA = re.compile(r"[0-9a-f]{40}")
 ERROR_CLASS = re.compile(r"[A-Za-z_]\w{0,127}", re.ASCII)
@@ -144,8 +145,29 @@ def _run_operations(core: GovernanceCore, profile: LoadSoakProfile) -> tuple[lis
     return latencies, errors
 
 
-def _drain_outbox(core: GovernanceCore, maximum: int) -> tuple[int, dict[str, int | float]]:
+def _reconcile_delivery(expected: dict[str, str], observed: dict[str, bytes]) -> dict[str, Any]:
+    actual = {key: hashlib.sha256(body).hexdigest() for key, body in observed.items()}
+    expected_ids, actual_ids = set(expected), set(actual)
+    return {
+        "expected": len(expected), "observed": len(actual),
+        "missing": len(expected_ids - actual_ids),
+        "unexpected": len(actual_ids - expected_ids),
+        "mismatched": sum(expected[key] != actual[key] for key in expected_ids & actual_ids),
+        "expected_sha256": hashlib.sha256(_canonical(expected).encode("ascii")).hexdigest(),
+        "observed_sha256": hashlib.sha256(_canonical(actual).encode("ascii")).hexdigest(),
+    }
+
+
+def _drain_outbox(core: GovernanceCore, maximum: int) -> tuple[int, dict[str, int | float], dict[str, Any]]:
     queue = GovernanceOutboxQueue(core.database)
+    # Capture committed source bytes BEFORE the publisher runs. Counts or ACKs
+    # alone cannot establish that the expected logical messages reached the sink.
+    with closing(core.database.connect()) as db:
+        expected = {
+            row["outbox_id"]: hashlib.sha256(row["payload_json"].encode("utf-8")).hexdigest()
+            for row in db.execute("SELECT outbox_id, payload_json FROM governance_outbox").fetchall()
+        }
+        db.rollback()
     publisher = MemoryOutboxPublisher()
     worker = OutboxWorker(queue, publisher, "hermetic-load-worker")
     delivered = 0
@@ -155,7 +177,7 @@ def _drain_outbox(core: GovernanceCore, maximum: int) -> tuple[int, dict[str, in
             break
         if outcome == "delivered":
             delivered += 1
-    return delivered, queue.metrics()
+    return delivered, queue.metrics(), _reconcile_delivery(expected, publisher.messages)
 
 
 def collect_load_soak_evidence(profile: LoadSoakProfile, source_commit: str) -> dict[str, Any]:
@@ -172,7 +194,7 @@ def collect_load_soak_evidence(profile: LoadSoakProfile, source_commit: str) -> 
             cpu_started = time.process_time()
             wall_started = time.perf_counter()
             latencies, errors = _run_operations(core, profile)
-            delivered, outbox = _drain_outbox(core, operation_count)
+            delivered, outbox, reconciliation = _drain_outbox(core, operation_count)
             elapsed = max(time.perf_counter() - wall_started, 0.000001)
             cpu_seconds = time.process_time() - cpu_started
             _, peak_bytes = tracemalloc.get_traced_memory()
@@ -208,6 +230,7 @@ def collect_load_soak_evidence(profile: LoadSoakProfile, source_commit: str) -> 
         "cpu_seconds": round(cpu_seconds, 3),
         "peak_traced_bytes": peak_bytes,
         "outbox": outbox,
+        "delivery_reconciliation": reconciliation,
     }
     gates = _evaluate_gates(metrics, profile)
     document = {
@@ -241,12 +264,41 @@ def _evaluate_gates(metrics: dict[str, Any], profile: LoadSoakProfile) -> dict[s
         "no_operation_errors": metrics["errors"] == 0,
         "finding_cardinality_exact": metrics["persisted_findings"] == profile.unique_findings,
         "replay_did_not_duplicate_findings": metrics["actual_reassessments"] == profile.unique_findings * profile.replay_rounds,
-        "all_events_delivered_once": metrics["delivered_events"] == operation_count,
+        "all_events_delivered_once": (
+            metrics["delivered_events"] == operation_count
+            and _delivery_exact(metrics["delivery_reconciliation"], operation_count)
+        ),
         "outbox_drained": outbox["pending"] == 0 and outbox["dead"] == 0,
         "throughput_threshold_met": metrics["throughput_per_second"] >= profile.minimum_throughput_per_second,
         "p95_latency_threshold_met": metrics["latency_ms"]["p95"] <= profile.maximum_p95_latency_ms,
         "memory_threshold_met": metrics["peak_traced_bytes"] <= profile.maximum_peak_traced_bytes,
     }
+
+
+def _delivery_exact(value: dict[str, Any], count: int) -> bool:
+    return (
+        value["expected"] == value["observed"] == count
+        and value["missing"] == value["unexpected"] == value["mismatched"] == 0
+        and value["expected_sha256"] == value["observed_sha256"]
+    )
+
+
+def _validate_reconciliation(value: Any) -> None:
+    counts = {"expected", "observed", "missing", "unexpected", "mismatched"}
+    hashes = {"expected_sha256", "observed_sha256"}
+    if not isinstance(value, dict) or set(value) != counts | hashes:
+        raise ValueError("delivery reconciliation fields are invalid")
+    if any(type(value[key]) is not int or value[key] < 0 for key in counts):
+        raise ValueError("delivery reconciliation counts are invalid")
+    if any(not isinstance(value[key], str) or re.fullmatch(r"[0-9a-f]{64}", value[key]) is None for key in hashes):
+        raise ValueError("delivery reconciliation hashes are invalid")
+    overlap = value["expected"] - value["missing"]
+    if (overlap < 0 or overlap != value["observed"] - value["unexpected"]
+            or value["mismatched"] > overlap):
+        raise ValueError("delivery reconciliation cardinality is inconsistent")
+    counts_match = value["missing"] == value["unexpected"] == value["mismatched"] == 0
+    if counts_match != (value["expected_sha256"] == value["observed_sha256"]):
+        raise ValueError("delivery reconciliation digests are inconsistent")
 
 
 def _validated_profile(value: Any) -> LoadSoakProfile:
@@ -267,7 +319,7 @@ def _validate_metric_shape(metrics: Any) -> None:
         "actual_reassessments", "persisted_findings", "delivered_events",
         "errors", "error_classes", "elapsed_seconds", "throughput_per_second",
         "latency_samples_ms", "latency_ms", "cpu_seconds",
-        "peak_traced_bytes", "outbox",
+        "peak_traced_bytes", "outbox", "delivery_reconciliation",
     }
     if not isinstance(metrics, dict) or set(metrics) != expected:
         raise ValueError("load and soak metric fields are invalid")
@@ -360,6 +412,7 @@ def _validate_metrics(metrics: Any, profile: LoadSoakProfile) -> None:
     _validate_error_metrics(metrics)
     _validate_latency(metrics)
     _validate_outbox(metrics)
+    _validate_reconciliation(metrics["delivery_reconciliation"])
 
 def validate_load_soak_evidence(envelope: dict[str, Any]) -> dict[str, Any]:
     if set(envelope) != {"document", "document_sha256"} or not isinstance(envelope["document"], dict):
