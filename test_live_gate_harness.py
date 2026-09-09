@@ -90,6 +90,8 @@ class FakeClient:
         return False
 
     def get_queue_receiver(self, **kwargs):
+        if "session_id" in kwargs and "sub_queue" in kwargs:
+            raise ValueError("Service Bus dead-letter subqueues do not support session receivers")
         self.captured["receiver"] = kwargs
         return self.receiver
 
@@ -295,6 +297,28 @@ class LiveGateHarnessTests(unittest.TestCase):
         self.assertNotIn("sub_queue", captured["receiver"])
         self.assertEqual(captured["client"]["retry_total"], 2)
 
+    def test_dlq_receiver_omits_session_filter_but_rejects_wrong_session(self):
+        message = FakeMessage()
+        message.dead_letter_reason = DLQ_REASON
+        message.dead_letter_error_description = DLQ_DESCRIPTION
+        message.application_properties[b"DeadLetterReason"] = DLQ_REASON.encode("ascii")
+        message.application_properties[b"DeadLetterErrorDescription"] = DLQ_DESCRIPTION.encode("ascii")
+        message.session_id = "UNRELATED-SESSION"
+        fake_receiver = FakeReceiver(message)
+        captured = {}
+        gate = AzureServiceBusGateReceiver(
+            "sentinel-live.servicebus.windows.net", "governance-outbox",
+            managed_identity_client_id="receiver-identity",
+            client_factory=lambda **kwargs: FakeClient(fake_receiver, captured, **kwargs),
+            dead_letter_sub_queue="dead-letter",
+        )
+        expected = self.expected(message)
+        with self.assertRaisesRegex(LiveGateError, "session identity does not match"):
+            gate.receive_one(expected, action="complete", from_dead_letter=True)
+        self.assertNotIn("session_id", captured["receiver"])
+        self.assertEqual(captured["receiver"]["sub_queue"], "dead-letter")
+        self.assertEqual([action[0] for action in fake_receiver.actions], ["abandon"])
+
     def test_receiver_abandons_mismatch_and_dead_letters_only_active_message(self):
         message = FakeMessage()
         message.application_properties[b"payload_sha256"] = b"0" * 64
@@ -332,6 +356,8 @@ class LiveGateHarnessTests(unittest.TestCase):
         dlq_message = FakeMessage()
         dlq_message.dead_letter_reason = DLQ_REASON
         dlq_message.dead_letter_error_description = DLQ_DESCRIPTION
+        dlq_message.application_properties[b"DeadLetterReason"] = DLQ_REASON.encode("ascii")
+        dlq_message.application_properties[b"DeadLetterErrorDescription"] = DLQ_DESCRIPTION.encode("ascii")
         dlq_receiver = FakeReceiver(dlq_message)
         receiver = AzureServiceBusGateReceiver(
             "sentinel-live.servicebus.windows.net",
@@ -383,6 +409,27 @@ class LiveGateHarnessTests(unittest.TestCase):
                     ["abandon"],
                 )
 
+    def test_dlq_properties_are_exact_and_active_messages_remain_strict(self):
+        message = FakeMessage()
+        message.application_properties[b"DeadLetterReason"] = DLQ_REASON.encode("ascii")
+        message.application_properties[b"DeadLetterErrorDescription"] = DLQ_DESCRIPTION.encode("ascii")
+        expected = self.expected(message)
+        verify_service_bus_message(message, expected, from_dead_letter=True)
+        with self.assertRaisesRegex(LiveGateError, "properties do not match"):
+            verify_service_bus_message(message, expected)
+        for field, value in ((b"DeadLetterReason", b"wrong"),
+                             (b"DeadLetterErrorDescription", b"wrong"),
+                             (b"unexpected", b"value"),
+                             ("DeadLetterReason", DLQ_REASON)):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(message)
+                changed.application_properties[field] = value
+                with self.assertRaises(LiveGateError):
+                    verify_service_bus_message(changed, expected, from_dead_letter=True)
+        del message.application_properties[b"DeadLetterReason"]
+        with self.assertRaisesRegex(LiveGateError, "properties do not match"):
+            verify_service_bus_message(message, expected, from_dead_letter=True)
+
     def test_postgres_snapshot_binds_migrations_schema_and_application_read(self):
         with tempfile.TemporaryDirectory() as temp:
             migration = Path(temp) / "001_probe.sql"
@@ -426,6 +473,25 @@ class LiveGateHarnessTests(unittest.TestCase):
             "current_database() AS database_name",
             database.connection.executed_sql[2],
         )
+        self.assertIn(
+            "host(inet_server_addr()) AS server_address",
+            database.connection.executed_sql[2],
+        )
+        self.assertNotIn("inet_server_addr()::text", database.connection.executed_sql[2])
+
+    def test_postgres_target_requires_host_address_not_network_text(self):
+        for address in ("10.0.2.4", "2001:db8::4"):
+            with self.subTest(address=address):
+                target = {"database_name": "sentinel", "database_oid": 16384,
+                          "server_address": address, "server_port": 5432}
+                result = PostgresRestoreVerifier._validated_target_identity(target)
+                self.assertEqual(result[2], address)
+        for invalid in ("10.0.2.4/32", "2001:db8::4/128", "invalid", None):
+            with self.subTest(invalid=invalid):
+                target = {"database_name": "sentinel", "database_oid": 16384,
+                          "server_address": invalid, "server_port": 5432}
+                with self.assertRaisesRegex(LiveGateError, "target identity"):
+                    PostgresRestoreVerifier._validated_target_identity(target)
 
     def test_postgres_snapshot_fails_closed_on_transaction_or_target_mismatch(self):
         with tempfile.TemporaryDirectory() as temp:
