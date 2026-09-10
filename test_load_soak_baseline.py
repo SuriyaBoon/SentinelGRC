@@ -37,6 +37,10 @@ class LoadSoakBaselineTests(unittest.TestCase):
         self.assertEqual(document["metrics"]["persisted_findings"], 12)
         self.assertEqual(document["metrics"]["expected_reassessments"], 12)
         self.assertEqual(document["metrics"]["delivered_events"], 24)
+        reconciliation = document["metrics"]["delivery_reconciliation"]
+        self.assertEqual(reconciliation["expected"], 24)
+        self.assertEqual(reconciliation["observed"], 24)
+        self.assertEqual(reconciliation["expected_sha256"], reconciliation["observed_sha256"])
         self.assertEqual(document["metrics"]["outbox"]["pending"], 0)
         self.assertEqual(document["metrics"]["errors"], 0)
         self.assertEqual(
@@ -190,6 +194,9 @@ class LoadSoakBaselineTests(unittest.TestCase):
             "latency_ms": {"p50": 55.318, "p95": 2949.065, "p99": 6562.899},
             "peak_traced_bytes": 341429,
             "outbox": {"pending": 0, "dead": 0},
+            "delivery_reconciliation": {"expected": 24, "observed": 24,
+                "missing": 0, "unexpected": 0, "mismatched": 0,
+                "expected_sha256": "a" * 64, "observed_sha256": "a" * 64},
         }
         from load_soak_baseline import _evaluate_gates
         self.assertTrue(all(_evaluate_gates(metrics, profile).values()))
@@ -243,6 +250,75 @@ class LoadSoakBaselineTests(unittest.TestCase):
         self.assertEqual(json.loads(stdout.getvalue())["decision"], "NO_GO")
         self.assertEqual(payload["document"]["decision"], "NO_GO")
         self.assertFalse(payload["document"]["gates"]["throughput_threshold_met"])
+
+    def test_successful_acks_do_not_hide_wrong_sink_payloads(self):
+        from outbox_delivery import MemoryOutboxPublisher
+
+        class CorruptingPublisher(MemoryOutboxPublisher):
+            def publish(self, message):
+                receipt = super().publish(message)
+                self.messages[message.message_id] = b"different logical payload"
+                return receipt
+
+        with mock.patch("load_soak_baseline.MemoryOutboxPublisher", CorruptingPublisher):
+            envelope = collect_load_soak_evidence(self.profile(), SOURCE_COMMIT)
+        document = validate_load_soak_evidence(envelope)["document"]
+        self.assertEqual(document["metrics"]["delivered_events"], 24)
+        self.assertEqual(document["metrics"]["delivery_reconciliation"]["mismatched"], 24)
+        self.assertFalse(document["gates"]["all_events_delivered_once"])
+        self.assertEqual(document["decision"], "NO_GO")
+
+    def test_same_count_wrong_message_ids_fails(self):
+        from outbox_delivery import MemoryOutboxPublisher
+
+        class RelabelingPublisher(MemoryOutboxPublisher):
+            def publish(self, message):
+                receipt = super().publish(message)
+                self.messages["wrong-" + message.message_id] = self.messages.pop(message.message_id)
+                return receipt
+
+        with mock.patch("load_soak_baseline.MemoryOutboxPublisher", RelabelingPublisher):
+            envelope = collect_load_soak_evidence(self.profile(), SOURCE_COMMIT)
+        document = validate_load_soak_evidence(envelope)["document"]
+        result = document["metrics"]["delivery_reconciliation"]
+        self.assertEqual(result["expected"], result["observed"])
+        self.assertEqual(result["missing"], 24)
+        self.assertEqual(result["unexpected"], 24)
+        self.assertEqual(document["decision"], "NO_GO")
+
+    def test_ack_without_persisting_to_sink_fails(self):
+        from outbox_delivery import MemoryOutboxPublisher, PublishReceipt
+
+        class DiscardingPublisher(MemoryOutboxPublisher):
+            def publish(self, message):
+                return PublishReceipt(message.message_id)
+
+        with mock.patch("load_soak_baseline.MemoryOutboxPublisher", DiscardingPublisher):
+            envelope = collect_load_soak_evidence(self.profile(), SOURCE_COMMIT)
+        document = validate_load_soak_evidence(envelope)["document"]
+        self.assertEqual(document["metrics"]["delivered_events"], 24)
+        self.assertEqual(document["metrics"]["delivery_reconciliation"]["observed"], 0)
+        self.assertEqual(document["metrics"]["delivery_reconciliation"]["missing"], 24)
+        self.assertFalse(document["gates"]["all_events_delivered_once"])
+        self.assertEqual(document["decision"], "NO_GO")
+
+    def test_reconciliation_schema_and_semantics_reject_forgery(self):
+        baseline = collect_load_soak_evidence(self.profile(), SOURCE_COMMIT)
+        for field, value in (("missing", True), ("mismatched", 25),
+                             ("observed_sha256", "b" * 64), ("expected_sha256", "bad")):
+            with self.subTest(field=field):
+                forged = copy.deepcopy(baseline)
+                forged["document"]["metrics"]["delivery_reconciliation"][field] = value
+                self._rehash(forged)
+                with self.assertRaisesRegex(ValueError, "reconciliation"):
+                    validate_load_soak_evidence(forged)
+
+    def test_old_count_only_schema_cannot_receive_v2_credit(self):
+        envelope = collect_load_soak_evidence(self.profile(), SOURCE_COMMIT)
+        envelope["document"]["schema_version"] = "sentinel.hermetic_load_soak.v1"
+        self._rehash(envelope)
+        with self.assertRaisesRegex(ValueError, "fields are invalid"):
+            validate_load_soak_evidence(envelope)
 
 if __name__ == "__main__":
     unittest.main()
