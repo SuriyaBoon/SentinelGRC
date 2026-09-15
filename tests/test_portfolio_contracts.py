@@ -25,7 +25,7 @@ from portfolio_contracts import (
     normalize_remediation_ticket_v1,
 )
 from scripts.ingestion_api import validate_posture
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parents[1]
 class PortfolioContractTests(unittest.TestCase):
     @staticmethod
     def asset():

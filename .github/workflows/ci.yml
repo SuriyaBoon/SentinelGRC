@@ -26,14 +26,14 @@ jobs:
         run: python -m pip install --require-hashes --requirement requirements-assessment-hashed.txt
 
       - name: Verify production image closure policy
-        run: python -m unittest test_production_image_closure -v
+        run: python -m unittest tests.test_production_image_closure -v
 
       - name: Run unit tests
         shell: pwsh
         run: |
-          $unitModules = Get-ChildItem -File -Filter "test_*.py" |
+          $unitModules = Get-ChildItem -Path tests -File -Filter "test_*.py" |
             Where-Object { $_.Name -notlike "test_postgres*.py" } |
-            ForEach-Object { $_.BaseName }
+            ForEach-Object { "tests.$($_.BaseName)" }
           if (-not $unitModules) {
             throw "No unit test modules were discovered"
           }

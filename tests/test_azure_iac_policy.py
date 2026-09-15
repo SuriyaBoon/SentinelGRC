@@ -6,12 +6,12 @@ import unittest
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 MAIN = ROOT / "infra" / "azure" / "main.bicep"
 PARAMS = ROOT / "infra" / "azure" / "main.staging.bicepparam.example"
 PREFLIGHT = ROOT / "scripts" / "Test-AzureStagingInputs.ps1"
-STAGING_ASSURANCE = ROOT / "docs" / "staging-assurance.md"
-SECURITY_REMEDIATION = ROOT / "docs" / "sonar-security-remediation.md"
+STAGING_ASSURANCE = ROOT / "docs" / "azure" / "staging-assurance.md"
+SECURITY_REMEDIATION = ROOT / "docs" / "security" / "sonar-security-remediation.md"
 RESOURCE_ELEMENT_ORDER = {
     "parent": 0,
     "scope": 20,

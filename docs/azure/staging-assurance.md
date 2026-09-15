@@ -120,7 +120,7 @@ integration. The JSON schema is
 
 The audited upstream revisions and the separate LogWatcher, JML-Automation,
 Mini-SOAR, and signed-event trust rules are recorded in
-[`connector-contracts.md`](connector-contracts.md). Those checks close only the
+[`connector-contracts.md`](../integrations/connector-contracts.md). Those checks close only the
 source-bound offline contract gate; they do not establish a live connector.
 
 ```mermaid

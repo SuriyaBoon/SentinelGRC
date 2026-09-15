@@ -192,7 +192,7 @@ def _read_claimed_payload(
         raise ValueError("managed inbox payload is not committed")
     payload = read_verified_evidence(path, str(record["payload_hash"]))
     if payload is None:
-        # Recovery requires the reviewed operator procedure in docs/pipeline-worker-recovery.md.
+        # Recovery requires the reviewed operator procedure in docs/operations/pipeline-worker-recovery.md.
         raise ValueError("managed inbox payload failed committed hash verification")
     return payload
 

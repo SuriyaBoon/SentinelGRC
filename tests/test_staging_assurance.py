@@ -7,7 +7,7 @@ from unittest import mock
 from staging_assurance import evaluate_live_gates, load_assurance_policy, run_offline_assurance
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 POLICY = ROOT / "config" / "staging-assurance.example.json"
 ALERTS = [
     {

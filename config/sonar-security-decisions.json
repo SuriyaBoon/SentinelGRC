@@ -21,15 +21,15 @@
         "All binds are limited to loopback addresses"
       ],
       "evidence_tests": [
-        "test_path_security.py",
-        "test_sonar_security_decisions.py"
+        "tests/test_path_security.py",
+        "tests/test_sonar_security_decisions.py"
       ],
       "revisit_when": [
         "The server implementation or TLS wrapping changes",
         "A non-loopback bind is introduced",
         "The lab plaintext exception is broadened"
       ],
-      "sonar_comment": "Reviewed false positive: the flagged serve_forever call uses a TLS-wrapped socket. Cleartext requires an explicit lab-only flag and remains loopback-only; staging and production fail closed. Evidence is enforced by test_sonar_security_decisions.py and the ingestion security tests."
+      "sonar_comment": "Reviewed false positive: the flagged serve_forever call uses a TLS-wrapped socket. Cleartext requires an explicit lab-only flag and remains loopback-only; staging and production fail closed. Evidence is enforced by tests/test_sonar_security_decisions.py and the ingestion security tests."
     },
     {
       "issue_key": "AZ_eYu_yjmTxNrSpRwia",
@@ -46,8 +46,8 @@
         "No application claim relies on an unvalidated forwarded client certificate"
       ],
       "evidence_tests": [
-        "test_azure_iac_policy.py",
-        "test_sonar_security_decisions.py"
+        "tests/test_azure_iac_policy.py",
+        "tests/test_sonar_security_decisions.py"
       ],
       "required_live_evidence": [
         "Public ingress is unavailable from an external execution point",

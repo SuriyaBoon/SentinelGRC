@@ -909,7 +909,7 @@ def _boundary_tests_exist(root: Path) -> tuple[bool, str]:
         "test_crypto_agility.py",
         "test_azure_iac_policy.py",
     )
-    missing = [name for name in required if not (root / name).is_file()]
+    missing = [name for name in required if not (root / "tests" / name).is_file()]
     return not missing, f"{len(required) - len(missing)}/{len(required)} required boundary suites present"
 
 

@@ -1,6 +1,6 @@
 """Production image manifest and Python import-closure policy.
 Governed task: DEV-23b46174754910ce
-Run with: python -m unittest test_production_image_closure -v
+Run with: python -m unittest tests.test_production_image_closure -v
 """
 from __future__ import annotations
 import ast
@@ -15,7 +15,7 @@ from security_assessment import (
     _docker_instructions,
     _read_dockerfile_text,
 )
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILE_PATH = REPO_ROOT / "Dockerfile"
 ASSURANCE_DOCKERFILE_PATH = REPO_ROOT / "Dockerfile.assurance"
 QUALIFICATION_DOCKERFILE_PATH = REPO_ROOT / "Dockerfile.qualification"

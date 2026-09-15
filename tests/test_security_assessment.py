@@ -38,7 +38,7 @@ SOURCE_SHA = "d" * 40
 ASSESSMENT_DATE = "2026-08-13"
 REPORT = b"No known vulnerabilities found"
 BUILDKIT_FIXTURE_PATH = (
-    Path(__file__).resolve().parent / "fixtures" / "buildkit_parser_cases.json"
+    Path(__file__).resolve().parents[1] / "fixtures" / "buildkit_parser_cases.json"
 )
 ASSESSMENT_YAML_AVAILABLE = importlib.util.find_spec("yaml") is not None
 class SecurityAssessmentTests(unittest.TestCase):
@@ -53,7 +53,7 @@ class SecurityAssessmentTests(unittest.TestCase):
         canonical = _canonical(envelope["document"])
         envelope["document_sha256"] = hashlib.sha256(canonical.encode("ascii")).hexdigest()
     def test_current_repository_passes_offline_without_live_credit(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         envelope = collect_security_assessment(root, SOURCE_SHA, ASSESSMENT_DATE, "success", REPORT)
         document = validate_security_assessment(
             envelope, root, "success", REPORT,
@@ -73,7 +73,7 @@ class SecurityAssessmentTests(unittest.TestCase):
         )
 
     def test_missing_or_failed_dependency_scan_fails_closed(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         for outcome, report in (("skipped", None), ("cancelled", None), ("failure", None)):
             with self.subTest(outcome=outcome):
                 envelope = collect_security_assessment(root, SOURCE_SHA, ASSESSMENT_DATE, outcome, report)
@@ -89,7 +89,7 @@ class SecurityAssessmentTests(unittest.TestCase):
                 )
 
     def test_completed_dependency_scan_requires_nonempty_report(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         for report in (None, b""):
             with self.subTest(report=report):
                 with self.assertRaisesRegex(ValueError, "requires a report"):
@@ -245,7 +245,7 @@ class SecurityAssessmentTests(unittest.TestCase):
         self.assertIn("earliest expiry absent", decision_evidence)
 
     def test_current_repository_decisions_are_valid_on_current_utc_date(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         current_date = datetime.now(timezone.utc).date().isoformat()
         passed, evidence = _security_decisions_are_bounded(root, current_date)
         self.assertTrue(passed, evidence)
@@ -625,14 +625,15 @@ class SecurityAssessmentTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            (root / "tests").mkdir()
             for name in required_without_self:
-                (root / name).touch()
+                (root / "tests" / name).touch()
             passed, evidence = _boundary_tests_exist(root)
         self.assertFalse(passed)
         self.assertIn("6/7 required", evidence)
 
     def test_recomputed_checksum_cannot_hide_repository_control_tampering(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         envelope = collect_security_assessment(root, SOURCE_SHA, ASSESSMENT_DATE, "success", REPORT)
         envelope["document"]["controls"][0]["status"] = "FAIL"
         envelope["document"]["controls"][0]["evidence"] = "forged"
@@ -646,7 +647,7 @@ class SecurityAssessmentTests(unittest.TestCase):
             )
 
     def test_recomputed_checksum_cannot_forge_dependency_scan_result(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         envelope = collect_security_assessment(root, SOURCE_SHA, ASSESSMENT_DATE, "failure", REPORT)
         dependency = envelope["document"]["controls"][-1]
         dependency["evidence"] = (
@@ -661,7 +662,7 @@ class SecurityAssessmentTests(unittest.TestCase):
             )
 
     def test_recomputed_checksum_cannot_grant_live_credit(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         envelope = collect_security_assessment(root, SOURCE_SHA, ASSESSMENT_DATE, "success", REPORT)
         envelope["document"]["live_controls"][0]["status"] = "PASS"
         envelope["document"]["claim_boundary"]["current_live_gate_credit"] = True
@@ -674,7 +675,7 @@ class SecurityAssessmentTests(unittest.TestCase):
             )
 
     def test_rehashed_identity_fields_cannot_override_trusted_context(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         mutations = (
             ("source_commit_sha", "e" * 40, "trusted commit"),
             ("assessed_on", "2026-01-01", "trusted date"),
@@ -745,7 +746,7 @@ class SecurityAssessmentTests(unittest.TestCase):
             build_ci_scan_receipt(SOURCE_SHA, "success", "not-a-run")
 
     def test_cli_writes_no_go_evidence_without_assessment_dependency(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as directory:
             environment = dict(os.environ)
             environment["PYTHONPATH"] = str(root)
@@ -778,7 +779,7 @@ class SecurityAssessmentTests(unittest.TestCase):
             )
 
     def test_cli_writes_only_fixed_sanitized_output(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         stdout = StringIO()
         with (
             patch("scripts.collect_security_assessment.Path.cwd", return_value=root),
@@ -815,7 +816,7 @@ class SecurityAssessmentTests(unittest.TestCase):
         self.assertIn("error", json.loads(error_stderr.getvalue()))
 
     def test_cli_supplied_report_and_unavailable_normalization(self):
-        root = Path(__file__).resolve().parent
+        root = Path(__file__).resolve().parents[1]
         encoded = base64.b64encode(REPORT).decode("ascii")
         for outcome, expected_exit, expected_status, expected_digest in (
             ("success", 0 if ASSESSMENT_YAML_AVAILABLE else 1, "PASS", hashlib.sha256(REPORT).hexdigest()),

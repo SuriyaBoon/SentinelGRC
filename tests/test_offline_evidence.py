@@ -19,7 +19,7 @@ from offline_evidence import (
 from scripts.collect_offline_evidence import OUTPUT_PATH, main
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 POLICY = ROOT / "config" / "staging-assurance.example.json"
 ALERTS = ROOT / "docs" / "evidence" / "staging-readiness" / "logwatcher-security-alert.v1.jsonl"
 SOURCE_COMMIT = "a" * 40

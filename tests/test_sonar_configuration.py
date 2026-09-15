@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 SONAR_CONFIG = ROOT / "sonar-project.properties"
 BINARY_SUFFIXES = frozenset(
     {
@@ -76,9 +76,9 @@ class SonarConfigurationTests(unittest.TestCase):
         self.assertEqual("3.12", properties.get("sonar.python.version"))
         self.assertEqual("UTF-8", properties.get("sonar.sourceEncoding"))
         self.assertEqual(".", properties.get("sonar.sources"))
-        self.assertEqual("test_*.py", properties.get("sonar.exclusions"))
-        self.assertEqual(".", properties.get("sonar.tests"))
-        self.assertEqual("test_*.py", properties.get("sonar.test.inclusions"))
+        self.assertEqual("tests/**", properties.get("sonar.exclusions"))
+        self.assertEqual("tests", properties.get("sonar.tests"))
+        self.assertEqual("**/test_*.py", properties.get("sonar.test.inclusions"))
 
     def test_tracked_text_inputs_are_valid_utf8(self) -> None:
         invalid: list[str] = []

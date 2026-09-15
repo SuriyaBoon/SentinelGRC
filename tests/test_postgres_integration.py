@@ -27,7 +27,7 @@ class PostgresIntegrationTests(unittest.TestCase):
         )
         self.migrations = PostgresMigrationRunner(
             self.database,
-            str(Path(__file__).parent / "migrations" / "postgresql"),
+            str(Path(__file__).parents[1] / "migrations" / "postgresql"),
         )
         self.migrations.apply()
         with closing(self.database.connect()) as db:

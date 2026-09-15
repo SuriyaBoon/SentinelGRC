@@ -6,7 +6,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 DECISIONS_PATH = ROOT / "config" / "sonar-security-decisions.json"
 INGESTION_API = ROOT / "scripts" / "ingestion_api.py"
 AZURE_TEMPLATE = ROOT / "infra" / "azure" / "main.bicep"
