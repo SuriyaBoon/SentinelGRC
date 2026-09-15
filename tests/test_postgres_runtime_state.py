@@ -32,7 +32,7 @@ class PostgresRuntimeStateTests(unittest.TestCase):
         )
         PostgresMigrationRunner(
             self.database,
-            str(Path(__file__).parent / "migrations" / "postgresql"),
+            str(Path(__file__).parents[1] / "migrations" / "postgresql"),
         ).apply()
         with closing(self.database.connect()) as db:
             db.execute(

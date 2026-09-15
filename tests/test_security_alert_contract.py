@@ -39,7 +39,7 @@ class SecurityAlertContractTests(unittest.TestCase):
     @staticmethod
     def schema():
         return json.loads(
-            (Path(__file__).parent / "schemas" / "security-alert.v1.schema.json").read_text(
+            (Path(__file__).parents[1] / "schemas" / "security-alert.v1.schema.json").read_text(
                 encoding="utf-8"
             )
         )

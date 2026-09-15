@@ -24,7 +24,7 @@ from scripts.collect_hermetic_recovery_evidence import OUTPUT_PATH, main
 from state_store import SQLITE_LOCK_TIMEOUT_SECONDS
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 SOURCE_COMMIT = "b" * 40
 
 
@@ -78,7 +78,7 @@ class HermeticRecoveryTests(unittest.TestCase):
             recovery_source,
         )
         self.assertEqual(recovery_source.count('"hermetic-evidence.json"'), 1)
-        docs_bytes = (ROOT / "docs" / "staging-assurance.md").read_bytes()
+        docs_bytes = (ROOT / "docs" / "azure" / "staging-assurance.md").read_bytes()
         self.assertTrue(docs_bytes.isascii())
         self.assertIn(
             b"identity and hashes in an approved private evidence location - not this public",

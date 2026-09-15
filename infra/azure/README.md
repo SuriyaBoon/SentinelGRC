@@ -58,7 +58,7 @@ tenant-derived v2 endpoints. Same, swapped, arbitrary, wrong-ACR, noncanonical,
 or mutable inputs fail closed. These repository controls perform no Azure
 mutation and grant no Azure live-validation credit.
 
-See [the deployment runbook](../../docs/azure-staging-deployment.md) before
+See [the deployment runbook](../../docs/azure/azure-staging-deployment.md) before
 running any Azure mutation.
 
 The analyst and approver jobs never share a role-bearing identity. Each job

@@ -92,12 +92,12 @@ The focused offline contract suite is:
 
 ```powershell
 python -m unittest `
-  test_connectors.py `
-  test_security_alert_contract.py `
-  test_bridge_jml.py `
-  test_bridge_minisoar.py `
-  test_postgres_runtime_state.py `
-  test_staging_assurance.py
+  tests.test_connectors `
+  tests.test_security_alert_contract `
+  tests.test_bridge_jml `
+  tests.test_bridge_minisoar `
+  tests.test_postgres_runtime_state `
+  tests.test_staging_assurance
 ```
 
 PostgreSQL tests require `SENTINEL_TEST_POSTGRES_URL`. Schema semantic-format

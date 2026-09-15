@@ -5,7 +5,7 @@ try:
     import yaml
 except ImportError:
     yaml = None
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 class SupplyChainPolicyTests(unittest.TestCase):
     def test_runtime_dependencies_are_hash_locked_in_build_and_ci(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
@@ -191,12 +191,12 @@ class SupplyChainPolicyTests(unittest.TestCase):
         )
         self.assertIsNotNone(partition)
         expected_runtime_modules = (
-            "test_agent_keys test_audit_archive test_audit_delivery test_audit_log test_azure_iac_policy test_azure_staging_validator test_bridge_jml test_bridge_minisoar test_connectors "
-            "test_crypto_agility test_crypto_import_isolation test_deployment_contract test_domain_packs test_enterprise_safety test_evidence_metadata test_evidence_store test_governance test_governance_api "
-            "test_governance_core test_governance_http test_hermetic_recovery test_historical_evidence_archive test_human_identity test_ingestion_api test_job_queue test_live_gate_harness test_load_soak_baseline test_migrate_json "
-            "test_migration_runner test_observability test_offline_evidence test_oidc_auth test_oidc_contract test_outbox_delivery test_path_policy test_path_security test_persistence test_pipeline test_pipeline_worker "
-            "test_postgres_integration test_postgres_runtime_state test_pre_live_reliability test_production_contract test_reporting test_runtime_app test_security_alert_contract test_security_event_connector "
-            "test_security_pack test_sentinelgrc test_sonar_configuration test_sonar_security_decisions test_staging_assurance test_staging_logwatcher test_state_store test_workflow"
+            "tests.test_agent_keys tests.test_audit_archive tests.test_audit_delivery tests.test_audit_log tests.test_azure_iac_policy tests.test_azure_staging_validator tests.test_bridge_jml tests.test_bridge_minisoar tests.test_connectors "
+            "tests.test_crypto_agility tests.test_crypto_import_isolation tests.test_deployment_contract tests.test_domain_packs tests.test_enterprise_safety tests.test_evidence_metadata tests.test_evidence_store tests.test_governance tests.test_governance_api "
+            "tests.test_governance_core tests.test_governance_http tests.test_hermetic_recovery tests.test_historical_evidence_archive tests.test_human_identity tests.test_ingestion_api tests.test_job_queue tests.test_live_gate_harness tests.test_load_soak_baseline tests.test_migrate_json "
+            "tests.test_migration_runner tests.test_observability tests.test_offline_evidence tests.test_oidc_auth tests.test_oidc_contract tests.test_outbox_delivery tests.test_path_policy tests.test_path_security tests.test_persistence tests.test_pipeline tests.test_pipeline_worker "
+            "tests.test_postgres_integration tests.test_postgres_runtime_state tests.test_pre_live_reliability tests.test_production_contract tests.test_reporting tests.test_repository_layout tests.test_runtime_app tests.test_security_alert_contract tests.test_security_event_connector "
+            "tests.test_security_pack tests.test_sentinelgrc tests.test_sonar_configuration tests.test_sonar_security_decisions tests.test_staging_assurance tests.test_staging_logwatcher tests.test_state_store tests.test_workflow"
         ).split()
         self.assertEqual(partition.group(1).split(), expected_runtime_modules)
         self.assertNotIn("find . -maxdepth 1 -type f -name 'test_*.py'", qualify)
@@ -205,7 +205,7 @@ class SupplyChainPolicyTests(unittest.TestCase):
         self.assertIsNotNone(qualification)
         all_partition_modules = partition.group(1).split() + qualification.group(1).split()
         self.assertEqual(len(all_partition_modules), len(set(all_partition_modules)))
-        self.assertEqual(set(all_partition_modules), {path.stem for path in ROOT.glob("test_*.py")})
+        self.assertEqual(set(all_partition_modules), {"tests." + path.stem for path in (ROOT / "tests").glob("test_*.py")})
         self.assertNotIn("-m unittest discover", qualify)
         self.assertIn("find_spec('yaml') is None", qualify)
         self.assertIn("docker image save --output qualified-images.tar", qualify)

@@ -17,7 +17,7 @@ from historical_evidence_archive import (
 
 
 PACKAGE_ROOT = (
-    Path(__file__).resolve().parent
+    Path(__file__).resolve().parents[1]
     / "docs"
     / "evidence"
     / "historical-azure-staging-202608"
